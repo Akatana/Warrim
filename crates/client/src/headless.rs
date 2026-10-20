@@ -464,17 +464,17 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
         let mut spawns = Vec::new();
         if args.wolf {
             // A second wolf far away stays idle: two wolves must not share a pose.
-            spawns.extend([(wolf, feet + ahead * 4.0 + aside * 1.5, yaw + std::f32::consts::PI), (wolf, feet + ahead * 30.0, yaw)]);
+            spawns.extend([(wolf, feet + ahead * 4.0 + aside * 1.5, yaw + std::f32::consts::PI, 5.0), (wolf, feet + ahead * 30.0, yaw, 5.0)]);
         }
         if args.spawns {
-            spawns.extend(crate::content::get().spawns.iter().map(|s| (crate::content::creature_index(&s.creature), crate::coords::wow_to_render([s.at.0, s.at.1, 0.0]), s.facing.to_radians())));
+            spawns.extend(crate::content::get().spawns.iter().map(|s| (crate::content::creature_index(&s.creature), crate::coords::wow_to_render([s.at.0, s.at.1, 0.0]), s.facing.to_radians(), s.wander)));
         }
         // Any creatures of the content, standing in a row ahead (`--creature kobold_miner,garrick_thorne`).
         for (i, id) in args.creatures.iter().enumerate() {
-            spawns.push((crate::content::creature_index(id), feet + ahead * 6.0 + aside * (i as f32 * 2.2 - args.creatures.len() as f32 + 1.0), yaw + std::f32::consts::PI));
+            spawns.push((crate::content::creature_index(id), feet + ahead * 6.0 + aside * (i as f32 * 2.2 - args.creatures.len() as f32 + 1.0), yaw + std::f32::consts::PI, 5.0));
         }
         if args.npc {
-            spawns.push((guard, feet + ahead * 5.0 - aside * 2.0, yaw + std::f32::consts::PI));
+            spawns.push((guard, feet + ahead * 5.0 - aside * 2.0, yaw + std::f32::consts::PI, 5.0));
         }
         let mut wolves = if spawns.is_empty() { None } else { Some(crate::creature::Creatures::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &spawns)?) };
         // The chests of the world, shut or open.

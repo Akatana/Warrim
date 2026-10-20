@@ -8,4 +8,10 @@
         rotation: (0.0, 116.0, 0.0),
         scale: 1.0,
     ),
+    (
+        model: "World\\Generic\\Human\\Passive Doodads\\Bottles\\Bottle01.m2",
+        at: (-9458.107, 64.221535, 55.98503),
+        rotation: (0.0, 0.0, 0.0),
+        scale: 1.0,
+    ),
 ]

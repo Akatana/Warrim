@@ -83,11 +83,12 @@ const FRIENDS_RADIUS: f32 = 40.0;
 const EYE: f32 = 1.2;
 /// Chase speed in yards per second: the run animation's own speed.
 const RUN_SPEED: f32 = 6.94;
-/// Hostile creatures that have not noticed anyone stroll between places within this many yards of home, at this speed, and stand
-/// still for a few seconds (between these two numbers) at each.
-const WANDER_RADIUS: f32 = 8.0;
-const WALK_SPEED: f32 = 2.2;
-const REST: (f32, f32) = (4.0, 10.0);
+/// Creatures that have not noticed anyone stroll as CMaNGOS has them: to places within `wander` yards of home (the spawn's own number;
+/// this is the database's default), at walking speed (yards a second), one to three walks in a row, and then they stand still for a few
+/// seconds (between these two numbers).
+const WANDER_DEFAULT: f32 = 5.0;
+const WALK_SPEED: f32 = 2.5;
+const REST: (f32, f32) = (3.0, 10.0);
 /// A paw hits the ground every this many yards of running (two per stride of the gallop).
 const STEP: f32 = 2.3;
 /// Creatures further than this from the player are not animated or drawn, yards.
@@ -224,6 +225,9 @@ pub struct Mob {
     pause: f32,
     /// Seconds left of standing still before the next stroll.
     rest: f32,
+    /// How far from home it strolls (yards; 0 stands still), and the walks left in the stroll it is on.
+    wander: f32,
+    legs: u32,
     /// What the corpse holds, rolled at its death, until it is looted away or the creature is back.
     pub loot: Option<Loot>,
     rng: u32,
@@ -341,6 +345,8 @@ impl Mob {
             notice: 1.0,
             pause: 0.0,
             rest: 0.0,
+            wander: WANDER_DEFAULT,
+            legs: 0,
             loot: None,
             rng: seed,
             stride: 0.0,
@@ -384,6 +390,12 @@ impl Mob {
 
     fn new_rest(&mut self) -> f32 {
         REST.0 + (REST.1 - REST.0) * self.random()
+    }
+
+    /// Set out for a place round home: any direction, any distance up to `wander` (so the places cluster near home, as in CMaNGOS).
+    fn start_leg(&mut self) {
+        let (angle, radius) = (self.random() * std::f32::consts::TAU, self.random() * self.wander);
+        self.state = State::Wander(self.home + Vec3::new(angle.sin(), 0.0, angle.cos()) * radius);
     }
 
     /// Dead, or waiting in the pool of summoned creatures: either way it is not in the world.
@@ -797,13 +809,18 @@ impl Mob {
                         State::Wander(goal) => {
                             let left = flat(goal - self.pos);
                             if left.length() < 0.3 {
-                                (self.state, self.rest) = (State::Idle, self.new_rest());
+                                self.legs = self.legs.saturating_sub(1);
+                                if self.legs > 0 {
+                                    self.start_leg();
+                                } else {
+                                    (self.state, self.rest) = (State::Idle, self.new_rest());
+                                }
                             } else {
                                 self.yaw = left.x.atan2(-left.z);
                                 let step = self.walk(left.normalize() * (WALK_SPEED * dt).min(left.length()), &blocked);
                                 if step == 0.0 {
-                                    // Something is in the way: it gives up the walk.
-                                    (self.state, self.rest) = (State::Idle, self.new_rest());
+                                    // Something is in the way: it gives up the stroll.
+                                    (self.state, self.rest, self.legs) = (State::Idle, self.new_rest(), 0);
                                 }
                                 self.stride += step;
                                 if self.stride >= STEP * 0.6 {
@@ -814,9 +831,9 @@ impl Mob {
                         }
                         _ => {
                             self.rest -= dt;
-                            if self.rest <= 0.0 {
-                                let (angle, radius) = (self.random() * std::f32::consts::TAU, 3.0 + (WANDER_RADIUS - 3.0) * self.random());
-                                self.state = State::Wander(self.home + Vec3::new(angle.sin(), 0.0, angle.cos()) * radius);
+                            if self.rest <= 0.0 && self.wander > 0.0 {
+                                self.legs = 1 + (self.random() * 3.0) as u32;
+                                self.start_leg();
                             }
                         }
                     }
@@ -1226,8 +1243,8 @@ pub struct Creatures {
 const MOST_SUMMONED: usize = 6;
 
 impl Creatures {
-    /// The creatures at `spawns`: (kind, feet position in render space, heading in radians).
-    pub fn load(mount: &Mount, cache: &ModelCache, renderer: &mut Renderer, gpu: &Gpu, spawns: &[(usize, Vec3, f32)]) -> Result<Creatures> {
+    /// The creatures at `spawns`: (kind, feet position in render space, heading in radians, yards it strolls from there).
+    pub fn load(mount: &Mount, cache: &ModelCache, renderer: &mut Renderer, gpu: &Gpu, spawns: &[(usize, Vec3, f32, f32)]) -> Result<Creatures> {
         let defs = &content::get().creatures;
         let mut rigs: Vec<Option<BeastRig>> = defs.iter().map(|_| None).collect();
         let mut rng = Rng(0x5EED_1234);
@@ -1246,8 +1263,8 @@ impl Creatures {
         let markers = if markers.len() == MARKER_MODELS.len() { markers } else { Vec::new() };
         // Behind the creatures of the spawns wait the ones that their scripts summon (twice as many as there are summon actions, so that a summon that
         // repeats finds some), each with the creature that summons it.
-        let mut all: Vec<(usize, Vec3, f32, Option<usize>)> = spawns.iter().map(|&(kind, pos, yaw)| (kind, pos, yaw, None)).collect();
-        for (parent, &(kind, pos, yaw)) in spawns.iter().enumerate() {
+        let mut all: Vec<(usize, Vec3, f32, f32, Option<usize>)> = spawns.iter().map(|&(kind, pos, yaw, wander)| (kind, pos, yaw, wander, None)).collect();
+        for (parent, &(kind, pos, yaw, wander)) in spawns.iter().enumerate() {
             let mut waiting: Vec<(usize, usize)> = Vec::new();
             for act in defs[kind].brain.events.iter().flat_map(|e| &e.acts).filter(|a| a.0 == brain::act::SUMMON) {
                 let id = format!("c{}", act.1);
@@ -1258,10 +1275,10 @@ impl Creatures {
                 }
             }
             for (summoned, count) in waiting {
-                all.extend((0..count).map(|_| (summoned, pos, yaw, Some(parent))));
+                all.extend((0..count).map(|_| (summoned, pos, yaw, wander, Some(parent))));
             }
         }
-        for (n, &(kind, pos, yaw, parent)) in all.iter().enumerate() {
+        for (n, &(kind, pos, yaw, wander, parent)) in all.iter().enumerate() {
             let def = &defs[kind];
             let visual = match &def.body {
                 Body::Beast { model, skins, scale } => {
@@ -1287,6 +1304,7 @@ impl Creatures {
             // Whoever can be talked to may have a quest mark over its head: one entity for each of the three marks.
             let marks = (def.gossip.is_some() && !markers.is_empty()).then(|| [0, 1, 2].map(|m| renderer.add_entity(gpu, &markers[m].template)));
             let mut mob = Mob::new(kind, pos, yaw);
+            mob.wander = wander;
             if parent.is_some() {
                 (mob.summoned, mob.state) = (true, State::Unborn);
             }
@@ -1949,7 +1967,24 @@ mod tests {
             farthest = farthest.max(flat(wolf.pos).length());
         }
         assert!(walked && rested, "it walks, then stands again");
-        assert!(farthest > 2.0 && farthest <= WANDER_RADIUS + 0.5, "strolled {farthest} yards from home");
+        assert!(farthest > 1.0 && farthest <= WANDER_DEFAULT + 0.5, "strolled {farthest} yards from home");
+    }
+
+    #[test]
+    fn a_stroll_is_one_to_three_walks_within_the_spawns_own_distance_and_zero_stands_still() {
+        let far = Vec3::new(500.0, 0.0, 0.0);
+        let (mut wolf, mut still) = (Mob::new(kind(), Vec3::ZERO, 0.0), Mob::new(kind(), Vec3::ZERO, 0.0));
+        (wolf.wander, still.wander) = (12.0, 0.0);
+        let (mut most_legs, mut farthest) = (0, 0.0f32);
+        for _ in 0..(600.0 * 60.0) as usize {
+            wolf.update(1.0 / 60.0, far, flat_ground, open);
+            still.update(1.0 / 60.0, far, flat_ground, open);
+            most_legs = most_legs.max(wolf.legs);
+            farthest = farthest.max(flat(wolf.pos).length());
+            assert!(still.state == State::Idle, "wander 0 never walks");
+        }
+        assert_eq!(most_legs, 3, "up to three walks in a row");
+        assert!(farthest > 6.0 && farthest <= 12.5, "strolled {farthest} yards from home");
     }
 
     #[test]

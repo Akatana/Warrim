@@ -197,6 +197,20 @@ pub struct Spawn {
     pub creature: String,
     pub at: (f32, f32),
     pub facing: f32,
+    /// How far from `at` it strolls, yards (0 stands still): the database's `spawndist`, whose usual value is the default.
+    #[serde(default = "default_wander", skip_serializing_if = "is_default_wander")]
+    pub wander: f32,
+}
+
+/// The database's default `spawndist`.
+pub const DEFAULT_WANDER: f32 = 5.0;
+
+fn default_wander() -> f32 {
+    DEFAULT_WANDER
+}
+
+fn is_default_wander(w: &f32) -> bool {
+    *w == DEFAULT_WANDER
 }
 
 /// A model put into the world by the editor: a doodad (`.m2`) or a building (`.wmo`), as the map files place them. The place is in WoW

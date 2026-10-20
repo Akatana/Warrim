@@ -114,9 +114,9 @@ fn pickup_props() -> Vec<content::Prop> {
     content::get().props.iter().filter(|p| p.pickup.is_some()).cloned().collect()
 }
 
-/// The creatures of `content/spawns.ron`: (kind, feet position in render space, heading in radians).
-fn spawn_list() -> Vec<(usize, Vec3, f32)> {
-    content::get().spawns.iter().map(|s| (content::creature_index(&s.creature), wow_to_render([s.at.0, s.at.1, 0.0]), s.facing.to_radians())).collect()
+/// The creatures of `content/spawns.ron`: (kind, feet position in render space, heading in radians, yards it strolls).
+fn spawn_list() -> Vec<(usize, Vec3, f32, f32)> {
+    content::get().spawns.iter().map(|s| (content::creature_index(&s.creature), wow_to_render([s.at.0, s.at.1, 0.0]), s.facing.to_radians(), s.wander)).collect()
 }
 
 struct State {
