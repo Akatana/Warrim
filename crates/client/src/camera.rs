@@ -144,6 +144,13 @@ impl Controller {
         self.unit = None;
     }
 
+    /// A blow throws the walking character along `away` (a direction in render space, level) at `speed` yards a second, and up at `up`.
+    pub fn knock_back(&mut self, away: Vec3, speed: f32, up: f32) {
+        if let (Some(unit), Mode::Walk) = (&mut self.unit, self.mode) {
+            unit.launch(up.max(1.0), Vec2::new(-away.z * speed, -away.x * speed));
+        }
+    }
+
     pub fn look(&self, cam: &mut Camera, dx: f32, dy: f32) {
         let sens = 0.0025 * self.look_scale;
         let dy = if self.invert_y { -dy } else { dy };

@@ -65,13 +65,16 @@ pub struct Spellcaster {
     casting: Option<Casting>,
     flights: Vec<Flight>,
     rng: u32,
+    /// A spell has hold of the character (a silence, a stun, a fear): nothing can be cast. And a creature's blow broke the cast off.
+    blocked: bool,
+    interrupted: bool,
 }
 
 /// How high above the feet a creature's chest is.
 const CHEST: f32 = 0.9;
 
 /// Where a model put on `slot` of someone standing at `feet` facing `yaw` goes (render space).
-fn placed(slot: Slot, feet: Vec3, yaw: f32, height: f32, hand: impl Fn(u32) -> Option<Mat4>) -> Mat4 {
+pub(crate) fn placed(slot: Slot, feet: Vec3, yaw: f32, height: f32, hand: impl Fn(u32) -> Option<Mat4>) -> Mat4 {
     let facing = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - yaw);
     let at = |up: f32| Mat4::from_translation(feet + Vec3::Y * up) * facing;
     match slot {
@@ -84,7 +87,7 @@ fn placed(slot: Slot, feet: Vec3, yaw: f32, height: f32, hand: impl Fn(u32) -> O
 }
 
 /// The attachment of the character a hand slot follows.
-fn attachment(slot: Slot) -> u32 {
+pub(crate) fn attachment(slot: Slot) -> u32 {
     match slot {
         Slot::LeftHand => 2,
         Slot::RightHand => 1,
@@ -94,11 +97,21 @@ fn attachment(slot: Slot) -> u32 {
 
 impl Spellcaster {
     pub fn new(visuals: Vec<Visual>) -> Spellcaster {
-        Spellcaster { visuals, casting: None, flights: Vec::new(), rng: 0xBEEF_1234 }
+        Spellcaster { visuals, casting: None, flights: Vec::new(), rng: 0xBEEF_1234, blocked: false, interrupted: false }
     }
 
     pub fn casting(&self) -> bool {
         self.casting.is_some()
+    }
+
+    /// Say whether casting is taken away from the character (every frame).
+    pub fn set_blocked(&mut self, blocked: bool) {
+        self.blocked = blocked;
+    }
+
+    /// A creature interrupts the spell being cast, if there is one.
+    pub fn interrupt(&mut self) {
+        self.interrupted = self.casting.is_some();
     }
 
     /// Why `spell` cannot be cast on what is selected now, or whom it is cast on (its target and where it stands).
@@ -152,6 +165,9 @@ impl Spellcaster {
         if ctx.player.vitals.health.current <= 0.0 {
             return;
         }
+        if self.blocked {
+            return ctx.panels.error("You can't do that right now.");
+        }
         if self.casting.is_some() {
             return ctx.panels.error("Another action is in progress.");
         }
@@ -197,6 +213,9 @@ impl Spellcaster {
     /// Advance `dt` seconds: the cast fills, and fails if the character moves (`moving`), attacks or dies; the glows follow the hands; the
     /// missiles fly and land.
     pub fn update(&mut self, ctx: &mut Ctx, dt: f32, feet: Vec3, moving: bool) {
+        if std::mem::take(&mut self.interrupted) || (self.blocked && self.casting.is_some()) {
+            self.fail(ctx, "Interrupted");
+        }
         if let Some(c) = &mut self.casting {
             c.elapsed += dt;
             for &(id, attachment) in &c.glows {

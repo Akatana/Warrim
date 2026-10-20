@@ -251,6 +251,11 @@
             at: (-8927.703, -139.0),
             facing: 180.0,
         ),
+        (
+            creature: "c450",
+            at: (-9458.53, 63.89518),
+            facing: 32.917572,
+        ),
     ],
     props_removed: [],
     props_added: [],

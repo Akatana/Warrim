@@ -103,6 +103,8 @@ pub struct Panels {
     merchant_page: usize,
     /// What using items does now: boosts and regeneration that last, cooldowns, the way home; and whether the character keeps still and out of a fight.
     pub consumed: crate::consume::Consumed,
+    /// The spells of creatures that have hold of the character, shown with the buffs: the icon (its file) and the seconds left.
+    afflicted: Vec<(String, f32)>,
     calm: bool,
     /// Health and mana that were given at once and are for the player to take (`take_restores`).
     restored: (f32, f32),
@@ -352,7 +354,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), spell_click: None, drag: None, skill_list: Default::default(), inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, target_portrait, target: None, menu: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), spell_click: None, drag: None, skill_list: Default::default(), inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, target_portrait, target: None, menu: Default::default() };
         panels.refresh();
         Ok(panels)
     }
@@ -2244,19 +2246,25 @@ impl Panels {
         self.tree.set_bar("TargetFrameHealthBar", v.fraction, Some([0.0, 1.0, 0.0, 1.0]));
     }
 
+    /// Say which spells of creatures have hold of the character (every frame): their icons are shown with the buffs.
+    pub fn set_afflictions(&mut self, list: &[crate::foes::Affliction]) {
+        self.afflicted = list.iter().map(|a| (format!(r"Interface\Icons\{}", a.icon), a.left)).collect();
+    }
+
     /// Show the buffs as the icons of `BuffFrame`.
     fn update_buffs(&mut self) {
-        let buffs = &self.consumed.buffs;
+        let mut buffs: Vec<(String, f32)> = self.consumed.buffs.iter().map(|b| (crate::items::get(b.item).icon.to_string(), b.left)).collect();
+        buffs.extend(self.afflicted.iter().cloned());
         self.tree.show("BuffFrame", !buffs.is_empty());
         let durations = self.show_durations();
         for i in 0..24 {
             let button = format!("BuffButton{i}");
             match buffs.get(i) {
-                Some(b) => {
+                Some((icon, left)) => {
                     self.tree.show(&button, true);
-                    self.tree.set_texture(&format!("{button}Icon"), Some(crate::items::get(b.item).icon));
+                    self.tree.set_texture(&format!("{button}Icon"), Some(icon));
                     self.tree.set_region_hidden(&format!("{button}Duration"), !durations);
-                    let lasts = b.left.ceil() as u32;
+                    let lasts = left.ceil() as u32;
                     let text = match lasts {
                         3600.. => self.string("HOUR_ONELETTER_ABBR").replace("%d", &(lasts / 3600).to_string()),
                         60.. => self.string("MINUTE_ONELETTER_ABBR").replace("%d", &(lasts / 60).to_string()),
@@ -2298,7 +2306,7 @@ impl Panels {
     /// Queue the open panels, the carried item and the tooltip for drawing.
     pub fn draw(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32)) {
         self.update_buffs();
-        if !self.any_open() && !self.target_shown() && !self.cast_bar_visible() && self.consumed.buffs.is_empty() {
+        if !self.any_open() && !self.target_shown() && !self.cast_bar_visible() && self.consumed.buffs.is_empty() && self.afflicted.is_empty() {
             return;
         }
         let mount = self.mount.clone();

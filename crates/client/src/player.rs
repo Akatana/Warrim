@@ -187,6 +187,9 @@ pub struct Player {
     retired: Vec<Steed>,
     /// Who the character is: its race, sex and looks.
     look: crate::character::Appearance,
+    /// Held back by a spell (a stun, a pacify, a disarm, a fear): no swing, no shot.
+    no_swing: bool,
+    no_shot: bool,
 }
 
 /// The bow, crossbow or gun in the ranged slot: its damage, the seconds it takes to draw (its speed), and the item subclass of the ammo it takes.
@@ -263,7 +266,7 @@ impl Player {
     pub fn load(mount: &Arc<Mount>, cache: &ModelCache, renderer: &mut Renderer, gpu: &Gpu, look: &crate::character::Appearance) -> Result<Player> {
         let character = Character::load(mount, cache, "player", look)?;
         let worn = Worn::new(&character, renderer, gpu);
-        Ok(Player { character, worn, mount: mount.clone(), cache: ModelCache::default(), view: View::First, body_turn: 0.0, attack: None, weapon_speed: 2.0, since_swing: 99.0, charge: None, refused: None, ranged: Ranged::default(), camera_distance: THIRD_PERSON_DISTANCE, follow: 1.0, last_eye: None, feet: Vec3::ZERO, facing: 0.0, mitigation: 0.0, damage: (12.0, 12.0), rng: 0x1234_5678, blocking: false, block_cost: 1.0, swimming: false, swim_cost: 1.0, size: crate::character::Size::of(mount, look).unwrap_or_else(|e| { log::warn!("no size for the player: {e:#}"); Default::default() }), sprinting: false, sneaking: false, exhausted: false, rested: 0.0, vitals: Vitals::full(), events: Vec::new(), steps: Stepper::default(), swings: 0, swing_pending: false, hit_pending: false, swing_hit: None, steed: None, dismount_wanted: false, sheathed: false, stowed: false, sheath_wait: 0.0, busy: 0.0, sheath_kind: "", retired: Vec::new(), look: *look })
+        Ok(Player { character, worn, mount: mount.clone(), cache: ModelCache::default(), view: View::First, body_turn: 0.0, attack: None, weapon_speed: 2.0, since_swing: 99.0, charge: None, refused: None, ranged: Ranged::default(), camera_distance: THIRD_PERSON_DISTANCE, follow: 1.0, last_eye: None, feet: Vec3::ZERO, facing: 0.0, mitigation: 0.0, damage: (12.0, 12.0), rng: 0x1234_5678, blocking: false, block_cost: 1.0, swimming: false, swim_cost: 1.0, size: crate::character::Size::of(mount, look).unwrap_or_else(|e| { log::warn!("no size for the player: {e:#}"); Default::default() }), sprinting: false, sneaking: false, exhausted: false, rested: 0.0, vitals: Vitals::full(), events: Vec::new(), steps: Stepper::default(), swings: 0, swing_pending: false, hit_pending: false, swing_hit: None, steed: None, dismount_wanted: false, sheathed: false, stowed: false, sheath_wait: 0.0, busy: 0.0, sheath_kind: "", retired: Vec::new(), look: *look, no_swing: false, no_shot: false })
     }
 
     pub fn toggle_view(&mut self) {
@@ -286,6 +289,10 @@ impl Player {
     /// `swing_power` of the moment. False when not.
     fn begin_swing(&mut self, swing: Swing) -> bool {
         if !self.ready_to_fight() {
+            return false;
+        }
+        if self.no_swing {
+            self.refused = Some("You can't do that right now.");
             return false;
         }
         if self.attack.is_some() || self.ranged.drawn.is_some() {
@@ -360,6 +367,9 @@ impl Player {
     pub fn shoot_press(&mut self) {
         if !self.ready_to_fight() {
             return;
+        }
+        if self.no_shot {
+            return self.refused = Some("You can't do that right now.");
         }
         if self.attack.is_some() || self.ranged.drawn.is_some() {
             return;
@@ -672,6 +682,30 @@ impl Player {
         self.vitals.health.current = (self.vitals.health.current - taken).max(0.0);
         self.events.push(if self.vitals.health.current <= 0.0 { Sfx::Death } else { Sfx::Wound });
         Some(taken as u32)
+    }
+
+    /// Damage of magic (or of a damage over time) lands: no shield and no armor stop it. Returns the damage taken.
+    pub fn take_magic(&mut self, damage: f32) -> u32 {
+        self.rested = 0.0;
+        let taken = damage.round().max(1.0);
+        self.vitals.health.current = (self.vitals.health.current - taken).max(0.0);
+        self.events.push(if self.vitals.health.current <= 0.0 { Sfx::Death } else { Sfx::Wound });
+        taken as u32
+    }
+
+    /// Spells hold the character back from swinging the weapon in the hand and from shooting (set by the game each frame).
+    pub fn set_held_back(&mut self, swing: bool, shot: bool) {
+        (self.no_swing, self.no_shot) = (swing, shot);
+        if shot {
+            self.ranged.drawn = None;
+        }
+    }
+
+    /// Mana drained away: how much was there to take.
+    pub fn drain_mana(&mut self, amount: f32) -> f32 {
+        let taken = amount.min(self.vitals.mana.current).max(0.0);
+        self.vitals.mana.current -= taken;
+        taken
     }
 
     /// What the armor stops, from the stats with the skills in the kinds of armor worn (set by the game).
@@ -1043,6 +1077,8 @@ mod tests {
             sheath_kind: "",
             retired: Vec::new(),
             look: Default::default(),
+            no_swing: false,
+            no_shot: false,
         }
     }
 

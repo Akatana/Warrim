@@ -441,6 +441,8 @@ struct State {
     levelfx: Option<usize>,
     moving: bool,
     caster: crate::casting::Spellcaster,
+    /// What the spells of creatures do to the player, and the auras that have hold of him.
+    foes: crate::foes::Foes,
     fires: crate::fires::Fires,
     /// A spell the bar asked to cast, for the frame to do.
     cast_request: Option<usize>,
@@ -632,6 +634,7 @@ impl State {
             .map_err(|e| log::warn!("no console: {e:#}"))
             .ok();
         let caster = crate::casting::Spellcaster::new(crate::visuals::load(&player_mount).map_err(|e| log::warn!("no spell visuals: {e:#}")).unwrap_or_default());
+        let foes = crate::foes::Foes::new(crate::visuals::load_classic(&player_mount).map_err(|e| log::warn!("no creature spell visuals: {e:#}")).unwrap_or_default());
         let combat_text = CombatText::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no combat text: {e:#}")).ok();
 
         let (x, y, z) = args.pos;
@@ -644,6 +647,9 @@ impl State {
         let mut camera = Camera::new(start, yaw, pitch);
         // The wolves of `content/spawns.ron`.
         let mut wolves = Creatures::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &spawn_list()).map_err(|e| log::warn!("no creatures: {e:#}")).ok();
+        if let Some(wolves) = &mut wolves {
+            wolves.set_spell_anims(foes.anims());
+        }
         if let (Some(wolves), Some(saved)) = (&mut wolves, &loaded) {
             wolves.restore(&saved.mobs);
         }
@@ -693,6 +699,7 @@ impl State {
             levelfx: None,
             moving: false,
             caster,
+            foes,
             fires: Default::default(),
             cast_request: None,
             hint: None,
@@ -825,6 +832,9 @@ impl State {
             audio.bank.reload_cries(&self.mount).unwrap_or_else(|e| log::warn!("no cries: {e:#}"));
         }
         self.wolves = Creatures::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu, &spawn_list()).map_err(|e| log::warn!("no creatures: {e:#}")).ok();
+        if let Some(wolves) = &mut self.wolves {
+            wolves.set_spell_anims(self.foes.anims());
+        }
         self.chests = Chests::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu).map_err(|e| log::warn!("no chests: {e:#}")).ok();
         self.pickup_props = pickup_props();
         self.beds = bed_spots(&content::get().props, &self.map);
@@ -1050,6 +1060,22 @@ impl State {
             self.input.sprint = self.input.fast && self.controller.mode == Mode::Walk && !sneaking && !swimming && self.player.as_ref().is_none_or(|p| p.can_sprint());
             self.input.mount_bonus = self.player.as_ref().map_or(0.0, |p| p.speed_bonus());
             self.input.burden = self.panels.as_ref().map_or(0.0, |pn| pn.burden());
+            // Spells that have hold of the character: slowed, rooted, stunned, or running in fear from where the spell came from.
+            let held = &self.foes.afflictions;
+            self.input.burden = self.input.burden.max(held.slow());
+            self.caster.set_blocked(held.cast_blocked());
+            if let Some(p) = &mut self.player {
+                p.set_held_back(held.swing_blocked(), held.shot_blocked());
+            }
+            if held.stunned() || held.rooted() || held.feared().is_some() {
+                (self.input.forward, self.input.back, self.input.left, self.input.right, self.input.jump_pressed) = (false, false, false, false, false);
+            }
+            if let Some(from) = held.feared() {
+                let want = (feet.x - from.x).atan2(-(feet.z - from.z));
+                let turn = (want - self.camera.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                self.camera.yaw = (self.camera.yaw + turn.clamp(-3.0 * dt, 3.0 * dt)).rem_euclid(std::f32::consts::TAU);
+                self.input.forward = true;
+            }
             if let Some(p) = &mut self.player {
                 p.set_sprinting(self.input.sprint);
                 p.set_swimming(swimming, self.panels.as_ref().map_or(1.0, |pn| pn.skills.swim_cost_factor()));
@@ -1212,7 +1238,24 @@ impl State {
                 panels.set_target(view);
             }
             // A creature that starts at no height (a new game) finds no floor within a yard of it: it takes the terrain.
-            let (bites, mut cries) = wolves.update(dt, feet, player.is_sneaking().then(|| self.panels.as_ref().map_or(1.0, |p| p.skills.notice_factor())), |x, z, y| crate::collision::Collider::floor(world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), &mut self.renderer, &self.gpu);
+            let auras = self.foes.afflictions.spells();
+            let watch = crate::creature::Watch {
+                feet,
+                yaw: self.camera.yaw,
+                health: player.vitals.health.fraction(),
+                mana: player.vitals.mana.fraction(),
+                casting: self.caster.casting(),
+                auras: &auras,
+                sneaking: player.is_sneaking().then(|| self.panels.as_ref().map_or(1.0, |p| p.skills.notice_factor())),
+            };
+            let (acts, mut cries) = wolves.update(dt, &watch, |x, z, y| crate::collision::Collider::floor(world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), &mut self.renderer, &self.gpu);
+            // What they did: the swings that landed, the spells begun and gone off, and the auras that hold the player.
+            let mut effects = Vec::new();
+            for act in acts {
+                effects.extend(self.foes.handle(act, feet, wolves, &mut self.effects, &mut self.renderer, &self.gpu));
+            }
+            effects.extend(self.foes.update(dt, feet, wolves, &mut self.effects, &mut self.renderer, &self.gpu));
+            cries.extend(self.foes.take_sounds());
             // A bite on the shield rings instead of sounding like teeth in flesh.
             let mut blocked = false;
             if let Some(panels) = &self.panels {
@@ -1224,8 +1267,32 @@ impl State {
                     r.current = r.max;
                 }
             }
-            for damage in bites.into_iter().filter(|_| !safe) {
-                match player.take_hit(damage) {
+            if safe {
+                self.foes.afflictions.clear();
+            }
+            if let Some(panels) = &mut self.panels {
+                panels.set_afflictions(self.foes.afflictions.all());
+            }
+            for effect in effects.into_iter().filter(|_| !safe) {
+                use crate::foes::Effect;
+                // What lands as damage, and whether a shield and armor deal with it (blows) or not (magic).
+                let hit = match effect {
+                    Effect::Hurt { amount, physical } => Some((physical, amount)),
+                    Effect::Drain { amount, burn } => {
+                        let took = player.drain_mana(amount);
+                        (burn && took > 0.0).then_some((false, took))
+                    }
+                    Effect::Interrupt => {
+                        self.caster.interrupt();
+                        None
+                    }
+                    Effect::Knock { from, speed, up } => {
+                        self.controller.knock_back(Vec3::new(feet.x - from.x, 0.0, feet.z - from.z).normalize_or_zero(), speed, up);
+                        None
+                    }
+                };
+                let Some((physical, amount)) = hit else { continue };
+                match if physical { player.take_hit(amount) } else { Some(player.take_magic(amount)) } {
                     None => {
                         blocked = true;
                         if let Some(panels) = &mut self.panels {
@@ -1237,8 +1304,8 @@ impl State {
                         if let Some(text) = &mut self.combat_text {
                             text.damage_taken(taken);
                         }
-                        // Every kind of armor worn is trained by its share of what is worn.
-                        if let Some(panels) = &mut self.panels {
+                        // Every kind of armor worn is trained by its share of what is worn (by blows, not by magic).
+                        if let (true, Some(panels)) = (physical, &mut self.panels) {
                             for (skill, share) in crate::skills::Skills::armor_shares(&panels.inv.equipment) {
                                 panels.train(skill, share);
                             }
@@ -1323,6 +1390,7 @@ impl State {
             if player.vitals.health.current <= 0.0 {
                 log::info!("you died");
                 player.revive();
+                self.foes.clear(&mut self.effects);
                 if let Some(panels) = &mut self.panels {
                     panels.consumed.clear();
                     panels.refresh();

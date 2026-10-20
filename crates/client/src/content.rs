@@ -50,6 +50,61 @@ pub enum Body {
     Humanoid { outfit: Vec<usize>, look: Appearance },
 }
 
+/// One event of the script of a creature, as the original's EventAI has it (made by `tools/import_creature_ai.py`, played by `brain.rs`): the event type
+/// `on` with its parameters `p`, the EventAI `flags`, the percent `chance`, the phases it is `off` in (a bit for each), and what it does: `acts`, each an action
+/// type with its three parameters.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BrainEvent {
+    pub on: u8,
+    pub p: Vec<i32>,
+    pub flags: u32,
+    pub chance: u32,
+    pub off: u32,
+    pub acts: Vec<(u8, i32, i32, i32)>,
+}
+
+impl Default for BrainEvent {
+    fn default() -> BrainEvent {
+        BrainEvent { on: 0, p: Vec::new(), flags: 0, chance: 100, off: 0, acts: Vec::new() }
+    }
+}
+
+impl BrainEvent {
+    /// Parameter `n` of the event (0 when it has none).
+    pub fn param(&self, n: usize) -> i32 {
+        self.p.get(n).copied().unwrap_or(0)
+    }
+}
+
+/// How a creature fights (`content/classic_creature_ai.ron`): its mana, the seconds between its swings (0 for the usual two), the damage of its ranged
+/// weapon (what Shoot and Throw do), the yards within which it calls others of its faction to help when it starts a fight, whether it only fights back,
+/// its faction, and its script.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Brain {
+    pub mana: f32,
+    pub swing: f32,
+    pub shot: f32,
+    pub assist: f32,
+    pub calm: bool,
+    pub faction: u32,
+    pub events: Vec<BrainEvent>,
+}
+
+impl Default for Brain {
+    fn default() -> Brain {
+        Brain { mana: 0.0, swing: 0.0, shot: 0.0, assist: 10.0, calm: false, faction: 0, events: Vec::new() }
+    }
+}
+
+impl Brain {
+    /// Whether it is the brain of a creature that only bites (what a file need not say).
+    pub fn is_default(&self) -> bool {
+        *self == Brain::default()
+    }
+}
+
 /// A kind of creature.
 #[derive(Debug)]
 pub struct CreatureDef {
@@ -75,6 +130,8 @@ pub struct CreatureDef {
     pub gossip: Option<Gossip>,
     /// What it sells (indexes into the items), in the order of the window.
     pub vendor: Vec<usize>,
+    /// How it fights beyond the bite: what it casts and shoots, with what mana, and who it calls.
+    pub brain: Brain,
 }
 
 impl CreatureDef {
@@ -121,6 +178,9 @@ pub struct RawCreature {
     pub gossip: Option<Gossip>,
     #[serde(default)]
     pub vendor: Vec<String>,
+    /// How it fights beyond the bite (its script): from `classic_creature_ai.ron` for the original's creatures, edited in the editor.
+    #[serde(default, skip_serializing_if = "Brain::is_default")]
+    pub brain: Brain,
 }
 
 fn hundred() -> f32 {
@@ -368,10 +428,60 @@ pub struct ClassicSpell {
     pub text: String,
 }
 
+impl ClassicEffect {
+    /// Whether the effect is for the enemies of the caster (by its implicit targets, MaNGOS `Targets`: a chain or an area of enemies, the front of the caster).
+    pub fn enemy(&self) -> bool {
+        [self.targets.0, self.targets.1].iter().any(|t| matches!(t, 2 | 6 | 15 | 16 | 24 | 28 | 53 | 54))
+    }
+
+    /// Whether the effect is for the caster and its friends (itself, its party, friendly units around it).
+    pub fn friendly(&self) -> bool {
+        !self.enemy() && matches!(self.targets.0, 0 | 1 | 3 | 5 | 20 | 21 | 27 | 30 | 31 | 33 | 34 | 35 | 37 | 56 | 57 | 61)
+    }
+
+    /// Whether the effect hits an area (of enemies or friends) instead of one unit, and whether that area is a cone in front of the caster.
+    pub fn area(&self) -> bool {
+        [self.targets.0, self.targets.1].iter().any(|t| matches!(t, 15 | 16 | 20 | 24 | 28 | 30 | 31 | 54 | 56))
+    }
+
+    pub fn cone(&self) -> bool {
+        [self.targets.0, self.targets.1].iter().any(|t| matches!(t, 24 | 54))
+    }
+}
+
+impl ClassicSpell {
+    /// The points of effect `n` for a caster of `level` as MaNGOS works them out: a number from `low` to `high` picked with `roll`, and what each level above
+    /// the spell's own adds (up to its highest level, if it has one).
+    pub fn points(&self, n: usize, level: u32, roll: u32) -> f32 {
+        let e = &self.effects[n];
+        let base = e.low + (roll % ((e.high - e.low).max(0) as u32 + 1)) as i32;
+        let level = if self.max_level > 0 { level.min(self.max_level) } else { level };
+        base as f32 + e.per_level * level.saturating_sub(self.base_level) as f32
+    }
+
+    /// Whether it is a ranged attack (Shoot, Throw): what they do is the damage of the creature's ranged weapon.
+    pub fn is_ranged_attack(&self) -> bool {
+        self.attributes & 0x2 != 0
+    }
+
+    /// Mana it takes a creature with `base` mana at most.
+    pub fn mana_cost(&self, base: f32) -> f32 {
+        if self.power != 0 {
+            0.0
+        } else if self.cost_percent > 0 {
+            base * self.cost_percent as f32 / 100.0
+        } else {
+            self.cost as f32
+        }
+    }
+}
+
 pub struct Content {
     pub items: Vec<ItemDef>,
     pub spells: Vec<SpellDef>,
     pub classic_spells: Vec<ClassicSpell>,
+    /// The place in `classic_spells` of each spell (its row in `Spell.dbc`).
+    pub classic_index: std::collections::HashMap<u32, usize>,
     pub pois: Vec<Poi>,
     pub chests: Vec<ChestDef>,
     pub quests: Vec<Quest>,
@@ -440,6 +550,12 @@ pub fn creature(id: &str) -> &'static CreatureDef {
 /// The index of the creature kind with this id.
 pub fn creature_index(id: &str) -> usize {
     get().creatures.iter().position(|c| c.id == id).unwrap_or_else(|| panic!("no creature {id}"))
+}
+
+/// The spell of the original with this row of `Spell.dbc`.
+pub fn classic_spell(id: u32) -> Option<&'static ClassicSpell> {
+    let c = get();
+    c.classic_index.get(&id).map(|&i| &c.classic_spells[i])
 }
 
 pub fn spell(index: usize) -> &'static SpellDef {
@@ -1023,7 +1139,12 @@ impl Raws {
             },
             creatures: {
                 let mut creatures: Vec<RawCreature> = ron::from_str(&source("creatures.ron", include_str!("../../../content/creatures.ron"))).context("creatures.ron")?;
-                creatures.extend(ron::from_str::<Vec<RawCreature>>(&source("classic_creatures.ron", include_str!("../../../content/classic_creatures.ron"))).context("classic_creatures.ron")?);
+                let mut classic: Vec<RawCreature> = ron::from_str(&source("classic_creatures.ron", include_str!("../../../content/classic_creatures.ron"))).context("classic_creatures.ron")?;
+                let mut brains: BTreeMap<String, Brain> = ron::from_str(&source("classic_creature_ai.ron", include_str!("../../../content/classic_creature_ai.ron"))).context("classic_creature_ai.ron")?;
+                for c in &mut classic {
+                    c.brain = brains.remove(&c.id).unwrap_or_default();
+                }
+                creatures.extend(classic);
                 creatures
             },
             quests: ron::from_str(&source("quests.ron", include_str!("../../../content/quests.ron"))).context("quests.ron")?,
@@ -1096,6 +1217,14 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
     let classic_spells: Vec<ClassicSpell> = ron::from_str(&source("classic_spells.ron", include_str!("../../../content/classic_spells.ron"))).context("classic_spells.ron")?;
     let mut seen = HashSet::new();
     ensure!(classic_spells.iter().all(|s| seen.insert(s.spell)), "classic_spells.ron: a spell is used twice");
+    let classic_index: std::collections::HashMap<u32, usize> = classic_spells.iter().enumerate().map(|(i, s)| (s.spell, i)).collect();
+    for c in &raw_creatures {
+        for e in &c.brain.events {
+            ensure!(e.acts.iter().all(|&(kind, spell, ..)| kind != crate::brain::act::CAST || classic_index.contains_key(&(spell as u32))), "creature {}: its script casts a spell that does not exist", c.id);
+            ensure!(e.chance <= 100, "creature {}: the chance of an event is a percent", c.id);
+        }
+        ensure!(c.brain.mana >= 0.0 && c.brain.swing >= 0.0 && c.brain.shot >= 0.0 && c.brain.assist >= 0.0, "creature {}: mana, swing, shot or assist below zero", c.id);
+    }
     let items = raw_items
         .into_iter()
         .map(|raw| {
@@ -1150,7 +1279,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
             ensure!(vendor.iter().all(|&i| items[i].buy > 0), "creature {}: sells an item that has no price", c.id);
             let sells = c.gossip.as_ref().is_some_and(|g| g.options.iter().any(|o| matches!(o.action, Action::Vendor)));
             ensure!(sells == !vendor.is_empty(), "creature {}: a vendor line needs wares and wares need a vendor line", c.id);
-            Ok(CreatureDef { id: c.id, name: c.name, level: c.level, title: c.title, body, hostile: c.hostile, neutral: c.neutral, health: c.health, bite_damage: c.bite_damage, respawn: c.respawn, loot: c.loot, gossip: c.gossip, vendor })
+            Ok(CreatureDef { id: c.id, name: c.name, level: c.level, title: c.title, body, hostile: c.hostile, neutral: c.neutral, health: c.health, bite_damage: c.bite_damage, respawn: c.respawn, loot: c.loot, gossip: c.gossip, vendor, brain: c.brain })
         })
         .collect::<Result<Vec<_>>>()?;
     for c in &creatures {
@@ -1220,7 +1349,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
             ensure!(items.iter().any(|i| i.id == k.item.as_str()) && k.respawn > 0.0 && model.ends_with(".m2"), "prop {}: its pickup needs an item of the game, a time and a model file", p.model);
         }
     }
-    Ok(Content { spells, classic_spells, items, pois, chests, quests, loot, creatures, spawns, props, start: Start { spells: known, money: raw_start.money, equipment, bag } })
+    Ok(Content { spells, classic_spells, classic_index, items, pois, chests, quests, loot, creatures, spawns, props, start: Start { spells: known, money: raw_start.money, equipment, bag } })
 }
 
 #[cfg(test)]
@@ -1296,5 +1425,24 @@ mod tests {
         assert!(ron::from_str::<Vec<RawItem>>(r#"[(id: "x", name: "X", display: 1, flavour: 3)]"#).is_err(), "unknown fields are refused");
         let item = ron::from_str::<Vec<RawItem>>(r#"[(id: "x", name: "X", display: 1, stats: (1, 2, 3, 4, 5), weapon: Some((min: 1.0, max: 2.0, speed: 1.5)))]"#).unwrap();
         assert_eq!((item[0].quality, item[0].stack, item[0].stats.4), (1, 1, 5));
+    }
+
+    #[test]
+    fn a_creatures_script_is_edited_in_the_overlay_and_comes_back() {
+        let base = Raws::files().unwrap();
+        let mut edited = base.clone();
+        let mage = edited.creatures.iter_mut().find(|c| c.id == "c474").expect("Defias Rogue Wizard");
+        assert!(!mage.brain.events.is_empty() && mage.brain.mana > 0.0, "the original's script is in the raw creature");
+        mage.brain.mana = 999.0;
+        mage.brain.events.pop();
+        let overlay = Overlay::between(&base, &edited);
+        assert_eq!(overlay.creatures.entries.len(), 1, "only what was edited");
+        let back: Overlay = ron::from_str(&ron::to_string(&overlay).unwrap()).unwrap();
+        assert_eq!(base.clone().with(&back), edited);
+        check(&edited).unwrap();
+        // A script that casts a spell that does not exist is refused.
+        let mage = edited.creatures.iter_mut().find(|c| c.id == "c474").unwrap();
+        mage.brain.events.push(BrainEvent { acts: vec![(crate::brain::act::CAST, 4_000_000, 1, 0)], ..Default::default() });
+        assert!(check(&edited).is_err());
     }
 }

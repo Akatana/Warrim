@@ -1903,6 +1903,42 @@ fn file_stem(path: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(stem, _)| stem)
 }
 
+/// How a creature fights beyond the bite: its mana, the time between its swings, its shot, whom it calls, and the events of its script (each written as the
+/// content file has it, with a sentence over it that says what it means).
+fn fighting_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature) {
+    let b = &mut c.brain;
+    value_row(g, y, x, w, "Mana", 200, &mut b.mana);
+    value_row(g, y, x, w, "Swing (s, 0 = 2)", 201, &mut b.swing);
+    value_row(g, y, x, w, "Shot damage", 202, &mut b.shot);
+    value_row(g, y, x, w, "Calls help (yd)", 203, &mut b.assist);
+    value_row(g, y, x, w, "Faction", 204, &mut b.faction);
+    switch_row(g, y, x, "Fights back only", &mut b.calm);
+    let mut remove = None;
+    for (i, e) in b.events.iter_mut().enumerate() {
+        g.text(x + LABEL_WIDTH, *y, w - LABEL_WIDTH, &crate::brain::describe(e), DIM);
+        *y += ROW;
+        let mut text = ron::to_string(&*e).unwrap_or_default();
+        if text_row(g, y, x, w, &format!("Event {}", i + 1), 300 + i, &mut text) {
+            match ron::from_str::<content::BrainEvent>(&text) {
+                Ok(parsed) => *e = parsed,
+                Err(err) => g.say(format!("Event {}: {err}", i + 1), RED),
+            }
+        }
+        if g.button(x + LABEL_WIDTH, *y, 70.0, "Remove") {
+            remove = Some(i);
+        }
+        *y += ROW + 3.0;
+    }
+    if let Some(i) = remove {
+        b.events.remove(i);
+    }
+    if g.button(x + LABEL_WIDTH, *y, 120.0, "Add an event") {
+        // Casts a fireball (spell 133) at the player every few seconds of a fight.
+        b.events.push(content::BrainEvent { on: crate::brain::event::TIMER, p: vec![3000, 6000, 8000, 12000], flags: 0x401, acts: vec![(crate::brain::act::CAST, 133, 1, 0)], ..Default::default() });
+    }
+    *y += ROW + 3.0;
+}
+
 fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature, pv: &mut Preview, items: &[RawItem]) {
     look_panel(g, y, x, w, c, pv, items);
     text_row(g, y, x, w, "Id", 100, &mut c.id);
@@ -1914,6 +1950,7 @@ fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature, 
     value_row(g, y, x, w, "Health", 104, &mut c.health);
     value_row(g, y, x, w, "Bite damage", 105, &mut c.bite_damage);
     value_row(g, y, x, w, "Respawn (s)", 106, &mut c.respawn);
+    fighting_form(g, y, x, w, c);
     option_ref_row(g, y, x, w, "Loot table", 107, &mut c.loot, Ref::Loot);
     list_row(g, y, x, w, "Sells", 108, &mut c.vendor, Some(Ref::Item));
     match &mut c.body {

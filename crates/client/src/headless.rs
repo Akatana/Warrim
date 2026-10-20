@@ -488,6 +488,10 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             }
         }
         let mut effects = crate::effects::Effects::new(player_mount.clone());
+        let mut foes = crate::foes::Foes::new(crate::visuals::load_classic(&player_mount).unwrap_or_default());
+        if let Some(wolves) = &mut wolves {
+            wolves.set_spell_anims(foes.anims());
+        }
         let mut fires = crate::fires::Fires::default();
         let mut ripples = crate::ripples::Ripples::default();
         let mut ripple_draw = crate::ripples::RippleDraw::new(&player_mount, &ModelCache::default(), &mut renderer, &gpu);
@@ -574,8 +578,14 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 if let Some(panels) = &panels {
                     wolves.set_markers(render_camera.pos, |kind| panels.marker(kind));
                 }
-                for damage in wolves.update(1.0 / 60.0, feet, args.sneak.then_some(1.0), |x, z, y| crate::collision::Collider::floor(&world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), &mut renderer, &gpu).0 {
-                    player.take_hit(damage);
+                let watch = crate::creature::Watch { feet, yaw, health: player.vitals.health.fraction(), mana: 1.0, casting: false, auras: &foes.afflictions.spells(), sneaking: args.sneak.then_some(1.0) };
+                let (acts, _) = wolves.update(1.0 / 60.0, &watch, |x, z, y| crate::collision::Collider::floor(&world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), &mut renderer, &gpu);
+                let mut effect_list: Vec<crate::foes::Effect> = acts.into_iter().flat_map(|act| foes.handle(act, feet, wolves, &mut effects, &mut renderer, &gpu)).collect();
+                effect_list.extend(foes.update(1.0 / 60.0, feet, wolves, &mut effects, &mut renderer, &gpu));
+                for effect in effect_list {
+                    if let crate::foes::Effect::Hurt { amount, physical } = effect {
+                        if physical { player.take_hit(amount); } else { player.take_magic(amount); }
+                    }
                 }
             }
         }

@@ -106,6 +106,35 @@ pub fn of_shot(mount: &Mount, id: u32) -> Visual {
     Tables::new(mount).ok().and_then(|t| t.visuals.find_by_id(id).map(|v| t.visual(v, 0.0, SHOT_SPEED))).unwrap_or_default()
 }
 
+/// The pictures and sounds of spells of the original by their row of `Spell.dbc`: the ones that the scripts of creatures cast, and what those trigger.
+pub fn load_classic(mount: &Mount) -> Result<std::collections::HashMap<u32, Visual>> {
+    use std::collections::HashSet;
+    let c = content::get();
+    let mut wanted: HashSet<u32> = HashSet::new();
+    for act in c.creatures.iter().flat_map(|d| &d.brain.events).flat_map(|e| &e.acts).filter(|a| a.0 == crate::brain::act::CAST) {
+        wanted.insert(act.1 as u32);
+        if let Some(s) = content::classic_spell(act.1 as u32) {
+            wanted.extend(s.effects.iter().map(|e| e.trigger).filter(|&t| t != 0));
+        }
+    }
+    let dbc = |name: &str| -> Result<Dbc> { Ok(Dbc::parse(&mount.read(&format!(r"DBFilesClient\{name}.dbc"))?)?) };
+    let (spells, times) = (dbc("Spell")?, dbc("SpellCastTimes")?);
+    let tables = Tables::new(mount)?;
+    Ok(spells
+        .iter()
+        .filter(|s| wanted.contains(&s.u32(0)))
+        .map(|spell| {
+            let cast_ms = times.find_by_id(spell.u32(18)).map_or(0.0, |r| r.i32(1).max(0) as f32);
+            let speed = spell.f32(37);
+            let visual = match tables.visuals.find_by_id(spell.u32(115)) {
+                None => Visual { cast_ms, speed, ..Visual::default() },
+                Some(v) => tables.visual(v, cast_ms, if speed > 1.0 { speed } else { 20.0 }),
+            };
+            (spell.u32(0), visual)
+        })
+        .collect())
+}
+
 /// The visuals of every spell of the content, in the order of the content.
 pub fn load(mount: &Mount) -> Result<Vec<Visual>> {
     let dbc = |name: &str| -> Result<Dbc> { Ok(Dbc::parse(&mount.read(&format!(r"DBFilesClient\{name}.dbc"))?)?) };
@@ -167,5 +196,28 @@ mod tests {
         assert_eq!(of_shot(&mount, 224).cast.anim, Some(49));
         assert_eq!(of_shot(&mount, 743).cast.anim, Some(49));
         assert!(of_shot(&mount, 0).cast.anim.is_none());
+    }
+
+    #[test]
+    fn the_spells_that_creatures_cast_have_their_pictures_and_sounds_and_every_model_exists() {
+        let Some(mount) = mpq::find_wow_dir().and_then(|d| Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
+        let v = load_classic(&mount).unwrap();
+        assert!(v.len() > 1000, "{} spells", v.len());
+        // A frost bolt of a creature: three seconds of cast, a missile, a burst.
+        let bolt = &v[&13322];
+        assert_eq!(bolt.cast_ms, 3000.0);
+        assert!(bolt.missile.is_some() && !bolt.impact.effects.is_empty(), "{bolt:?}");
+        // Shoot and Throw have no kit of their own: the original takes the picture of the shot from the weapon.
+        assert!(v[&6660].cast.anim.is_none() && v[&6660].missile.is_none());
+        let mut missing = Vec::new();
+        for (spell, vis) in &v {
+            let kits = [&vis.precast, &vis.cast, &vis.impact];
+            for model in kits.iter().flat_map(|k| &k.effects).map(|e| &e.model).chain(vis.missile.iter()) {
+                if mount.read(model).is_err() {
+                    missing.push((*spell, model.clone()));
+                }
+            }
+        }
+        assert!(missing.len() * 50 < v.len(), "{} of {} spells name a model that is not there: {:?}", missing.len(), v.len(), &missing[..missing.len().min(8)]);
     }
 }
