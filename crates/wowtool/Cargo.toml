@@ -1,0 +1,13 @@
+[package]
+name = "wowtool"
+description = "Inspect WoW 1.12 game data: list/extract MPQ files, dump DBCs, convert BLPs, summarise ADTs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mpq = { path = "../mpq" }
+wowfmt = { path = "../wowfmt" }
+anyhow = { workspace = true }
+env_logger = { workspace = true }
+png = "0.17"

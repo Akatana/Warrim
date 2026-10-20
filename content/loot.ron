@@ -1,0 +1,20 @@
+// What a creature or chest drops when it dies or is opened: copper (low, high), items with a count (low, high) and a chance in percent, and `also`: the
+// tables of the original's creatures and chests (`classic_loot.ron`) that are rolled as well (their copper is added to this one's). What is listed here
+// is the game's own: the tomes, the lockpicks, and what the quests of the story ask for.
+{
+    "chest_poor": (copper: (8, 30), items: [("tome_smite", (1, 1), 100.0), ("tome_heal", (1, 1), 25.0), ("lockpick", (1, 2), 35.0)], also: ["c_chest_poor"]),
+    "chest_fine": (copper: (40, 120), items: [("lockpick", (2, 4), 60.0)]),
+    "wolf": (copper: (0, 0), items: [("tome_arcane_shot", (1, 1), 5.0)], also: ["c_wolf"]),
+    "black_wolf": (copper: (0, 0), items: [("tome_immolate", (1, 1), 4.0), ("tome_arcane_shot", (1, 1), 8.0)], also: ["c_black_wolf"]),
+    // The Dark Beacon.
+    "rat": (copper: (1, 4), items: [("tome_fireball", (1, 1), 6.0)]),
+    "boar": (copper: (0, 0), items: [("tome_wrath", (1, 1), 6.0), ("boar_meat", (1, 1), 100.0)], also: ["c_boar"]),
+    "kobold": (copper: (0, 0), items: [("tome_shadow_bolt", (1, 1), 6.0), ("abbey_candle", (1, 1), 100.0), ("lockpick", (1, 1), 10.0)], also: ["c_kobold"]),
+    "cutpurse": (copper: (0, 0), items: [("tome_heroic_strike", (1, 1), 6.0), ("lockpick", (1, 2), 35.0)], also: ["c_cutpurse"]),
+    "garrick": (copper: (40, 90), items: [("tome_eviscerate", (1, 1), 100.0), ("torn_ledger", (1, 1), 100.0), ("lockpick", (1, 3), 50.0)], also: ["c_garrick"]),
+    "gribble": (copper: (60, 130), items: [("tome_arcane_explosion", (1, 1), 100.0), ("beacon_lens", (1, 1), 100.0)], also: ["c_gribble"]),
+    // The chests of the valley (chests.ron), each with tomes to find.
+    "chest_wolfden": (copper: (40, 120), items: [("lockpick", (2, 4), 60.0), ("tome_lightning_bolt", (1, 1), 100.0), ("tome_volley", (1, 1), 50.0), ("tome_healing_wave", (1, 1), 50.0)], also: ["c_chest_wolfden"]),
+    "chest_hoard": (copper: (60, 150), items: [("lockpick", (2, 4), 60.0), ("tome_sinister_strike", (1, 1), 100.0), ("tome_thunder_clap", (1, 1), 50.0)], also: ["c_chest_hoard"]),
+    "chest_stash": (copper: (80, 200), items: [("lockpick", (2, 4), 60.0), ("tome_exorcism", (1, 1), 100.0), ("tome_healing_touch", (1, 1), 60.0)], also: ["c_chest_stash"]),
+}

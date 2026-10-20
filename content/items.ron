@@ -1,0 +1,48 @@
+// Every item of the game. `display` is a row of ItemDisplayInfo.dbc: it gives the icon, the textures painted on the
+// character (armor) and the model held in the hand (weapons and shields), so a worn item always shows on the character.
+// Ids are what other files and saves refer to; do not rename them. `buy` is what a merchant asks (copper) and `sell` what
+// one pays; an item with no `sell` cannot be sold. `quest: true` marks a quest item: it drops only while a quest being worked on still\n// wants it, says "Quest Item" in its tooltip and, like in the original, is not sold. Left out: quality 1 (common), stack 1, no stats.
+[
+    (id: "longsword", name: "Squire's Longsword", display: 12274, class: 2, sub: 7, wear: OneHand, kind: ("One-Hand", "Sword"), weapon: Some((min: 10.0, max: 14.0, speed: 2.6)), handling: "MetalLarge", buy: 450, sell: 90),
+    (id: "round_shield", name: "Round Shield", display: 2671, wear: Shield, kind: ("Off Hand", "Shield"), armor: 25, block: 3, handling: "WoodLarge", buy: 320, sell: 64),
+    (id: "worn_leather_vest", name: "Worn Leather Vest", display: 14269, quality: 2, wear: Chest, kind: ("Chest", "Leather"), armor: 18, stats: (0, 1, 1, 0, 0), buy: 120, sell: 24),
+    (id: "scuffed_boots", name: "Scuffed Boots", display: 14276, wear: Feet, kind: ("Feet", "Leather"), armor: 6, buy: 62, sell: 12),
+    (id: "blue_jerkin", name: "Blue Leather Jerkin", display: 9509, quality: 2, wear: Chest, kind: ("Chest", "Leather"), armor: 24, stats: (0, 0, 2, 0, 0), buy: 220, sell: 44),
+    (id: "green_jerkin", name: "Green Leather Jerkin", display: 12922, quality: 2, wear: Chest, kind: ("Chest", "Leather"), armor: 20, stats: (2, 0, 0, 0, 0), buy: 220, sell: 44),
+    (id: "lockpick", name: "Lockpick", display: 9660, stack: 20, buy: 25, sell: 5),
+    // Made for the game: the original's mounts ask for level 40 and a hundred gold (see the bridles of classic_items.ron, i5656 and the like).
+    (id: "riding_bridle", name: "Old Riding Bridle", display: 13108, quality: 2, class: 15, handling: "FoodGeneric", buy: 500, sell: 100, spells: [(spell: 458, trigger: 0, effects: [Mount(2404, 60)], text: "Summons and dismisses a rideable brown horse.")]),
+    (id: "hatchet", name: "Abbey Hatchet", display: 2866, class: 2, sub: 0, wear: OneHand, kind: ("One-Hand", "Axe"), weapon: Some((min: 6.0, max: 10.0, speed: 1.8)), handling: "MetalLarge", buy: 240, sell: 48),
+    (id: "ruined_pelt", name: "Ruined Pelt", display: 5253, quality: 0, stack: 20, quest: true),
+    // The Dark Beacon (see STORY_NORTHSHIRE.md): things to collect, the abbey's gear, and what the abbey's people wear.
+    (id: "boar_meat", name: "Boar Meat", display: 994, stack: 20, handling: "Meat", quest: true),
+    (id: "abbey_candle", name: "Abbey Candle", display: 1119, stack: 20, quest: true),
+    (id: "torn_ledger", name: "Torn Ledger Page", display: 7629, quest: true),
+    (id: "beacon_lens", name: "Beacon Lens", display: 4732, quality: 3, quest: true),
+    (id: "abbot_robe", name: "Abbey Robe", display: 12678, kind: ("Chest", "Cloth"), wear: Chest, armor: 4, buy: 80, sell: 16),
+    (id: "padded_tunic", name: "Padded Abbey Tunic", display: 8647, quality: 2, wear: Chest, kind: ("Chest", "Leather"), armor: 28, stats: (0, 0, 2, 0, 1), sell: 60),
+    (id: "pilgrim_boots", name: "Pilgrim Boots", display: 1981, quality: 2, wear: Feet, kind: ("Feet", "Leather"), armor: 10, stats: (0, 1, 1, 0, 0), sell: 40),
+    (id: "thorne_dagger", name: "Thorne's Dagger", display: 2635, quality: 2, class: 2, sub: 15, wear: OneHand, kind: ("One-Hand", "Dagger"), weapon: Some((min: 6.0, max: 11.0, speed: 1.6)), handling: "MetalSmall", sell: 90),
+    (id: "abbey_mace", name: "Abbey Mace", display: 1160, quality: 3, class: 2, sub: 4, wear: OneHand, kind: ("One-Hand", "Mace"), weapon: Some((min: 12.0, max: 17.0, speed: 2.7)), stats: (2, 0, 1, 0, 0), handling: "MetalLarge", sell: 220),
+    (id: "abbey_buckler", name: "Abbey Buckler", display: 2456, quality: 3, wear: Shield, kind: ("Off Hand", "Shield"), armor: 45, block: 6, stats: (0, 0, 2, 0, 0), handling: "WoodLarge", sell: 210),
+    (id: "beaconkeeper_tunic", name: "Beaconkeeper's Tunic", display: 8646, quality: 3, wear: Chest, kind: ("Chest", "Leather"), armor: 36, stats: (0, 1, 3, 0, 1), sell: 240),
+    // Spell tomes: reading one teaches the spell (if the class skill is high enough). Where they are found: loot.ron.
+    (id: "tome_heroic_strike", name: "Tome of Heroic Strike", display: 1155, quality: 1, kind: ("Tome", "Warrior"), handling: "Parchment_Paper", tome: Some("heroic_strike"), sell: 100),
+    (id: "tome_thunder_clap", name: "Tome of Thunder Clap", display: 1155, quality: 3, kind: ("Tome", "Warrior"), handling: "Parchment_Paper", tome: Some("thunder_clap"), sell: 600),
+    (id: "tome_holy_light", name: "Tome of Holy Light", display: 918, quality: 1, kind: ("Tome", "Paladin"), handling: "Parchment_Paper", tome: Some("holy_light"), sell: 100),
+    (id: "tome_exorcism", name: "Tome of Exorcism", display: 918, quality: 3, kind: ("Tome", "Paladin"), handling: "Parchment_Paper", tome: Some("exorcism"), sell: 600),
+    (id: "tome_arcane_shot", name: "Tome of Arcane Shot", display: 3426, quality: 1, kind: ("Tome", "Hunter"), handling: "Parchment_Paper", tome: Some("arcane_shot"), sell: 100),
+    (id: "tome_volley", name: "Tome of Volley", display: 3426, quality: 3, kind: ("Tome", "Hunter"), handling: "Parchment_Paper", tome: Some("volley"), sell: 600),
+    (id: "tome_sinister_strike", name: "Tome of Sinister Strike", display: 8092, quality: 1, kind: ("Tome", "Rogue"), handling: "Parchment_Paper", tome: Some("sinister_strike"), sell: 100),
+    (id: "tome_eviscerate", name: "Tome of Eviscerate", display: 8092, quality: 3, kind: ("Tome", "Rogue"), handling: "Parchment_Paper", tome: Some("eviscerate"), sell: 600),
+    (id: "tome_smite", name: "Tome of Smite", display: 1103, quality: 1, kind: ("Tome", "Priest"), handling: "Parchment_Paper", tome: Some("smite"), sell: 100),
+    (id: "tome_heal", name: "Tome of Heal", display: 1103, quality: 3, kind: ("Tome", "Priest"), handling: "Parchment_Paper", tome: Some("heal"), sell: 600),
+    (id: "tome_lightning_bolt", name: "Tome of Lightning Bolt", display: 1246, quality: 1, kind: ("Tome", "Shaman"), handling: "Parchment_Paper", tome: Some("lightning_bolt"), sell: 100),
+    (id: "tome_healing_wave", name: "Tome of Healing Wave", display: 1246, quality: 3, kind: ("Tome", "Shaman"), handling: "Parchment_Paper", tome: Some("healing_wave"), sell: 600),
+    (id: "tome_fireball", name: "Tome of Fireball", display: 1317, quality: 1, kind: ("Tome", "Mage"), handling: "Parchment_Paper", tome: Some("fireball"), sell: 100),
+    (id: "tome_arcane_explosion", name: "Tome of Arcane Explosion", display: 1317, quality: 3, kind: ("Tome", "Mage"), handling: "Parchment_Paper", tome: Some("arcane_explosion"), sell: 600),
+    (id: "tome_shadow_bolt", name: "Tome of Shadow Bolt", display: 1134, quality: 1, kind: ("Tome", "Warlock"), handling: "Parchment_Paper", tome: Some("shadow_bolt"), sell: 100),
+    (id: "tome_immolate", name: "Tome of Immolate", display: 1134, quality: 3, kind: ("Tome", "Warlock"), handling: "Parchment_Paper", tome: Some("immolate"), sell: 600),
+    (id: "tome_wrath", name: "Tome of Wrath", display: 3154, quality: 1, kind: ("Tome", "Druid"), handling: "Parchment_Paper", tome: Some("wrath"), sell: 100),
+    (id: "tome_healing_touch", name: "Tome of Healing Touch", display: 3154, quality: 3, kind: ("Tome", "Druid"), handling: "Parchment_Paper", tome: Some("healing_touch"), sell: 600),
+]

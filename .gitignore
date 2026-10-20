@@ -1,0 +1,4 @@
+target/
+re/*
+*.png
+*.pyc

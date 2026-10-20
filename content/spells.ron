@@ -1,0 +1,52 @@
+// Spells: two for each class, a basic one (`level: 1`, which asks for nothing) and a greater one whose tome (an item of items.ron with a
+// `tome`) asks for that rank of the class skill (`level`). `cost` is mana or stamina, `cooldown` seconds. The effect is `Damage` (the
+// selected creature within `range` yards), `Area` (every enemy within `radius` yards of the caster) or `Heal` (the caster); the numbers
+// grow with the rank of the class skill, which casting trains. `spell` is the row of the original's Spell.dbc whose cast time, pictures
+// (SpellVisual.dbc: what shows on the hands while it is cast, the missile, what shows where it hits) and sounds it has. Icons are names
+// in Interface\Icons.
+[
+    (id: "heroic_strike", spell: 78, name: "Heroic Strike", class: Warrior, level: 1, icon: "Ability_Rogue_Ambush", cost: Stamina(15.0), cooldown: 1.5, effect: Damage(min: 8.0, max: 14.0, range: 4.0),
+        description: "A mighty blow that hits harder than a sword's swing."),
+    (id: "thunder_clap", spell: 6343, name: "Thunder Clap", class: Warrior, level: 20, icon: "Spell_Nature_ThunderClap", cost: Stamina(30.0), cooldown: 6.0, effect: Area(min: 14.0, max: 20.0, radius: 8.0),
+        description: "Slams the ground, hurting every enemy around you."),
+
+    (id: "holy_light", spell: 635, name: "Holy Light", class: Paladin, level: 1, icon: "Spell_Holy_HolyBolt", cost: Mana(20.0), cooldown: 3.0, effect: Heal(min: 18.0, max: 26.0),
+        description: "Calls on the Light to heal your wounds."),
+    (id: "exorcism", spell: 879, name: "Exorcism", class: Paladin, level: 20, icon: "Spell_Holy_Excorcism", cost: Mana(35.0), cooldown: 6.0, effect: Damage(min: 30.0, max: 40.0, range: 25.0),
+        description: "Banishes the target with a burst of holy power."),
+
+    (id: "arcane_shot", spell: 3044, name: "Arcane Shot", class: Hunter, level: 1, icon: "Ability_ImpalingBolt", cost: Mana(15.0), cooldown: 2.0, effect: Damage(min: 10.0, max: 14.0, range: 35.0),
+        description: "A shot of magic that flies straight to the target."),
+    (id: "volley", spell: 1510, name: "Volley", class: Hunter, level: 20, icon: "Ability_UpgradeMoonGlaive", cost: Mana(40.0), cooldown: 6.0, effect: Area(min: 20.0, max: 28.0, radius: 10.0),
+        description: "Rains arrows on everything near you."),
+
+    (id: "sinister_strike", spell: 1752, name: "Sinister Strike", class: Rogue, level: 1, icon: "Spell_Shadow_RitualOfSacrifice", cost: Stamina(15.0), cooldown: 1.5, effect: Damage(min: 9.0, max: 13.0, range: 4.0),
+        description: "A quick, dirty blow."),
+    (id: "eviscerate", spell: 2098, name: "Eviscerate", class: Rogue, level: 20, icon: "Ability_Rogue_Eviscerate", cost: Stamina(35.0), cooldown: 6.0, effect: Damage(min: 40.0, max: 55.0, range: 4.0),
+        description: "A deep cut that finishes a wounded enemy."),
+
+    (id: "smite", spell: 585, name: "Smite", class: Priest, level: 1, icon: "Spell_Holy_HolySmite", cost: Mana(12.0), cooldown: 2.0, effect: Damage(min: 8.0, max: 12.0, range: 30.0),
+        description: "Strikes the target with holy fire."),
+    (id: "heal", spell: 2054, name: "Heal", class: Priest, level: 20, icon: "Spell_Holy_Heal", cost: Mana(40.0), cooldown: 4.0, effect: Heal(min: 60.0, max: 80.0),
+        description: "Heals a great wound."),
+
+    (id: "lightning_bolt", spell: 403, name: "Lightning Bolt", class: Shaman, level: 1, icon: "Spell_Nature_Lightning", cost: Mana(14.0), cooldown: 2.0, effect: Damage(min: 9.0, max: 13.0, range: 30.0),
+        description: "Hurls a bolt of lightning at the target."),
+    (id: "healing_wave", spell: 331, name: "Healing Wave", class: Shaman, level: 20, icon: "Spell_Nature_MagicImmunity", cost: Mana(35.0), cooldown: 4.0, effect: Heal(min: 45.0, max: 60.0),
+        description: "A wave of water that heals."),
+
+    (id: "fireball", spell: 133, name: "Fireball", class: Mage, level: 1, icon: "Spell_Fire_FlameBolt", cost: Mana(15.0), cooldown: 2.0, effect: Damage(min: 10.0, max: 15.0, range: 35.0),
+        description: "Hurls a fireball at the target."),
+    (id: "arcane_explosion", spell: 1449, name: "Arcane Explosion", class: Mage, level: 20, icon: "Spell_Nature_WispSplode", cost: Mana(40.0), cooldown: 6.0, effect: Area(min: 20.0, max: 28.0, radius: 8.0),
+        description: "An explosion of magic round you that hurts every enemy near."),
+
+    (id: "shadow_bolt", spell: 686, name: "Shadow Bolt", class: Warlock, level: 1, icon: "Spell_Shadow_ShadowBolt", cost: Mana(18.0), cooldown: 2.5, effect: Damage(min: 11.0, max: 16.0, range: 35.0),
+        description: "Sends a bolt of shadow at the target."),
+    (id: "immolate", spell: 348, name: "Immolate", class: Warlock, level: 20, icon: "Spell_Fire_Immolation", cost: Mana(40.0), cooldown: 6.0, effect: Damage(min: 35.0, max: 50.0, range: 30.0),
+        description: "Sets the target alight with a great burst of flame."),
+
+    (id: "wrath", spell: 5176, name: "Wrath", class: Druid, level: 1, icon: "Spell_Nature_AbolishMagic", cost: Mana(12.0), cooldown: 2.0, effect: Damage(min: 9.0, max: 12.0, range: 30.0),
+        description: "Hurls thorns of nature at the target."),
+    (id: "healing_touch", spell: 5185, name: "Healing Touch", class: Druid, level: 20, icon: "Spell_Nature_HealingTouch", cost: Mana(40.0), cooldown: 4.0, effect: Heal(min: 50.0, max: 70.0),
+        description: "Heals with the power of nature."),
+]

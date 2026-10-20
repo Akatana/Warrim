@@ -1,0 +1,50 @@
+// Kinds of creatures. `level` (default 1) sets what a kill is worth in experience. A Beast has a model, its skins (creature skin slot, texture) and a display scale; a Humanoid is a person of a race (Human, Orc, Dwarf, NightElf, Undead, Tauren, Gnome or Troll) and a sex (Male or Female) dressed in items;
+// its `look` is `(race: Orc, sex: Female, skin: 0, face: 0, hair_style: 0, hair_color: 0, beard: 0)` (race and sex may be left out: human male; what the other numbers can
+// be depends on the race and sex, the editor offers only those that exist). Left out: not hostile, health 100, respawn 5 minutes, no title, no loot, nothing to say.
+[
+    (id: "wolf", name: "Wolf", body: Beast(model: r"Creature\Wolf\Wolf.m2", skins: [(11, r"Creature\Wolf\WolfSkinTimber.blp"), (12, r"Creature\Wolf\WolfSkinTimberAlpha.blp")], scale: 0.9), hostile: true, health: 50.0, bite_damage: 8.0, loot: Some("wolf")),
+    (id: "black_wolf", name: "Black Wolf", level: 3, body: Beast(model: r"Creature\Wolf\Wolf.m2", skins: [(11, r"Creature\Wolf\WolfSkinBlack.blp"), (12, r"Creature\Wolf\WolfSkinBlackAlpha.blp")], scale: 1.0), hostile: true, health: 95.0, bite_damage: 12.0, loot: Some("black_wolf")),
+    (id: "deputy_willem", name: "Deputy Willem", title: Some("Stormwind Guard"), body: Humanoid(outfit: ["worn_leather_vest", "scuffed_boots", "longsword", "round_shield"], look: (skin: 2, face: 3, hair_style: 2, hair_color: 3, beard: 3)), gossip: Some((
+        greeting: "Greetings, $N. These are quiet days in Northshire, but keep an eye out for wolves in the valley west of here.",
+        options: [
+            (text: "What do you guard here?", action: Say("The abbey, mostly, and the road down to Goldshire. Every soldier of Stormwind starts out with a spear in some valley like this one.")),
+            (text: "Any advice for a new arrival?", action: Say("Keep your shield up when a wolf closes in, and don't run yourself out of breath. A tired fighter is a dead fighter.")),
+        ],
+    ))),
+    (id: "trader_aldric", name: "Trader Aldric", title: Some("Merchant"), body: Humanoid(outfit: ["worn_leather_vest", "scuffed_boots", "hatchet"], look: (skin: 1, face: 7, hair_style: 8, hair_color: 6, beard: 0)), gossip: Some((
+        greeting: "Looking to buy or to sell, $N? I take anything worth a copper, and I have a few good pieces besides.",
+        options: [(text: "I would like to browse your goods.", action: Vendor)],
+    )), vendor: ["lockpick", "riding_bridle", "i2384", "i2383", "i2381", "i2380", "i2379", "i2129", "i2385", "i17184", "i2134", "i2132", "i2131", "i2130", "i1194", "i2139", "i2479", "i2480", "i3111", "i4540", "i159", "i2504", "i2508", "i2512", "i2516", "i2947"]),
+    // The riding instructor teaches the two steps of the original's riding skill, at its levels and prices (90 gold, 600 gold).
+    (id: "instructor_hale", name: "Instructor Hale", title: Some("Riding Instructor"), body: Humanoid(outfit: ["worn_leather_vest", "scuffed_boots"], look: (skin: 2, face: 5, hair_style: 3, hair_color: 2, beard: 4)), gossip: Some((
+        greeting: "A horse is not a chair, $N. Come to me when you are ready to ride one properly.",
+        options: [
+            (text: "Apprentice Riding (level 40, 90g)", action: Train(skill: Riding, rank: 75, needs: 0, level: 40, cost: 900000)),
+            (text: "Journeyman Riding (level 60, 600g)", action: Train(skill: Riding, rank: 150, needs: 75, level: 60, cost: 6000000)),
+            (text: "Where do I get a mount?", action: Say("Bridles, horns and reins are sold in the cities and carried by the ones who have earned them. Ride only in the open: no horse goes through a door.")),
+        ],
+    ))),
+    // ---- The Dark Beacon (STORY_NORTHSHIRE.md): the abbey's people ...
+    (id: "abbot_hollis", name: "Abbot Hollis", title: Some("Abbot of Northshire"), body: Humanoid(outfit: ["abbot_robe", "scuffed_boots"], look: (skin: 1, face: 9, hair_style: 5, hair_color: 8, beard: 6)), gossip: Some((
+        greeting: "The Light keep you, $N. Forgive an old man's worried face: our Beacon has gone dark, and I do not know how to bear it.",
+        options: [
+            (text: "What is the Beacon?", action: Say("A lantern in the abbey's tower, with a lens ground by the founders. For two hundred years its light has guided travellers down from the hills. Shepherds set their flocks by it, merchants their journeys.")),
+            (text: "How can I help the abbey?", action: Say("Do what you can in the valley, and I will be grateful: the cellar, the vineyard, the road. And if you hear anything of the lens, come to me at once.")),
+        ],
+    ))),
+    (id: "brother_tolan", name: "Brother Tolan", title: Some("Keeper of the Cellar"), body: Humanoid(outfit: ["abbot_robe", "scuffed_boots"], look: (skin: 2, face: 4, hair_style: 1, hair_color: 3, beard: 2)), gossip: Some((
+        greeting: "Mind the steps, $N! Rats on every one of them. Two hundred years the cellar was clean, and now this.",
+        options: [(text: "Where have the rats come from?", action: Say("Out of the walls, I think, since the Beacon went out. Everything that was afraid of the light has come back to the valley. I wish I knew why it was ever afraid."))],
+    ))),
+    (id: "brother_corwin", name: "Brother Corwin", title: Some("Healer"), body: Humanoid(outfit: ["abbot_robe", "scuffed_boots"], look: (skin: 0, face: 1, hair_style: 7, hair_color: 1, beard: 0)), gossip: Some((
+        greeting: "Peace, $N. I look after the brothers' health, which is poor: bread and cabbage will not make a man strong.",
+        options: [(text: "What do the brothers need?", action: Say("Meat. A good broth would do more for them than all my prayers, and the boars in the vineyard are fat and plentiful."))],
+    ))),
+    // ... and their enemies: rats, boars, kobolds and the Redhand.
+    (id: "cellar_rat", name: "Cellar Rat", body: Beast(model: r"Creature\Rat\Rat.m2", skins: [(11, r"Creature\Rat\BrownSkin.blp")], scale: 1.4), hostile: true, health: 22.0, bite_damage: 3.0, loot: Some("rat")),
+    (id: "valley_boar", name: "Valley Boar", level: 2, body: Beast(model: r"Creature\Boar\Boar.m2", skins: [(11, r"Creature\Boar\BoarSkinBrown.blp")], scale: 0.8), hostile: true, health: 70.0, bite_damage: 8.0, loot: Some("boar")),
+    (id: "kobold_miner", name: "Kobold Miner", level: 3, body: Beast(model: r"Creature\Kobold\Kobold.m2", skins: [(11, r"Creature\Kobold\koboldskinNormal.blp")], scale: 1.0), hostile: true, health: 58.0, bite_damage: 7.0, loot: Some("kobold")),
+    (id: "foreman_gribble", name: "Foreman Gribble", title: Some("Kobold Foreman"), level: 5, body: Beast(model: r"Creature\Kobold\Kobold.m2", skins: [(11, r"Creature\Kobold\koboldskinAlbino.blp")], scale: 1.4), hostile: true, health: 170.0, bite_damage: 13.0, respawn: 900.0, loot: Some("gribble")),
+    (id: "redhand_cutpurse", name: "Redhand Cutpurse", level: 3, body: Humanoid(outfit: ["worn_leather_vest", "scuffed_boots", "hatchet"], look: (skin: 3, face: 6, hair_style: 4, hair_color: 0, beard: 5)), hostile: true, health: 80.0, bite_damage: 9.0, loot: Some("cutpurse")),
+    (id: "garrick_thorne", name: "Garrick Thorne", title: Some("Redhand Captain"), level: 5, body: Humanoid(outfit: ["blue_jerkin", "scuffed_boots", "longsword", "round_shield"], look: (skin: 1, face: 2, hair_style: 9, hair_color: 5, beard: 1)), hostile: true, health: 150.0, bite_damage: 12.0, respawn: 900.0, loot: Some("garrick")),
+]

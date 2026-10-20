@@ -1,0 +1,47 @@
+// Where creatures stand: the kind, the place in WoW coordinates (north, west) and the heading in degrees (0 = north,
+// clockwise). They stand on the ground at that place.
+[
+    // The plaza before the abbey, where the player starts: the guard, the merchant and the abbey's people. Nothing hostile
+    // within sixty yards of it.
+    (creature: "deputy_willem", at: (-8942.0, -137.0), facing: 210.0),
+    (creature: "trader_aldric", at: (-8943.0, -124.5), facing: 200.0),
+    (creature: "instructor_hale", at: (-8950.0, -130.0), facing: 150.0),
+    (creature: "abbot_hollis", at: (-8924.0, -139.0), facing: 180.0),
+    (creature: "brother_corwin", at: (-8938.0, -150.0), facing: 90.0),
+    // Behind the abbey, by the cellar door: Brother Tolan, and the rats that came out of the cellar.
+    (creature: "brother_tolan", at: (-8852.0, -141.0), facing: 270.0),
+    (creature: "cellar_rat", at: (-8838.0, -140.0), facing: 10.0),
+    (creature: "cellar_rat", at: (-8856.0, -126.0), facing: 100.0),
+    (creature: "cellar_rat", at: (-8874.0, -146.0), facing: 200.0),
+    (creature: "cellar_rat", at: (-8848.0, -158.0), facing: 300.0),
+    (creature: "cellar_rat", at: (-8866.0, -160.0), facing: 40.0),
+    // The wolf pack of the Wolf Den, in the western meadows under the hills, a hundred yards from the plaza.
+    (creature: "wolf", at: (-8915.0, -30.0), facing: 200.0),
+    (creature: "wolf", at: (-8938.0, -12.0), facing: 20.0),
+    (creature: "wolf", at: (-8948.0, -38.0), facing: 300.0),
+    (creature: "black_wolf", at: (-8920.0, -8.0), facing: 120.0),
+    (creature: "black_wolf", at: (-8955.0, -16.0), facing: 60.0),
+    // The boars in the abbey's vineyard, to the south east.
+    (creature: "valley_boar", at: (-9060.0, -310.0), facing: 20.0),
+    (creature: "valley_boar", at: (-9080.0, -335.0), facing: 120.0),
+    (creature: "valley_boar", at: (-9100.0, -355.0), facing: 250.0),
+    (creature: "valley_boar", at: (-9070.0, -370.0), facing: 340.0),
+    (creature: "valley_boar", at: (-9110.0, -320.0), facing: 70.0),
+    (creature: "valley_boar", at: (-9120.0, -385.0), facing: 190.0),
+    // ... the Redhand at the Stone Bridge, with Garrick Thorne among them ...
+    (creature: "redhand_cutpurse", at: (-8962.0, -272.0), facing: 90.0),
+    (creature: "redhand_cutpurse", at: (-8978.0, -284.0), facing: 270.0),
+    (creature: "redhand_cutpurse", at: (-8958.0, -292.0), facing: 180.0),
+    (creature: "redhand_cutpurse", at: (-8984.0, -268.0), facing: 0.0),
+    (creature: "redhand_cutpurse", at: (-8974.0, -300.0), facing: 135.0),
+    (creature: "redhand_cutpurse", at: (-8952.0, -280.0), facing: 315.0),
+    (creature: "garrick_thorne", at: (-8968.0, -282.0), facing: 90.0),
+    // ... and the kobolds of Echo Ridge Mine, Foreman Gribble at the back.
+    (creature: "kobold_miner", at: (-8712.0, -108.0), facing: 10.0),
+    (creature: "kobold_miner", at: (-8724.0, -126.0), facing: 100.0),
+    (creature: "kobold_miner", at: (-8700.0, -96.0), facing: 200.0),
+    (creature: "kobold_miner", at: (-8738.0, -110.0), facing: 300.0),
+    (creature: "kobold_miner", at: (-8714.0, -140.0), facing: 40.0),
+    (creature: "kobold_miner", at: (-8728.0, -96.0), facing: 150.0),
+    (creature: "foreman_gribble", at: (-8704.0, -121.0), facing: 180.0),
+]

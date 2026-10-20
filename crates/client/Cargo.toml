@@ -1,0 +1,28 @@
+[package]
+name = "client"
+description = "Offline single-player client that renders the original WoW 1.12 world from its data files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rsworld"
+path = "src/main.rs"
+
+[dependencies]
+mpq = { path = "../mpq" }
+wowfmt = { path = "../wowfmt" }
+glam = { workspace = true }
+bytemuck = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+wgpu = "24"
+winit = "0.30"
+pollster = "0.4"
+png = "0.17"
+rodio = { version = "0.20", default-features = false, features = ["wav", "mp3"] }
+fontdue = "0.9.4"
+roxmltree = "0.21.1"
+serde = { version = "1.0.229", features = ["derive"] }
+ron = "0.12.2"

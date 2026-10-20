@@ -1,0 +1,11 @@
+// Places worth finding, shown on the compass: a name, the place in WoW coordinates (north, west) and how close (yards) the
+// player must come to discover it. Until then the compass shows a question mark in its place. The icon is a cell of the client's POIIcons picture
+// (8 by 8, counted along the rows: 4 a building, 5 a tower, 16 ore, 41 a skull).
+[
+    (id: "wolf_den", name: "Wolf Den", at: (-8932.0, -24.0), radius: 35.0, icon: 41),
+    (id: "northshire_abbey", name: "Northshire Abbey", at: (-8897.0, -189.0), radius: 60.0, icon: 4),
+    (id: "stone_bridge", name: "Stone Bridge", at: (-8970.0, -283.0), radius: 40.0, icon: 0),
+    (id: "abbey_gate", name: "Northshire Gate", at: (-9057.0, -44.0), radius: 40.0, icon: 5),
+    (id: "echo_ridge_mine", name: "Echo Ridge Mine", at: (-8702.0, -124.0), radius: 50.0, icon: 16),
+    (id: "abbey_vineyard", name: "Abbey Vineyard", at: (-9085.0, -340.0), radius: 50.0, icon: 6),
+]

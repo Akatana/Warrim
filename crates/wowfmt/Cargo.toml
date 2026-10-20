@@ -1,0 +1,9 @@
+[package]
+name = "wowfmt"
+description = "Parsers for WoW 1.12 client file formats: DBC, BLP, ADT, WDT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }

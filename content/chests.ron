@@ -1,0 +1,11 @@
+// Chests standing in the world: the model, the place in WoW coordinates (north, west), the heading in degrees, how hard
+// the lock is (leave `lock` out for a chest that is not locked: Novice, Apprentice, Adept, Expert or Master) and the
+// drop table of what is inside by chance (`loot: "..."`, see `loot.ron`; may be left out), and what it always holds: `copper: 5`
+// and `items: [("lockpick", 1), ("linen_cloth", 3)]` (both may be left out; a chest must hold something).
+[
+    (id: "abbey_chest", model: r"World\Generic\ActiveDoodads\Chest01\Chest01.m2", at: (-8868.0, -130.0), facing: 270.0, lock: Some(Novice), loot: "chest_poor"),
+    (id: "valley_chest", model: r"World\Generic\ActiveDoodads\Chest03\Chest03.m2", at: (-8932.0, -24.0), facing: 120.0, lock: Some(Adept), loot: "chest_wolfden"),
+    // The Redhand's hoard at the bridge and the foreman's stash in the mine.
+    (id: "redhand_hoard", model: r"World\Generic\ActiveDoodads\Chest01\Chest01.m2", at: (-8966.0, -287.0), facing: 200.0, lock: Some(Adept), loot: "chest_hoard"),
+    (id: "foreman_stash", model: r"World\Generic\ActiveDoodads\Chest03\Chest03.m2", at: (-8713.0, -131.0), facing: 270.0, lock: Some(Expert), loot: "chest_stash"),
+]

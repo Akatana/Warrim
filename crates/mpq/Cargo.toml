@@ -1,0 +1,13 @@
+[package]
+name = "mpq"
+description = "Reader for Blizzard MPQ v1 archives (WoW 1.12 era) with patch-chain mounting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2 = { workspace = true }
+bzip2 = { workspace = true }
+explode = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
