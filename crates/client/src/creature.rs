@@ -42,8 +42,12 @@ pub const SWORD_REACH: f32 = 3.5;
 /// How far an arrow flies, and how straight ahead (the cosine of the angle) a creature must be for it to be hit.
 pub const ARROW_RANGE: f32 = 35.0;
 const ARROW_LINE: f32 = 0.95;
-/// Distance at which a wolf notices the player, and at which it gives up the chase, yards.
-const AGGRO_RANGE: f32 = 14.0;
+/// How far from a creature of the same level as the player he is noticed, yards; each level the creature is above him adds a yard (up to 45, at 25 levels
+/// above) and each level below takes one away, down to the 5 yards of a blow's reach (MaNGOS `Creature::GetAttackDistance`).
+const AGGRO_RANGE: f32 = 20.0;
+const AGGRO_LEAST: f32 = 5.0;
+/// The most a creature is above the player that counts.
+const AGGRO_LEVELS: i32 = 25;
 /// A creature notices a sneaking player from this share of that distance.
 const SNEAK_AGGRO: f32 = 0.35;
 /// A chase is given up when the player is this far from the creature, or the creature this far from home, yards.
@@ -131,6 +135,8 @@ impl State {
 pub struct Watch<'a> {
     pub feet: Vec3,
     pub yaw: f32,
+    /// His level: how far a creature notices him depends on it.
+    pub level: u32,
     /// Health and mana as shares of the most.
     pub health: f32,
     pub mana: f32,
@@ -140,11 +146,16 @@ pub struct Watch<'a> {
     pub sneaking: Option<f32>,
 }
 
+/// The distance a creature of `creature` level notices a player of `player` level from, yards.
+pub fn aggro_range(creature: u32, player: u32) -> f32 {
+    (AGGRO_RANGE - (player as i32 - creature as i32).max(-AGGRO_LEVELS) as f32).max(AGGRO_LEAST)
+}
+
 #[cfg(test)]
 impl Watch<'static> {
-    /// A player standing at `feet`, well and doing nothing.
+    /// A player of the first level standing at `feet`, well and doing nothing.
     pub fn at(feet: Vec3) -> Watch<'static> {
-        Watch { feet, yaw: 0.0, health: 1.0, mana: 1.0, casting: false, auras: &[], sneaking: None }
+        Watch { feet, yaw: 0.0, level: 1, health: 1.0, mana: 1.0, casting: false, auras: &[], sneaking: None }
     }
 }
 
@@ -432,11 +443,11 @@ impl Mob {
 
     /// How close this creature is to noticing a sneaking player at `target` (feet): 0 beyond its normal range, 1 once it has noticed
     /// (a sneaking player is noticed from `SNEAK_AGGRO` of the range, so the way between is what the reticle's eye shows).
-    pub fn alert(&self, target: Vec3) -> f32 {
+    pub fn alert(&self, target: Vec3, level: u32) -> f32 {
         match self.state {
             _ if !self.def.hostile || self.def.brain.calm || self.is_dead() => 0.0,
             State::Return(_) => 0.0,
-            State::Idle | State::Wander(_) => ((1.0 - flat(target - self.pos).length() / AGGRO_RANGE) / (1.0 - SNEAK_AGGRO * self.notice)).clamp(0.0, 1.0),
+            State::Idle | State::Wander(_) => ((1.0 - (target - self.pos).length() / aggro_range(self.def.level, level)) / (1.0 - SNEAK_AGGRO * self.notice)).clamp(0.0, 1.0),
             _ => 1.0,
         }
     }
@@ -777,7 +788,8 @@ impl Mob {
             }
             State::Flinch(t) => self.state = if t + dt >= FLINCH_TIME { State::Chase } else { State::Flinch(t + dt) },
             State::Idle | State::Wander(_) => {
-                if self.def.hostile && !self.def.brain.calm && dist < if self.hidden { AGGRO_RANGE * SNEAK_AGGRO * self.notice } else { AGGRO_RANGE } {
+                let noticed = aggro_range(self.def.level, watch.level) * if self.hidden { SNEAK_AGGRO * self.notice } else { 1.0 };
+                if self.def.hostile && !self.def.brain.calm && (target - self.pos).length() < noticed {
                     self.state = State::Chase;
                     self.sounds.push(Cry::Aggro);
                 } else if self.def.attackable() {
@@ -1715,8 +1727,8 @@ impl Creatures {
     }
 
     /// The most any creature is alert to the player at `feet` (see `Mob::alert`).
-    pub fn alert(&self, feet: Vec3) -> f32 {
-        self.creatures.iter().map(|c| c.mob.alert(feet)).fold(0.0, f32::max)
+    pub fn alert(&self, feet: Vec3, level: u32) -> f32 {
+        self.creatures.iter().map(|c| c.mob.alert(feet, level)).fold(0.0, f32::max)
     }
 
     /// The names floating over the living creatures near the camera: red for hostile ones, yellow for neutral ones, green for friendly ones.
@@ -1979,10 +1991,11 @@ mod tests {
 
     #[test]
     fn a_sneaking_player_is_noticed_only_from_close_by() {
-        let near_but_hidden = Vec3::new(AGGRO_RANGE * SNEAK_AGGRO + 2.0, 0.0, 0.0);
+        let range = aggro_range(content::creature("wolf").level, 1);
+        let near_but_hidden = Vec3::new(range * SNEAK_AGGRO + 2.0, 0.0, 0.0);
         let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
         wolf.hidden = true;
-        assert!(wolf.alert(Vec3::new(AGGRO_RANGE + 1.0, 0.0, 0.0)) == 0.0 && wolf.alert(near_but_hidden) > 0.0 && wolf.alert(near_but_hidden) < 1.0, "the eye opens as it comes close");
+        assert!(wolf.alert(Vec3::new(range + 1.0, 0.0, 0.0), 1) == 0.0 && wolf.alert(near_but_hidden, 1) > 0.0 && wolf.alert(near_but_hidden, 1) < 1.0, "the eye opens as it comes close");
         assert!(run(&mut wolf, 1.0, near_but_hidden).is_empty() && wolf.state == State::Idle, "not noticed while sneaking");
         wolf.hidden = false;
         run(&mut wolf, 0.1, near_but_hidden);
@@ -1990,7 +2003,7 @@ mod tests {
         // Sneaking right up to it works only so far.
         let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
         wolf.hidden = true;
-        run(&mut wolf, 0.1, Vec3::new(AGGRO_RANGE * SNEAK_AGGRO - 1.0, 0.0, 0.0));
+        run(&mut wolf, 0.1, Vec3::new(range * SNEAK_AGGRO - 1.0, 0.0, 0.0));
         assert_eq!(wolf.state, State::Chase);
     }
 
@@ -2124,5 +2137,22 @@ mod tests {
         let (ready, cast) = mob.spell_anims(10277, &SpellAnims::new());
         assert_eq!(ready, cast);
         assert_eq!(mob.spell_anims(13322, &SpellAnims::new()), (READY_SPELL, CAST_SPELL), "a spell with no kit gets the usual stances");
+    }
+
+    #[test]
+    fn how_far_a_creature_notices_the_player_grows_a_yard_for_each_level_it_is_above_him() {
+        assert_eq!(aggro_range(10, 10), 20.0);
+        assert_eq!(aggro_range(15, 10), 25.0, "five levels above: five yards more");
+        assert_eq!(aggro_range(5, 10), 15.0, "five levels below: five yards less");
+        assert_eq!(aggro_range(40, 10), 45.0, "at most 45 yards, at 25 levels above and beyond");
+        assert_eq!(aggro_range(1, 60), 5.0, "at least the reach of a blow");
+        // A black wolf (level 3) notices a level-1 player from 22 yards, not from 23.
+        let mut high = Mob::new(content::creature_index("black_wolf"), Vec3::ZERO, 0.0);
+        let level = high.def.level;
+        let at = |yards: f32| Watch { level: level - 2, ..Watch::at(Vec3::new(yards, 0.0, 0.0)) };
+        high.step(0.1, &at(aggro_range(level, level - 2) + 1.0), 0, &[], flat_ground, open);
+        assert_eq!(high.state, State::Idle);
+        high.step(0.1, &at(aggro_range(level, level - 2) - 1.0), 0, &[], flat_ground, open);
+        assert_eq!(high.state, State::Chase);
     }
 }

@@ -578,7 +578,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 if let Some(panels) = &panels {
                     wolves.set_markers(render_camera.pos, |kind| panels.marker(kind));
                 }
-                let watch = crate::creature::Watch { feet, yaw, health: player.vitals.health.fraction(), mana: 1.0, casting: false, auras: &foes.afflictions.spells(), sneaking: args.sneak.then_some(1.0) };
+                let watch = crate::creature::Watch { feet, yaw, level: 1, health: player.vitals.health.fraction(), mana: 1.0, casting: false, auras: &foes.afflictions.spells(), sneaking: args.sneak.then_some(1.0) };
                 let (acts, _) = wolves.update(1.0 / 60.0, &watch, |x, z, y| crate::collision::Collider::floor(&world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), &mut renderer, &gpu);
                 let mut effect_list: Vec<crate::foes::Effect> = acts.into_iter().flat_map(|act| foes.handle(act, feet, wolves, &mut effects, &mut renderer, &gpu)).collect();
                 effect_list.extend(foes.update(1.0 / 60.0, feet, wolves, &mut effects, &mut renderer, &gpu));
@@ -762,7 +762,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
         bar.draw(&mut renderer.ui, (w, h), &player, args.panel.iter().any(|p| p == "character"), panels.as_ref().map_or(crate::levels::Progress::new(), |p| p.progress), panels.as_ref().map_or(&[][..], |p| &p.cooldowns[..]), &|i| panels.as_ref().map_or((0, 0.0), |p| p.item_state(i)));
         if args.reticle {
             let art = crate::cursor::Cursors::load(&player_mount, &mut renderer.ui, &gpu)?;
-            art.reticle(&mut renderer.ui, (w, h), args.sneak.then(|| args.alert.unwrap_or_else(|| wolves.as_ref().map_or(0.0, |c| c.alert(feet)))));
+            art.reticle(&mut renderer.ui, (w, h), args.sneak.then(|| args.alert.unwrap_or_else(|| wolves.as_ref().map_or(0.0, |c| c.alert(feet, 1)))));
         }
         // The mouse pointer at `--cursor`, as the game would draw it over what is there.
         if let Some(pos) = args.cursor {

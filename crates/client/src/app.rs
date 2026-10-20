@@ -1242,6 +1242,7 @@ impl State {
             let watch = crate::creature::Watch {
                 feet,
                 yaw: self.camera.yaw,
+                level: self.panels.as_ref().map_or(1, |p| p.progress.level),
                 health: player.vitals.health.fraction(),
                 mana: player.vitals.mana.fraction(),
                 casting: self.caster.casting(),
@@ -1519,7 +1520,7 @@ impl State {
                 panels.draw_compass(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw);
             }
             if self.grabbed && self.lock.is_none() {
-                let alert = self.player.as_ref().is_some_and(|p| p.is_sneaking()).then(|| self.wolves.as_ref().map_or(0.0, |w| w.alert(self.camera.pos - Vec3::Y * EYE_HEIGHT)));
+                let alert = self.player.as_ref().is_some_and(|p| p.is_sneaking()).then(|| self.wolves.as_ref().map_or(0.0, |w| w.alert(self.camera.pos - Vec3::Y * EYE_HEIGHT, panels.progress.level)));
                 if let Some(cursors) = &self.cursors {
                     cursors.reticle(&mut self.renderer.ui, size, alert);
                 }
