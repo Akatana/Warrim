@@ -1,6 +1,6 @@
-# rsworld
+# Warrim
 
-An offline, single-player client written in Rust that loads the **original WoW 1.12.1 (build 5875) data files**
+Warrim is an offline, single-player client written in Rust that loads the **original WoW 1.12.1 (build 5875) data files**
 and lets you walk around the world. It is an MVP: terrain, textures, animated water, trees and props (M2 models),
 buildings and caves (WMOs), zone names and walking physics with collision work (walls, stairs, ledges, slopes, standing
 on object surfaces). There are no characters or creatures and no gameplay yet.
