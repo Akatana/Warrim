@@ -137,7 +137,7 @@ fn stand(d: &Data, sel: Sel, ground: Ground) -> Option<Prop> {
         Sel::Creature(i) => d.cur.spawns.get(i).map(|s| (s.creature.clone(), s.at, s.facing))?,
         Sel::Chest(i) => d.cur.chests.get(i).map(|c| (c.id.clone(), c.at, c.facing))?,
     };
-    Some(Prop { model: name, map: None, zone: None, pickup: None, sleep: false, at: (at.0, at.1, ground(-at.1, -at.0)?), rotation: [0.0, -facing, 0.0], scale: 1.0 })
+    Some(Prop { model: name, map: None, zone: None, pickup: None, sleep: false, physics: false, at: (at.0, at.1, ground(-at.1, -at.0)?), rotation: [0.0, -facing, 0.0], scale: 1.0 })
 }
 
 /// Put what the gizmo moved back.
@@ -854,7 +854,7 @@ impl Editor {
             (_, p) if self.open && p.placing => p.hover.and_then(|at| match p.aim {
                 Aim::Prop if placeable(&p.model) && p.mount.exists(&p.model) => {
                     let [north, west, height] = render_to_wow(at + Vec3::Y * p.lift);
-                    Some(Want::Prop(Prop { model: p.model.clone(), map: None, zone: None, pickup: None, sleep: false, at: (north, west, height), rotation: [0.0, p.turn, 0.0], scale: p.scale }))
+                    Some(Want::Prop(Prop { model: p.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (north, west, height), rotation: [0.0, p.turn, 0.0], scale: p.scale }))
                 }
                 Aim::Prop => None,
                 Aim::Chest => Some(Want::Chest(p.chest.clone(), at, p.turn.to_radians())),
@@ -908,7 +908,7 @@ impl Editor {
         let (turn, scale, lift) = (self.placer.turn, self.placer.scale, self.placer.lift);
         match self.placer.aim {
             Aim::Prop => {
-                d.cur.props.push(Prop { model: self.placer.model.clone(), map: None, zone: None, pickup: None, sleep: false, at: (north, west, height + lift), rotation: [0.0, turn, 0.0], scale });
+                d.cur.props.push(Prop { model: self.placer.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (north, west, height + lift), rotation: [0.0, turn, 0.0], scale });
                 let p = &mut self.pick[7];
                 p.selected = d.cur.props.len() - 1;
                 p.scroll = d.cur.props.len().saturating_sub(10);
@@ -1659,6 +1659,11 @@ fn props(g: &mut Gui, d: &mut Data, p: &mut Pick, placer: &mut Placer, me: Place
         g.text(x, y + 3.0, LABEL_WIDTH, "Bed", DIM);
         if g.button(x + LABEL_WIDTH, y, 120.0, if q.sleep { "Yes, sleep here" } else { "No" }) {
             q.sleep = !q.sleep;
+        }
+        y += ROW + 3.0;
+        g.text(x, y + 3.0, LABEL_WIDTH, "Physics", DIM);
+        if g.button(x + LABEL_WIDTH, y, 120.0, if q.physics { "Yes, loose" } else { "No" }) {
+            q.physics = !q.physics;
         }
         y += ROW + 3.0;
         if g.button(x, y, 150.0, "Here (where I stand)") {
@@ -2742,7 +2747,7 @@ mod tests {
         assert_eq!(Overlay::read().unwrap(), overlay);
         assert!(std::fs::read_to_string(dir.join("editor.ron")).unwrap().contains("Written by the in-game editor"));
         // The props go to their own file, which reads back as they were written.
-        let barn = Prop { model: r"World\wmo\Azeroth\Buildings\Human_Barn_Silo\barn.wmo".into(), map: None, zone: None, pickup: None, sleep: false, at: (-8915.0, -150.0, 85.0), rotation: [0.0, 90.0, 0.0], scale: 1.5 };
+        let barn = Prop { model: r"World\wmo\Azeroth\Buildings\Human_Barn_Silo\barn.wmo".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (-8915.0, -150.0, 85.0), rotation: [0.0, 90.0, 0.0], scale: 1.5 };
         content::write_props(std::slice::from_ref(&barn)).unwrap();
         let text = std::fs::read_to_string(dir.join("props.ron")).unwrap();
         assert_eq!(ron::from_str::<Vec<Prop>>(&text).unwrap(), vec![barn]);
@@ -2776,7 +2781,7 @@ mod tests {
         }
         cur.pois.push(content::Poi { id: "pup_den".into(), name: "Pup Den".into(), at: (-8900.0, -100.0), radius: 20.0, icon: 4, height: None });
         // Two props, one of them the same as the other (a copy stays a copy).
-        let barn = Prop { model: r"World\wmo\Azeroth\Buildings\Human_Barn_Silo\barn.wmo".into(), map: None, zone: None, pickup: None, sleep: false, at: (-8915.0, -150.0, 85.0), rotation: [0.0, 90.0, 0.0], scale: 1.0 };
+        let barn = Prop { model: r"World\wmo\Azeroth\Buildings\Human_Barn_Silo\barn.wmo".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (-8915.0, -150.0, 85.0), rotation: [0.0, 90.0, 0.0], scale: 1.0 };
         cur.props.extend([barn.clone(), barn]);
         let overlay = Overlay::between(&base, &cur);
         assert_eq!((overlay.props_removed.len(), overlay.props_added.len()), (0, 2));
@@ -2807,7 +2812,7 @@ mod tests {
         picked.props[0].pickup.as_mut().unwrap().item = "nothing".into();
         assert!(content::check(&picked).is_err(), "an unknown item cannot be picked up");
         // A bed is a flag that is only written when set.
-        let mut bed = Prop { model: "x.m2".into(), map: None, zone: None, pickup: None, sleep: false, at: (0.0, 0.0, 0.0), rotation: [0.0; 3], scale: 1.0 };
+        let mut bed = Prop { model: "x.m2".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (0.0, 0.0, 0.0), rotation: [0.0; 3], scale: 1.0 };
         assert!(!ron::to_string(&bed).unwrap().contains("sleep"));
         bed.sleep = true;
         let text = ron::to_string(&bed).unwrap();

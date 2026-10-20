@@ -26,7 +26,12 @@ impl State {
         let chest = self.chests.as_ref().and_then(|c| c.near(feet, OPEN_RANGE));
         let pickup = self.pickups.as_ref().zip(self.panels.as_ref()).and_then(|(p, panels)| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv)));
         let talk = self.wolves.as_ref().and_then(|w| w.talkable_near(feet, TALK_RANGE));
-        if corpse.is_none() && chest.is_none() && pickup.is_none() && near_bed(&self.beds, &self.world, feet) {
+        // Loose props are carried for as long as the key is held (let go in `input.rs`); the key repeating while one is held does nothing else.
+        if self.bodies.as_ref().is_some_and(|b| b.holding()) {
+            return;
+        }
+        let body = self.bodies.as_ref().and_then(|b| b.near(feet, crate::physics::GRAB_RANGE));
+        if corpse.is_none() && chest.is_none() && pickup.is_none() && body.is_none() && near_bed(&self.beds, &self.world, feet) {
             if let Some(panels) = &mut self.panels {
                 panels.ask_sleep();
             }
@@ -41,6 +46,8 @@ impl State {
             self.use_pickup(i);
         } else if let Some(i) = talk {
             self.talk_to(i);
+        } else if let (Some(i), Some(bodies)) = (body, &mut self.bodies) {
+            bodies.grab(i);
         }
     }
 

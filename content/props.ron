@@ -10,6 +10,7 @@
     ),
     (
         model: "World\\Generic\\Human\\Passive Doodads\\Bottles\\Bottle01.m2",
+        physics: true,
         at: (-9458.107, 64.221535, 55.98503),
         rotation: (0.0, 0.0, 0.0),
         scale: 1.0,

@@ -95,6 +95,7 @@ impl State {
         }
         let pickup_props = pickup_props();
         let pickups = Pickups::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &args.map).map_err(|e| log::warn!("no pickups: {e:#}")).ok();
+        let bodies = Bodies::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &args.map).map_err(|e| log::warn!("no physics props: {e:#}")).ok();
         let lock_art = crate::lockpick::LockArt::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no lockpicking pictures: {e:#}")).ok();
         // The pointer of the original replaces the system's, which is shown only if its pictures are missing.
         let cursors = Cursors::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no mouse pointer: {e:#}")).ok();
@@ -160,6 +161,7 @@ impl State {
             wolves,
             chests,
             pickups,
+            bodies,
             pickup_props,
             pickups_stale: false,
             beds: bed_spots(&content::get().props, &args.map),

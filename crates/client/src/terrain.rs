@@ -344,8 +344,8 @@ pub fn tile_of_prop(p: &Prop) -> TileCoord {
 
 /// Put the props of the tile among the placements of its map file, so that they are drawn, solid, lit and heard like the rest.
 fn add_props(adt: &mut Adt, props: &[Prop], coord: TileCoord, map: &str) {
-    // The pickups are drawn apart from the map (`pickups.rs`).
-    for p in props.iter().filter(|p| p.pickup.is_none() && p.map.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(map)) && tile_of_prop(p) == coord) {
+    // The pickups and the bodies of the physics are drawn apart from the map (`pickups.rs`, `physics.rs`).
+    for p in props.iter().filter(|p| p.pickup.is_none() && !p.physics &&p.map.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(map)) && tile_of_prop(p) == coord) {
         // The map files measure from the north-west corner of the map: render space shifted by half the map's width.
         let at = crate::coords::wow_to_render([p.at.0, p.at.1, p.at.2]);
         let position = [at.x + 32.0 * TILE_SIZE, at.y, at.z + 32.0 * TILE_SIZE];
@@ -749,7 +749,7 @@ mod tests {
     fn a_prop_is_placed_by_the_tile_that_holds_it_and_by_no_other() {
         let Some(mount) = mpq::find_wow_dir().and_then(|d| Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
         let model = r"World\Generic\PassiveDoodads\Lights\CandelabraTallWall01.m2";
-        let prop = Prop { model: model.into(), map: None, zone: None, pickup: None, sleep: false, at: (-8905.0, -192.0, 90.0), rotation: [0.0, 45.0, 0.0], scale: 1.0 };
+        let prop = Prop { model: model.into(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (-8905.0, -192.0, 90.0), rotation: [0.0, 45.0, 0.0], scale: 1.0 };
         assert_eq!(tile_of_prop(&prop), (32, 48));
         let (models, cache) = (ModelCache::default(), TextureCache::default());
         let plain = load_tile(&mount, &cache, &models, "Azeroth", (32, 48), &[]).unwrap();

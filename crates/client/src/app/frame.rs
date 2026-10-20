@@ -121,6 +121,11 @@ impl State {
             let world = &self.world;
             pickups.update(dt, |x, z| world.height_at(x, z), &mut self.renderer);
         }
+        if let Some(bodies) = &mut self.bodies {
+            let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
+            let forward = Vec3::new(self.camera.yaw.sin(), 0.0, -self.camera.yaw.cos());
+            bodies.update(dt, feet, forward, &self.world, &mut self.renderer);
+        }
         self.step_lock(dt);
         (self.pointer, self.hover) = {
             let (kind, hover) = self.cursor_context(&render_camera, size);
@@ -421,12 +426,14 @@ impl State {
                 let chest = self.chests.as_ref().and_then(|c| Some(c.lock(c.near(feet, OPEN_RANGE)?).is_some()));
                 let pickup = self.pickups.as_ref().is_some_and(|p| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv)).is_some());
                 let bed = near_bed(&self.beds, &self.world, feet);
+                let body = self.bodies.as_ref().is_some_and(|b| b.near(feet, crate::physics::GRAB_RANGE).is_some());
                 self.hint = match (panels.any_open() || self.lock.is_some(), wolves.lootable_near(feet, LOOT_RANGE), wolves.talkable_near(feet, TALK_RANGE), chest) {
                     (true, ..) => None,
                     (_, Some(_), ..) => Some("Press E to loot"),
                     (_, None, _, Some(true)) => Some("Press E to pick the lock"),
                     (_, None, _, Some(false)) => Some("Press E to open"),
                     (_, None, _, None) if pickup => Some("Press E to pick up"),
+                    (_, None, _, None) if body => Some("Hold E to pick up"),
                     (_, None, _, None) if bed => Some("Press E to sleep"),
                     (_, None, Some(_), None) => Some("Press E to talk"),
                     _ => None,
@@ -600,8 +607,8 @@ impl State {
                         },
                         crate::editor::Action::Apply => self.apply = true,
                         crate::editor::Action::Props(props) => {
-                            // Those to pick up are drawn by `pickups`, made again at the start of the next frame when they changed.
-                            let pickups: Vec<content::Prop> = props.iter().filter(|p| p.pickup.is_some()).cloned().collect();
+                            // Those to pick up and those with physics are drawn by `pickups` and `bodies`, made again at the start of the next frame when they changed.
+                            let pickups: Vec<content::Prop> = props.iter().filter(|p| p.pickup.is_some() || p.physics).cloned().collect();
                             if pickups != self.pickup_props {
                                 (self.pickup_props, self.pickups_stale) = (pickups, true);
                             }

@@ -26,3 +26,4 @@ fontdue = "0.9.4"
 roxmltree = "0.21.1"
 serde = { version = "1.0.229", features = ["derive"] }
 ron = "0.12.2"
+rapier3d = "0.36"

@@ -231,6 +231,9 @@ pub struct Prop {
     /// A bed: using it asks until what hour to sleep, and the sleeper wakes fully healed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sleep: bool,
+    /// Loose clutter (a bottle, a mug): it is drawn apart from the map, falls, is pushed by the player who walks into it and is carried while the interact key is held.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub physics: bool,
     pub at: (f32, f32, f32),
     pub rotation: [f32; 3],
     pub scale: f32,

@@ -30,6 +30,7 @@ mod loading;
 mod headless;
 mod models;
 mod particles;
+mod physics;
 mod pickups;
 mod preview;
 mod propedit;

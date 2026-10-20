@@ -2,6 +2,7 @@
 
 use crate::chest::{Chests, OPEN_RANGE};
 use crate::cursor::{Cursors, Hover, Kind};
+use crate::physics::Bodies;
 use crate::pickups::Pickups;
 use crate::loading::{Loading, Stage};
 use crate::lockpick::{Event, Lockpick};
@@ -109,9 +110,9 @@ fn near_bed(beds: &[Vec3], world: &World, feet: Vec3) -> bool {
     world.bed_near(feet, BED_RANGE, BED_HEIGHT) || beds.iter().any(|b| (b.x - feet.x).hypot(b.z - feet.z) <= BED_RANGE && (b.y - feet.y).abs() < BED_HEIGHT)
 }
 
-/// The props of the content that are picked up.
+/// The props of the content that are drawn apart from the map: those picked up and those with physics.
 fn pickup_props() -> Vec<content::Prop> {
-    content::get().props.iter().filter(|p| p.pickup.is_some()).cloned().collect()
+    content::get().props.iter().filter(|p| p.pickup.is_some() || p.physics).cloned().collect()
 }
 
 /// The creatures of `content/spawns.ron`: (kind, feet position in render space, heading in radians, yards it strolls).
@@ -140,7 +141,9 @@ struct State {
     chests: Option<Chests>,
     /// The props that quests send the player to pick up, and the map they are in.
     pickups: Option<Pickups>,
-    /// The props that are picked up (the world's props change in the editor), and whether `pickups` is to be made again from them.
+    /// The loose props with physics, pushed and carried by the player.
+    bodies: Option<Bodies>,
+    /// The props that are picked up or have physics (the world's props change in the editor), and whether `pickups` and `bodies` are to be made again from them.
     pickup_props: Vec<content::Prop>,
     pickups_stale: bool,
     /// Where the beds are (render space): the props flagged `sleep`.

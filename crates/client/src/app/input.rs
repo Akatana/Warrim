@@ -106,6 +106,7 @@ impl State {
             }
             KeyCode::ShiftLeft | KeyCode::ShiftRight => self.input.fast = pressed,
             KeyCode::KeyE if pressed => self.interact(),
+            KeyCode::KeyE => self.bodies.iter_mut().for_each(|b| b.release()),
             KeyCode::Tab if pressed => {
                 // The nearest enemy ahead; again, the next.
                 let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;

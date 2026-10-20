@@ -68,6 +68,9 @@ impl State {
         if let Some(old) = self.pickups.take() {
             old.retire(&mut self.renderer);
         }
+        if let Some(old) = self.bodies.take() {
+            old.retire(&mut self.renderer);
+        }
         (self.lock, self.hover, self.hint, self.cast_request) = (None, None, None, None);
         if let Some(panels) = &mut self.panels {
             panels.forget_world();
@@ -93,11 +96,15 @@ impl State {
         Ok(())
     }
 
-    /// Put the props to pick up in the world, in place of those there were (the props changed).
+    /// Put the props to pick up and those with physics in the world, in place of those there were (the props changed).
     pub(super) fn load_pickups(&mut self) {
         if let Some(old) = self.pickups.take() {
             old.retire(&mut self.renderer);
         }
+        if let Some(old) = self.bodies.take() {
+            old.retire(&mut self.renderer);
+        }
+        self.bodies = Bodies::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu, &self.pickup_props, &self.map).map_err(|e| log::warn!("no physics props: {e:#}")).ok();
         self.pickups = Pickups::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu, &self.pickup_props, &self.map).map_err(|e| log::warn!("no pickups: {e:#}")).ok();
     }
 }
