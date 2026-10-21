@@ -12,6 +12,12 @@ EFFECT, DIE, DICE, BASE, RADIUS, AURA, AMPLITUDE, CHAIN = 61, 64, 67, 76, 88, 91
 NAME, DESCRIPTION, AURA_TEXT = 120, 138, 147
 
 
+# What a worn item's spell may do, by aura (`Equip(aura, misc, amount)` in the items): 13 damage of the schools of `misc`, 135 healing, 99 and 124 attack
+# power (melee, ranged), 102 131 and 180 the same and the damage of spells against the types of creatures of `misc`, 52 and 71 crit (melee and ranged, spells), 54 and 55 hit (weapons, spells), 49 dodge, 47 parry, 51 block, 158 block value,
+# 85 mana and 161 health every 5 seconds, 138 and 141 melee and ranged attack speed in percent, 31 the running speed in percent.
+EQUIPPED = {13, 135, 99, 124, 52, 71, 54, 55, 49, 47, 51, 158, 85, 161, 138, 141, 31, 102, 131, 180}
+
+
 def seconds_text(ms):
     s = ms / 1000.0
     if s < 60:
@@ -82,6 +88,13 @@ class Spells:
                 out.append("Boost(5, %d, %s)" % (s.i32(row, BASE + n - 1) + 1, repr(float(max(dur, 0)))))
             elif effect == 6 and aura == 34:
                 out.append("Boost(6, %d, %s)" % (s.i32(row, BASE + n - 1) + 1, repr(float(max(dur, 0)))))
+            elif effect == 6 and aura == 22 and dur <= 0 and misc not in (0, 1):
+                out.append("Equip(22, %d, %d)" % (misc, s.i32(row, BASE + n - 1) + 1))
+            elif effect == 6 and aura == 8 and dur <= 0 and s.u32(row, AMPLITUDE + n - 1):
+                # Health every so often while it is worn: stored as health every 5 seconds (aura 8, misc 0).
+                out.append("Equip(161, 0, %d)" % round((s.i32(row, BASE + n - 1) + 1) * 5000.0 / s.u32(row, AMPLITUDE + n - 1)))
+            elif effect == 6 and aura in EQUIPPED and dur <= 0:
+                out.append("Equip(%d, %d, %d)" % (aura, misc, s.i32(row, BASE + n - 1) + 1))
             elif effect == 6 and aura == 78 and misc in self.steeds:
                 # Aura 32 (mounted speed) of the same spell is the percent of the running speed that the steed adds.
                 speed = max([s.i32(row, BASE + m) + 1 for m in range(3) if s.u32(row, 61 + m) == 6 and s.u32(row, AURA + m) == 32] or [0])

@@ -31,7 +31,9 @@ mod headless;
 mod models;
 mod particles;
 mod physics;
+mod ragdoll;
 mod pickups;
+mod procs;
 mod preview;
 mod propedit;
 mod lockpick;
@@ -110,7 +112,7 @@ USAGE: rsworld [options]
   --cinema <race>[,s]  headless: the fly-by of this race's introduction, s seconds into it
   --glue             headless, with --show: the frames come from the screens before the game (e.g. CharacterCreateFrame)
   --glue-screen <select|create>  headless: the character list or the creation, with --clicks x,y;x,y on it, --glue-type text for the name, --glue-dir for the folder of characters
-  --panel <names>    headless, with --view: open the character sheet and/or backpack (character,bag,loot,gossip,trainer,merchant,quest,quest-progress,quest-reward,tracker,log,abandon,taken,ready,lockpick; error and hint preview the messages)
+  --panel <names>    headless, with --view: open the character sheet and/or backpack (character,bag,loot,gossip,trainer,merchant,quest,quest-progress,quest-reward,tracker,log,abandon,taken,ready,lockpick; error and hint preview the messages; breath the breath bar)
   --clicks <x,y;x,y>  headless: left-click these pixel positions on the open panels, in order
   --equip <slots>    headless: wear the items in these backpack slots first (0-based, e.g. 1,2)
   --cursor <x,y>     headless: the mouse position in pixels for tooltips

@@ -20,6 +20,17 @@ pub const WALK_BACK: u16 = 13;
 pub const ATTACK_1H: u16 = 17;
 /// The swing of a heavy attack: the two-handed one.
 pub const ATTACK_2H: u16 = 18;
+/// The punch, the looser swing of staves and polearms, and the thrusts of daggers (one hand) and spears (two).
+pub const ATTACK_UNARMED: u16 = 16;
+pub const ATTACK_2HL: u16 = 19;
+pub const ATTACK_1H_PIERCE: u16 = 111;
+pub const ATTACK_2HL_PIERCE: u16 = 112;
+/// The blow of the off hand, and its thrust.
+pub const ATTACK_OFF: u16 = 109;
+pub const ATTACK_OFF_PIERCE: u16 = 110;
+/// Raising the weapon against a blow: the parry of each stance is its ready animation minus 5 (25 unarmed ... 28 two-handed loose); and the dodge.
+pub const PARRY_OFFSET: u16 = 5;
+pub const DODGE: u16 = 30;
 /// Drawing a bow and loosing it, and the same with a gun.
 pub const ATTACK_BOW: u16 = 46;
 pub const ATTACK_RIFLE: u16 = 49;
@@ -28,6 +39,7 @@ pub const DRAW_SHARE: f32 = 0.6;
 /// Casting a spell at a target, and all around.
 pub const SPELL_CAST_DIRECTED: u16 = 53;
 pub const SPELL_CAST_OMNI: u16 = 54;
+pub const READY_UNARMED: u16 = 25;
 pub const READY_1H: u16 = 26;
 pub const SHIELD_BLOCK: u16 = 24;
 pub const JUMP_START: u16 = 37;
@@ -48,8 +60,8 @@ pub const HIP_SHEATH: u16 = 90;
 /// The shield block animation raises the shield in its first 350 ms, keeps it up until about 650 ms and then
 /// lowers it. While the button is held it stays at this time, with the shield fully up.
 const BLOCK_HOLD_MS: f32 = 400.0;
-/// Seconds the combat-ready stance lasts after a swing.
-const COMBAT_SECONDS: f32 = 6.0;
+/// Seconds the combat-ready stance lasts after a swing (short: the player should relax soon after the fight ends).
+const COMBAT_SECONDS: f32 = 1.0;
 
 /// What the movement code tells the animator about this frame.
 #[derive(Clone, Copy, Default, Debug)]
@@ -71,6 +83,8 @@ pub struct Motion {
     pub mounted: bool,
     /// In the water, off the bottom: the swimming animations replace the walking ones.
     pub swimming: bool,
+    /// An animation held while it stands still (a creature's state emote: chopping wood).
+    pub emote: Option<u16>,
 }
 
 pub(crate) struct Rng(pub(crate) u32);
@@ -96,7 +110,7 @@ fn smoothstep(t: f32) -> f32 {
 /// Whether the animation repeats until the state changes.
 fn looping(id: u16) -> bool {
     // The last four are the creatures' death, combat wound and unarmed attack (the wolf's bite).
-    !matches!(id, JUMP_START | JUMP_END | ATTACK_1H | ATTACK_2H | ATTACK_BOW | ATTACK_RIFLE | SPELL_CAST_DIRECTED | SPELL_CAST_OMNI | SHIELD_BLOCK | HIP_SHEATH | 89 | 1 | 9 | 16 | 57 | 113 | 181)
+    !matches!(id, JUMP_START | JUMP_END | ATTACK_1H | ATTACK_2H | ATTACK_UNARMED | ATTACK_2HL | ATTACK_1H_PIERCE | ATTACK_2HL_PIERCE | ATTACK_OFF | ATTACK_OFF_PIERCE | DODGE | 20..=23 | ATTACK_BOW | ATTACK_RIFLE | SPELL_CAST_DIRECTED | SPELL_CAST_OMNI | SHIELD_BLOCK | HIP_SHEATH | 89 | 1 | 9 | 57 | 113 | 181)
 }
 
 /// Walking and running step in the same rhythm, so a switch between them keeps the stride's phase.
@@ -264,6 +278,10 @@ pub struct Animator {
     block_held: bool,
     /// Seconds of combat-ready stance left.
     combat: f32,
+    /// The animations of the weapon held: the light swing, the heavy swing and the ready stance.
+    light: u16,
+    heavy: u16,
+    ready: u16,
 }
 
 impl Animator {
@@ -293,12 +311,31 @@ impl Animator {
             blocking: false,
             block_held: false,
             combat: 0.0,
+            light: ATTACK_1H,
+            heavy: ATTACK_2H,
+            ready: READY_1H,
         }
+    }
+
+    /// Take the swings and the stance of the weapon held; one the model lacks falls back to the one-handed animation.
+    pub fn set_poses(&mut self, m2: &M2, light: u16, heavy: u16, ready: u16) {
+        let has = |id: u16, or: u16| if m2.sequences.iter().any(|q| q.id == id) { id } else { or };
+        (self.light, self.heavy, self.ready) = (has(light, ATTACK_1H), has(heavy, ATTACK_2H), has(ready, READY_1H));
+    }
+
+    /// The parry animation of the stance, if the model has it.
+    pub fn parry(&self, m2: &M2) -> Option<u16> {
+        Some(self.ready - PARRY_OFFSET).filter(|&id| m2.sequences.iter().any(|q| q.id == id))
+    }
+
+    /// Start a heavy swing lasting `seconds`.
+    pub fn start_heavy(&mut self, m2: &M2, seconds: f32) {
+        self.start_upper(m2, self.heavy, seconds);
     }
 
     /// Start a sword swing lasting `seconds`: a random one of the attack animations, on the upper body.
     pub fn start_attack(&mut self, m2: &M2, seconds: f32) {
-        self.start_upper(m2, ATTACK_1H, seconds);
+        self.start_upper(m2, self.light, seconds);
     }
 
     /// Play a one-shot animation `id` on the upper body, lasting `seconds`.
@@ -339,8 +376,7 @@ impl Animator {
         self.blocking = on;
     }
 
-    /// Whether a swing is playing.
-    #[cfg(test)]
+    /// Whether a swing (or another one-shot on the upper body) is playing.
     pub fn attacking(&self) -> bool {
         self.attacking
     }
@@ -410,6 +446,8 @@ impl Animator {
             STEALTH_STAND
         } else if self.turn_hold > 0.0 {
             if self.turn_dir > 0.0 { SHUFFLE_RIGHT } else { SHUFFLE_LEFT }
+        } else if let Some(emote) = m.emote {
+            emote
         } else {
             STAND
         };
@@ -446,7 +484,7 @@ impl Animator {
         } else {
             self.combat = if m.mounted { 0.0 } else { (self.combat - dt).max(0.0) };
             if self.combat > 0.0 && !m.airborne && !m.swimming {
-                self.upper.request(m2, READY_1H, vary, &mut self.rng);
+                self.upper.request(m2, self.ready, vary, &mut self.rng);
                 self.upper.advance(m2, dt * 1000.0, 1.0, vary, &mut self.rng);
             } else {
                 self.upper.follow(m2, &self.body);
@@ -481,7 +519,7 @@ mod tests {
         }
     }
 
-    const WALKING: Motion = Motion { speed: 2.5, forward_speed: 2.5, vertical_speed: 0.0, yaw_rate: 0.0, airborne: false, sneaking: false, mounted: false, swimming: false, side_speed: 0.0 };
+    const WALKING: Motion = Motion { speed: 2.5, forward_speed: 2.5, vertical_speed: 0.0, yaw_rate: 0.0, airborne: false, sneaking: false, mounted: false, swimming: false, side_speed: 0.0, emote: None };
 
     #[test]
     fn changing_animation_fades_over_the_blend_time() {
@@ -655,6 +693,26 @@ mod tests {
         a.start_upper(&m2, ATTACK_2H, 1.1);
         run(&mut a, &m2, 1.3, Motion::default());
         assert!(!a.attacking(), "the heavy swing keeps repeating");
+    }
+
+    #[test]
+    fn every_weapon_pose_plays_once_and_ends_and_a_missing_one_falls_back() {
+        let Some(m2) = human() else { return eprintln!("skipped: no game data") };
+        for (light, ready) in [(ATTACK_UNARMED, READY_UNARMED), (ATTACK_1H_PIERCE, READY_1H), (ATTACK_2HL, READY_1H + 2), (ATTACK_2HL_PIERCE, READY_1H + 2)] {
+            let mut a = Animator::new(&m2, 1);
+            a.set_poses(&m2, light, light, ready);
+            assert_eq!((a.light, a.ready), (light, ready), "the model lacks it");
+            assert!(a.parry(&m2).is_some(), "no parry for {ready}");
+            a.start_attack(&m2, 0.8);
+            run(&mut a, &m2, 1.0, Motion::default());
+            assert!(!a.attacking(), "{light} keeps repeating");
+        }
+        let mut a = Animator::new(&m2, 1);
+        a.set_poses(&m2, 9999, 9999, 9999);
+        assert_eq!((a.light, a.heavy, a.ready), (ATTACK_1H, ATTACK_2H, READY_1H));
+        a.start_upper(&m2, DODGE, 0.5);
+        run(&mut a, &m2, 0.7, Motion::default());
+        assert!(!a.attacking(), "the dodge keeps repeating");
     }
 
     #[test]

@@ -197,88 +197,79 @@ mod tests {
     use super::*;
     use crate::items::Stack;
 
+    /// Deputy Willem, who sends new arrivals to Marshal McBride.
     fn willem() -> usize {
-        content::creature_index("deputy_willem")
+        content::creature_index("c823")
     }
 
     #[test]
     fn a_quest_is_offered_taken_progressed_completed_and_turned_in_with_its_reward() {
-        let (wolves, word) = (content::quest_index("wolves_in_the_valley"), content::quest_index("a_word_with_the_trader"));
+        let (threat, kobolds) = (content::quest_index("q783"), content::quest_index("q7"));
+        let (mcbride, vermin) = (content::creature_index("c197"), content::creature_index("c6"));
         let mut log = QuestLog::default();
         let mut inv = Inventory::new();
         // Only the first quest of the chain is offered, and the giver shows the "!".
-        assert_eq!(log.offered_by(willem()), vec![wolves]);
+        assert_eq!(log.offered_by(willem()), vec![threat]);
         assert_eq!(log.marker(willem(), &inv), Some(Marker::Available));
-        assert!(log.accept(wolves) && !log.accept(wolves), "a quest is taken once");
-        // Taken but not done: nothing more to give, and the grey "?" at the one who takes it back.
-        assert_eq!((log.offered_by(willem()), log.marker(willem(), &inv)), (vec![], Some(Marker::Incomplete)));
-        assert_eq!(log.marker(content::creature_index("trader_aldric"), &inv), None);
-        // Two kills and a piece of meat are needed; a kill of another kind or too many kills change nothing.
-        assert!(!log.complete(wolves, &inv));
-        assert_eq!(log.killed(content::creature_index("deputy_willem")), vec![]);
-        let wolf = content::creature_index("wolf");
-        assert_eq!(log.killed(wolf), vec![Progress { quest: wolves, goal: 0, have: 1, need: 2 }]);
-        assert_eq!(log.killed(wolf).len(), 1);
-        assert!(log.killed(wolf).is_empty(), "the goal is met: more kills do not count");
-        assert!(!log.complete(wolves, &inv), "the meat is still missing");
-        let meat = crate::items::find("tough_wolf_meat");
-        assert!(inv.add(Stack { item: meat, count: 3 }));
-        assert!(log.complete(wolves, &inv) && log.marker(willem(), &inv) == Some(Marker::Complete));
-        // The turn in takes one meat (not all), pays copper and gives the linen.
-        let linen = crate::items::find("linen_cloth");
-        let (linen_before, money) = (inv.count(linen), inv.money);
-        // One of two rewards is chosen, and only the chosen one is given.
-        assert_eq!(log.turn_in(wolves, &mut inv, Some(1)), Ok(()));
-        assert_eq!((inv.count(meat), inv.count(linen), inv.money), (2, linen_before + 2, money + 100));
-        // Of the two (the original's rewards of Wolves Across the Border) the second was chosen: only it is given.
-        assert_eq!((inv.count(crate::items::find("i80")), inv.count(crate::items::find("i6070"))), (0, 1));
-        assert!(log.active.is_empty() && log.done == vec![wolves]);
-        // The next one of the chain is offered now; it is taken to somebody else.
-        assert_eq!(log.offered_by(willem()), vec![word]);
-        assert!(log.accept(word));
-        let aldric = content::creature_index("trader_aldric");
-        assert_eq!(log.taken_by(aldric, &inv), vec![(word, true)], "a quest without goals is done as soon as it is taken");
-        assert_eq!(log.marker(aldric, &inv), Some(Marker::Complete));
+        assert!(log.accept(threat) && !log.accept(threat), "a quest is taken once");
+        // Taken: nothing more to give, no grey "?" at the one who gave it, and a quest without goals is done as soon as it is taken, at the one who takes it back.
+        assert_eq!((log.offered_by(willem()), log.marker(willem(), &inv)), (vec![], None));
+        assert_eq!(log.taken_by(mcbride, &inv), vec![(threat, true)]);
+        assert_eq!(log.marker(mcbride, &inv), Some(Marker::Complete));
+        assert_eq!(log.turn_in(threat, &mut inv, None), Ok(()));
+        // The next ones are offered now: the marshal's first task, and Willem's others.
+        assert_eq!(log.offered_by(mcbride), vec![kobolds]);
+        assert!(log.offered_by(willem()).len() >= 2 && !log.offered_by(willem()).contains(&threat));
+        assert!(log.accept(kobolds));
+        assert_eq!(log.marker(mcbride, &inv), Some(Marker::Incomplete));
+        // Ten kobolds are needed; a kill of another kind or too many kills change nothing.
+        assert!(!log.complete(kobolds, &inv));
+        assert_eq!(log.killed(willem()), vec![]);
+        for have in 1..=10 {
+            assert_eq!(log.killed(vermin), vec![Progress { quest: kobolds, goal: 0, have, need: 10 }]);
+        }
+        assert!(log.killed(vermin).is_empty(), "the goal is met: more kills do not count");
+        assert!(log.complete(kobolds, &inv) && log.marker(mcbride, &inv) == Some(Marker::Complete));
+        let money = inv.money;
+        assert_eq!(log.turn_in(kobolds, &mut inv, None), Ok(()));
+        assert_eq!(inv.money, money + 25);
+        assert!(log.active.is_empty() && log.done == vec![threat, kobolds]);
     }
 
     #[test]
     fn a_turn_in_with_a_full_pack_grows_it_and_abandoning_gives_the_quest_back() {
-        let wolves = content::quest_index("wolves_in_the_valley");
-        let (wolf, meat) = (content::creature_index("wolf"), crate::items::find("tough_wolf_meat"));
+        let (threat, meat_quest) = (content::quest_index("q783"), content::quest_index("q33"));
+        let meat = crate::items::find("tough_wolf_meat");
         let mut log = QuestLog::default();
-        log.accept(wolves);
-        log.killed(wolf);
-        log.killed(wolf);
-        // A full pack whose meat stack keeps its slot when one is taken: the jerkin and the linen go in a new row.
+        log.done.extend(["q783", "q5261"].map(content::quest_index));
+        assert!(log.accept(meat_quest));
+        // A full pack whose meat stack keeps its slot when eight are taken: the shoes go in a new row.
         let mut inv = Inventory::new();
         inv.bag = vec![Some(Stack { item: crate::items::find("hearthstone"), count: 1 }); crate::items::BACKPACK_SIZE];
-        inv.bag[15] = Some(Stack { item: meat, count: 3 });
-        assert_eq!(log.turn_in(wolves, &mut inv, Some(0)), Ok(()));
-        assert_eq!((inv.count(crate::items::find("i80")), inv.count(crate::items::find("linen_cloth"))), (1, 2));
-        assert!(inv.bag.len() > crate::items::BACKPACK_SIZE && log.done == vec![wolves]);
+        inv.bag[15] = Some(Stack { item: meat, count: 10 });
+        assert_eq!(log.turn_in(meat_quest, &mut inv, Some(0)), Ok(()));
+        assert_eq!((inv.count(crate::items::find("i80")), inv.count(meat)), (1, 2));
+        assert!(inv.bag.len() > crate::items::BACKPACK_SIZE && log.done.contains(&meat_quest));
         // Abandoning gives a quest back.
         let mut log = QuestLog::default();
-        assert!(log.accept(wolves));
-        assert_eq!(log.tracked, Some(wolves));
-        log.abandon(wolves);
+        assert!(log.accept(threat));
+        assert_eq!(log.tracked, Some(threat));
+        log.abandon(threat);
         assert_eq!(log.tracked, None);
-        assert_eq!(log.offered_by(willem()), vec![wolves]);
+        assert_eq!(log.offered_by(willem()), vec![threat]);
     }
 
     #[test]
     fn the_tracked_quest_leads_to_the_creatures_of_its_open_goal_and_then_to_the_turn_in() {
-        let wolves = content::quest_index("wolves_in_the_valley");
-        let (wolf, willem) = (content::creature_index("wolf"), content::creature_index("deputy_willem"));
+        let meat_quest = content::quest_index("q33");
+        let (wolf, eagan) = (content::creature_index("c299"), content::creature_index("c196"));
         let mut log = QuestLog::default();
         let mut inv = Inventory::new();
-        log.accept(wolves);
-        assert_eq!(log.lead(wolves, &inv), Lead { kinds: vec![wolf], item: None, icon: Icon::Skull }, "wolves first");
-        log.killed(wolf);
-        log.killed(wolf);
+        log.accept(meat_quest);
         let meat = crate::items::find("tough_wolf_meat");
-        let lead = log.lead(wolves, &inv);
-        assert!(lead.kinds.contains(&wolf) && lead.item == Some(meat) && lead.icon == Icon::Skull, "then whatever drops the meat, or holds it in a chest");
-        inv.add(Stack { item: meat, count: 3 });
-        assert_eq!(log.lead(wolves, &inv), Lead { kinds: vec![willem], item: None, icon: Icon::TurnIn }, "then the turn in");
+        let lead = log.lead(meat_quest, &inv);
+        assert!(lead.kinds.contains(&wolf) && lead.item == Some(meat) && lead.icon == Icon::Skull, "whatever drops the meat, or holds it in a chest");
+        inv.add(Stack { item: meat, count: 8 });
+        assert_eq!(log.lead(meat_quest, &inv), Lead { kinds: vec![eagan], item: None, icon: Icon::TurnIn }, "then the turn in");
     }
 }

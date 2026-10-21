@@ -441,15 +441,12 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 panels.progress = crate::levels::Progress { level, xp: args.xp };
             }
             // A quest taken ("taken": the grey mark over its giver) or ready to turn in ("ready": the yellow one).
-            let wolves_quest = crate::content::quest_index("wolves_in_the_valley");
+            let wolves_quest = crate::content::quest_index("q33");
             if args.panel.iter().any(|p| p == "taken" || p == "ready") {
                 panels.quests.accept(wolves_quest);
             }
             if args.panel.iter().any(|p| p == "ready") {
-                let wolf = crate::content::creature_index("wolf");
-                panels.quests.killed(wolf);
-                panels.quests.killed(wolf);
-                panels.inv.add(crate::items::Stack { item: crate::items::find("tough_wolf_meat"), count: 1 });
+                panels.inv.add(crate::items::Stack { item: crate::items::find("tough_wolf_meat"), count: 8 });
             }
             panels.refresh();
             player.set_equipment(&mut renderer, &gpu, &panels.inv.equipment, &panels.stats);
@@ -467,7 +464,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             spawns.extend([(wolf, feet + ahead * 4.0 + aside * 1.5, yaw + std::f32::consts::PI, 5.0), (wolf, feet + ahead * 30.0, yaw, 5.0)]);
         }
         if args.spawns {
-            spawns.extend(crate::content::get().spawns.iter().map(|s| (crate::content::creature_index(&s.creature), crate::coords::wow_to_render([s.at.0, s.at.1, 0.0]), s.facing.to_radians(), s.wander)));
+            spawns.extend(crate::content::get().spawns.iter().map(|s| (crate::content::creature_index(&s.creature), crate::coords::wow_to_render([s.at.0, s.at.1, s.height.unwrap_or(0.0)]), s.facing.to_radians(), s.wander)));
         }
         // Any creatures of the content, standing in a row ahead (`--creature kobold_miner,garrick_thorne`).
         for (i, id) in args.creatures.iter().enumerate() {
@@ -530,7 +527,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
         }
         if let (true, Some(wolves)) = (args.kill, &mut wolves) {
             // Whatever stands within reach ahead (the first of `--creature`) dies at once.
-            wolves.strike(feet + ahead * 3.0, yaw, 1e4, 1.0);
+            wolves.strike(feet + ahead * 3.0, yaw, 1e4, 1.0, &mut |_, _| Some(0.0));
         }
         for frame in 0..(args.pose_time * 60.0).max(1.0) as usize {
             look.yaw += turn / 60.0;
@@ -570,7 +567,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             if let Some(wolves) = &mut wolves {
                 if player.take_swing_hit().is_some() {
                     let damage = player.roll_damage();
-                    for (at, _, _) in wolves.strike(feet, yaw, damage, 1.0) {
+                    for (at, ..) in wolves.strike(feet, yaw, damage, 1.0, &mut |_, _| Some(0.0)) {
                         text.damage_dealt(at, damage as u32);
                     }
                 }
@@ -579,11 +576,11 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                     wolves.set_markers(render_camera.pos, |kind| panels.marker(kind));
                 }
                 let watch = crate::creature::Watch { feet, yaw, level: 1, health: player.vitals.health.fraction(), mana: 1.0, casting: false, auras: &foes.afflictions.spells(), sneaking: args.sneak.then_some(1.0) };
-                let (acts, _) = wolves.update(1.0 / 60.0, &watch, |x, z, y| crate::collision::Collider::floor(&world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), &mut renderer, &gpu);
+                let (acts, _) = wolves.update(1.0 / 60.0, &watch, |x, z, y| crate::collision::Collider::floor(&world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), None, &mut renderer, &gpu);
                 let mut effect_list: Vec<crate::foes::Effect> = acts.into_iter().flat_map(|act| foes.handle(act, feet, wolves, &mut effects, &mut renderer, &gpu)).collect();
                 effect_list.extend(foes.update(1.0 / 60.0, feet, wolves, &mut effects, &mut renderer, &gpu));
                 for effect in effect_list {
-                    if let crate::foes::Effect::Hurt { amount, physical } = effect {
+                    if let crate::foes::Effect::Hurt { amount, physical, .. } = effect {
                         if physical { player.take_hit(amount); } else { player.take_magic(amount); }
                     }
                 }
@@ -689,7 +686,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 }
             }
             // The quest window at each of its screens, and the tracker with a quest half done.
-            let (willem, wolves_quest) = (crate::content::creature("deputy_willem"), crate::content::quest_index("wolves_in_the_valley"));
+            let (willem, wolves_quest) = (crate::content::creature("c196"), crate::content::quest_index("q33"));
             for (name, screen) in [("quest", crate::panels::QuestScreen::Detail), ("quest-progress", crate::panels::QuestScreen::Progress), ("quest-reward", crate::panels::QuestScreen::Reward)] {
                 if args.panel.iter().any(|p| p == name) {
                     panels.quests.accept(wolves_quest);
@@ -698,8 +695,8 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             }
             if args.panel.iter().any(|p| p == "log") {
                 panels.quests.accept(wolves_quest);
-                panels.quests.accept(crate::content::quest_index("a_word_with_the_trader"));
-                panels.on_kills(&[crate::content::creature_index("wolf")]);
+                panels.quests.accept(crate::content::quest_index("q5261"));
+                panels.on_kills(&[crate::content::creature_index("c6")]);
                 panels.toggle_quest_log();
             }
             if args.panel.iter().any(|p| p == "abandon") {
@@ -723,8 +720,8 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             }
             if args.panel.iter().any(|p| p == "tracker") {
                 panels.quests.accept(wolves_quest);
-                panels.quests.accept(crate::content::quest_index("pelts_for_aldric"));
-                panels.on_kills(&[crate::content::creature_index("wolf")]);
+                panels.quests.accept(crate::content::quest_index("q7"));
+                panels.on_kills(&[crate::content::creature_index("c6")]);
             }
             if args.panel.iter().any(|p| p == "error") {
                 panels.error("Inventory is full.");
@@ -745,6 +742,9 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 let view = wolves.target_view(feet);
                 panels.set_target(view);
                 panels.render_target(&mut renderer, &gpu, wolves, &world);
+            }
+            if args.panel.iter().any(|p| p == "breath") {
+                panels.set_breath(Some((20.0, 30.0)));
             }
             panels.draw(&mut renderer.ui, &gpu, (w, h));
             panels.draw_overlay(&mut renderer.ui, &gpu, (w, h), 0.0, args.panel.iter().any(|p| p == "hint").then_some("Press E to loot"));

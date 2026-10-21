@@ -106,6 +106,18 @@ pub fn of_shot(mount: &Mount, id: u32) -> Visual {
     Tables::new(mount).ok().and_then(|t| t.visuals.find_by_id(id).map(|v| t.visual(v, 0.0, SHOT_SPEED))).unwrap_or_default()
 }
 
+/// The Stealth spell of the original, whose pictures and sound a sneaking player has.
+pub const STEALTH: u32 = 1784;
+
+/// The sound a spell keeps up while its aura lasts: the "state" kit (`SpellVisual.dbc` field 4) of its visual. Stealth (spell 1784) has no
+/// models there, only the sound `Stealth.wav`.
+pub fn state_sound(mount: &Mount, spell: u32) -> Option<u32> {
+    let dbc = |name: &str| Dbc::parse(&mount.read(&format!(r"DBFilesClient\{name}.dbc")).ok()?).ok();
+    let (spells, tables) = (dbc("Spell")?, Tables::new(mount).ok()?);
+    let visual = tables.visuals.find_by_id(spells.find_by_id(spell)?.u32(115))?;
+    tables.kit(visual.u32(4)).sound
+}
+
 /// The pictures and sounds of spells of the original by their row of `Spell.dbc`: the ones that the scripts of creatures cast, and what those trigger.
 pub fn load_classic(mount: &Mount) -> Result<std::collections::HashMap<u32, Visual>> {
     use std::collections::HashSet;
@@ -184,6 +196,12 @@ mod tests {
             }
             assert!(vis.cast_ms >= 0.0 && vis.cast_ms < 10_000.0, "{}: {}", spell.name, vis.cast_ms);
         }
+    }
+
+    #[test]
+    fn stealth_has_the_sound_of_the_original() {
+        let Some(mount) = mpq::find_wow_dir().and_then(|d| Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
+        assert_eq!(state_sound(&mount, STEALTH), Some(3325));
     }
 
     #[test]

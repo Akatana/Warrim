@@ -78,6 +78,8 @@ pub struct Input {
     pub jump_pressed: bool,
     /// The share of the running speed that a steed adds (0.6 for 60 percent; 0 on foot).
     pub mount_bonus: f32,
+    /// The share of the running speed that the worn items add (the better of this and the steed's counts).
+    pub gear_bonus: f32,
     /// The share of the running speed that a heavy load takes (0 for none, set by the game from the player's weight).
     pub burden: f32,
     /// The surface of the water under the feet, if there is any (render space, set by the game each frame).
@@ -173,7 +175,7 @@ impl Controller {
             }
             Mode::Walk => {
                 let wish = (fwd_flat * axis(input.forward, input.back) + right * axis(input.right, input.left)).normalize_or_zero();
-                let speed = RUN_SPEED * (1.0 + input.mount_bonus) * (1.0 - input.burden) * if input.sprint { SPRINT_FACTOR } else if input.sneak { SNEAK_FACTOR } else { 1.0 };
+                let speed = RUN_SPEED * (1.0 + input.mount_bonus.max(input.gear_bonus)) * (1.0 - input.burden) * if input.sprint { SPRINT_FACTOR } else if input.sneak { SNEAK_FACTOR } else { 1.0 };
                 let feet = cam.pos - Vec3::Y * EYE_HEIGHT;
                 let unit = self.unit.get_or_insert_with(|| Unit::new(render_to_wow64(feet)));
                 // Do not simulate (and fall through the void) while the terrain is still streaming in.

@@ -121,6 +121,7 @@ impl State {
             let world = &self.world;
             pickups.update(dt, |x, z| world.height_at(x, z), &mut self.renderer);
         }
+        self.drag_if_held();
         if let Some(bodies) = &mut self.bodies {
             let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
             let forward = Vec3::new(self.camera.yaw.sin(), 0.0, -self.camera.yaw.cos());
@@ -188,6 +189,7 @@ impl State {
             self.input.tired = self.player.as_ref().is_some_and(|p| p.is_worn_out());
             self.input.sprint = self.input.fast && self.controller.mode == Mode::Walk && !sneaking && !swimming && self.player.as_ref().is_none_or(|p| p.can_sprint());
             self.input.mount_bonus = self.player.as_ref().map_or(0.0, |p| p.speed_bonus());
+            self.input.gear_bonus = self.panels.as_ref().map_or(0.0, |p| p.stats.run_speed);
             self.input.burden = self.panels.as_ref().map_or(0.0, |pn| pn.burden());
             // Spells that have hold of the character: slowed, rooted, stunned, or running in fear from where the spell came from.
             let held = &self.foes.afflictions;
@@ -208,6 +210,17 @@ impl State {
             if let Some(p) = &mut self.player {
                 p.set_sprinting(self.input.sprint);
                 p.set_swimming(swimming, self.panels.as_ref().map_or(1.0, |pn| pn.skills.swim_cost_factor()));
+                // The head under the surface holds the breath, as long as the skill in diving allows.
+                let eye = self.camera.pos;
+                let submerged = self.controller.mode == Mode::Walk && self.world.liquid_at(eye.x, eye.z, eye.y).is_some_and(|level| eye.y < level);
+                p.set_diving(submerged, self.panels.as_ref().map_or(30.0, |pn| pn.skills.breath_seconds()));
+                if let Some(panels) = &mut self.panels {
+                    panels.set_breath(p.breath());
+                    // Holding the breath trains the skill in diving.
+                    if submerged {
+                        panels.train(crate::skills::Skill::Diving, dt / 2.0);
+                    }
+                }
                 // A jump on foot costs stamina; without enough of it the character stays on the ground.
                 if self.input.jump_pressed && self.controller.mode == Mode::Walk && !self.controller.airborne() && !swimming && !p.try_jump() {
                     self.input.jump_pressed = false;
@@ -267,22 +280,46 @@ impl State {
                 }
             }
             if let Some((swing, power)) = player.take_swing_hit() {
-                let skill = self.panels.as_ref().map_or(crate::skills::Skill::Unarmed, |p| p.weapon_skill());
+                let skill = self.panels.as_ref().map_or(crate::skills::Skill::Unarmed, |p| p.weapon_skill(player.is_off_hand()));
                 let factor = self.panels.as_ref().map_or(1.0, |p| p.skills.damage_factor(skill));
                 let heavy = if swing == crate::player::Swing::Heavy { crate::player::HEAVY_DAMAGE } else { 1.0 };
                 // A swing that comes soon after the last one does only the share of its damage that the time between is of the weapon's speed.
-                let damage = (player.roll_damage() * factor * heavy * power).round().max(1.0);
+                let crit = player.chance(self.panels.as_ref().map_or(0.0, |p| p.stats.crit));
+                let damage = (player.roll_damage() * factor * heavy * power * if crit { 2.0 } else { 1.0 }).round().max(1.0);
                 // A sneaking player's first blow on a creature that has not noticed him is heavier.
-                let hits = wolves.strike(feet, self.camera.yaw, damage, if player.is_sneaking() { SNEAK_ATTACK } else { 1.0 });
-                if !hits.is_empty() {
+                let (level, hit, versus, speed) = self.panels.as_ref().map_or((1, 0.0, [0; 11], 2.0), |p| (p.progress.level, p.stats.hit, p.stats.ap_versus, p.stats.speed));
+                // Wielding a weapon in each hand makes every blow miss 19% more often.
+                let hit = if player.is_dual_wielding() { hit - crate::player::DUAL_WIELD_MISS } else { hit };
+                let sneak = if player.is_sneaking() { SNEAK_ATTACK } else { 1.0 };
+                // A blow may miss; what the gear adds against the type of the creature is attack power, which adds damage as it does for all blows.
+                let hits = wolves.strike(feet, self.camera.yaw, damage, sneak, &mut |mob, kind| {
+                    (!player.chance(crate::levels::melee_miss(level, mob, hit))).then(|| versus[kind as usize % 11] as f32 / crate::items::ATTACK_POWER_PER_DPS * speed)
+                });
+                if hits.iter().any(|h| h.1 > 0.0) {
                     player.emit(Sfx::SwordHit);
                     if let Some(panels) = &mut self.panels {
                         panels.train(skill, heavy * power);
                     }
                 }
-                for (at, dealt, sneak) in hits {
+                for (at, dealt, sneak, id) in hits {
                     if let Some(text) = &mut self.combat_text {
-                        text.damage_dealt(at, dealt as u32);
+                        if dealt > 0.0 {
+                            text.damage_dealt(at, dealt as u32);
+                        } else {
+                            text.message("Miss");
+                        }
+                    }
+                    // The spells of the weapon in the hand that go off on a blow that lands.
+                    if let (true, Some(panels)) = (dealt > 0.0, &mut self.panels) {
+                        if let Some(weapon) = panels.inv.equipment[if player.is_off_hand() { crate::items::OFF_HAND } else { crate::items::MAIN_HAND }] {
+                            let (level, speed) = (panels.progress.level, panels.stats.speed);
+                            let mut out = Vec::new();
+                            crate::procs::on_hit(weapon.item, speed, level, &mut || panels.consumed.dice(), &mut out);
+                            if player.is_extra_swing() {
+                                out.retain(|o| !matches!(o, crate::procs::Outcome::Extra(_)));
+                            }
+                            crate::procs::apply(out, Some(id), player, panels, wolves, self.combat_text.as_mut());
+                        }
                     }
                     if let (true, Some(panels)) = (sneak, &mut self.panels) {
                         panels.notice("Sneak attack!");
@@ -310,7 +347,8 @@ impl State {
                 auras: &auras,
                 sneaking: player.is_sneaking().then(|| self.panels.as_ref().map_or(1.0, |p| p.skills.notice_factor())),
             };
-            let (acts, mut cries) = wolves.update(dt, &watch, |x, z, y| crate::collision::Collider::floor(world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), &mut self.renderer, &self.gpu);
+            wolves.ragdolls = self.ragdolls;
+            let (acts, mut cries) = wolves.update(dt, &watch, |x, z, y| crate::collision::Collider::floor(world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), self.bodies.as_mut(), &mut self.renderer, &self.gpu);
             // What they did: the swings that landed, the spells begun and gone off, and the auras that hold the player.
             let mut effects = Vec::new();
             for act in acts {
@@ -323,6 +361,7 @@ impl State {
             if let Some(panels) = &self.panels {
                 player.set_block_cost(panels.skills.block_cost_factor());
                 player.set_mitigation(panels.stats.mitigation());
+                player.set_regen(panels.stats.health_regen_always + if self.in_combat { 0.0 } else { panels.stats.health_regen }, panels.stats.mana_regen, panels.stats.mana_regen_casting);
             }
             if self.god {
                 for r in [&mut player.vitals.health, &mut player.vitals.mana, &mut player.vitals.stamina] {
@@ -338,8 +377,12 @@ impl State {
             for effect in effects.into_iter().filter(|_| !safe) {
                 use crate::foes::Effect;
                 // What lands as damage, and whether a shield and armor deal with it (blows) or not (magic).
+                let mut resisted = 1.0;
                 let hit = match effect {
-                    Effect::Hurt { amount, physical } => Some((physical, amount)),
+                    Effect::Hurt { amount, physical, school } => {
+                        resisted = self.panels.as_ref().map_or(1.0, |p| 1.0 - p.stats.resistance(school));
+                        Some((physical, amount))
+                    }
                     Effect::Drain { amount, burn } => {
                         let took = player.drain_mana(amount);
                         (burn && took > 0.0).then_some((false, took))
@@ -353,8 +396,33 @@ impl State {
                         None
                     }
                 };
-                let Some((physical, amount)) = hit else { continue };
-                match if physical { player.take_hit(amount) } else { Some(player.take_magic(amount)) } {
+                let Some((physical, mut amount)) = hit else { continue };
+                // A blow is dodged, parried or blocked by one roll of the dice (the chances follow each other, as in the original's attack table).
+                if physical {
+                    let (dodge, parry, block, held) = self.panels.as_ref().map_or((0.0, 0.0, 0.0, 0.0), |p| (p.stats.dodge, p.stats.parry, p.stats.block, p.stats.block_value));
+                    let roll = player.percent();
+                    let word = if roll < dodge {
+                        Some("Dodge")
+                    } else if roll < dodge + parry {
+                        Some("Parry")
+                    } else if roll < dodge + parry + block {
+                        // A block holds back some of the damage; only all of it is a block in the text.
+                        amount = (amount - held).max(0.0);
+                        (amount <= 0.0).then_some("Block")
+                    } else {
+                        None
+                    };
+                    if let (Some(word), Some(text)) = (word, &mut self.combat_text) {
+                        text.message(word);
+                    }
+                    if let Some(word @ ("Dodge" | "Parry")) = word {
+                        player.avoided(word == "Parry");
+                    }
+                    if word.is_some() {
+                        continue;
+                    }
+                }
+                match if physical { player.take_hit(amount) } else { Some(player.take_magic(amount * resisted)) } {
                     None => {
                         blocked = true;
                         if let Some(panels) = &mut self.panels {
@@ -371,6 +439,14 @@ impl State {
                             for (skill, share) in crate::skills::Skills::armor_shares(&panels.inv.equipment) {
                                 panels.train(skill, share);
                             }
+                        }
+                        // What hits back at whoever strikes: shields and the spells of the gear that go off when struck.
+                        if let (true, Some(panels), Some(attacker)) = (physical, &mut self.panels, wolves.attacker(feet)) {
+                            let shields: Vec<(f32, u32)> = panels.consumed.shields().collect();
+                            let mut out = Vec::new();
+                            let level = panels.progress.level;
+                            crate::procs::struck(&panels.inv.equipment, &shields, level, &mut || panels.consumed.dice(), &mut out);
+                            crate::procs::apply(out, Some(attacker), player, panels, wolves, self.combat_text.as_mut());
                         }
                     }
                 }
@@ -427,13 +503,16 @@ impl State {
                 let pickup = self.pickups.as_ref().is_some_and(|p| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv)).is_some());
                 let bed = near_bed(&self.beds, &self.world, feet);
                 let body = self.bodies.as_ref().is_some_and(|b| b.near(feet, crate::physics::GRAB_RANGE).is_some());
+                let drag = self.bodies.as_ref().is_some_and(|b| b.near_corpse(feet, crate::physics::GRAB_RANGE).is_some());
                 self.hint = match (panels.any_open() || self.lock.is_some(), wolves.lootable_near(feet, LOOT_RANGE), wolves.talkable_near(feet, TALK_RANGE), chest) {
                     (true, ..) => None,
+                    (_, Some(_), ..) if drag => Some("Press E to loot, hold E to drag"),
                     (_, Some(_), ..) => Some("Press E to loot"),
                     (_, None, _, Some(true)) => Some("Press E to pick the lock"),
                     (_, None, _, Some(false)) => Some("Press E to open"),
                     (_, None, _, None) if pickup => Some("Press E to pick up"),
                     (_, None, _, None) if body => Some("Hold E to pick up"),
+                    (_, None, _, None) if drag => Some("Hold E to drag"),
                     (_, None, _, None) if bed => Some("Press E to sleep"),
                     (_, None, Some(_), None) => Some("Press E to talk"),
                     _ => None,
@@ -507,6 +586,9 @@ impl State {
                 panels.cancel_mount("You can't mount here.");
             }
             let way_home = panels.tick_items(dt);
+            if panels.take_stats_dirty() {
+                player.apply_stats(&panels.stats);
+            }
             if let Some((display, percent)) = panels.take_steed() {
                 let inside = self.world.indoors(self.camera.pos - Vec3::Y * (EYE_HEIGHT - 1.0));
                 if self.in_combat && !player.is_mounted() {
@@ -642,7 +724,7 @@ impl State {
                 if let Some(p) = &mut self.player {
                     p.follow = i.follow;
                 }
-                self.names = i.npc_names;
+                (self.names, self.ragdolls) = (i.npc_names, i.ragdolls);
             }
             if let Some(v) = panels.take_video() {
                 self.weather.detail = v.weather_scale();

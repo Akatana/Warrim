@@ -53,6 +53,8 @@ pub struct Tick {
     pub heal: f32,
     pub mana: f32,
     pub stats_changed: bool,
+    /// What a spell put on the character ran out: the stats are to be worked out again, but nothing is worn anew.
+    pub timed_ended: bool,
     pub way_home: Option<WayHome>,
 }
 
@@ -65,9 +67,20 @@ pub enum WayHome {
 
 pub const HEARTH_SECONDS: f32 = 10.0;
 
+/// What a spell of a weapon or of the gear puts on the character for some seconds (see `procs`): an effect the stats take in, health regained every second, or a
+/// shield that hurts whoever hits the character (the damage and its school).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Timed {
+    Gear(UseEffect),
+    Regen(f32),
+    Shield { amount: f32, school: u32 },
+}
+
 #[derive(Default)]
 pub struct Consumed {
     pub buffs: Vec<Buff>,
+    /// What procs put on the character, and the seconds left of each (not saved).
+    pub timed: Vec<(Timed, f32)>,
     cooldowns: HashMap<usize, f32>,
     /// Seconds to go before the hearthstone takes the character home.
     pub hearth: Option<f32>,
@@ -78,6 +91,32 @@ impl Consumed {
     /// The spell of an item that is cast when it is used, if the game knows what it does.
     fn use_spell(item: usize) -> Option<&'static items::ItemSpellDef> {
         items::get(item).spells.iter().find(|s| matches!(s.trigger, 0 | 4 | 5) && s.effects.iter().any(|e| !matches!(e, UseEffect::Boost(_, _, secs) if *secs <= 0.0)))
+    }
+
+    /// Put something on the character for `seconds`; what it was of the same kind is replaced by the new one. Returns whether the stats are to be worked out again.
+    pub fn add_timed(&mut self, what: Timed, seconds: f32) -> bool {
+        self.timed.retain(|(t, _)| *t != what);
+        self.timed.push((what, seconds));
+        matches!(what, Timed::Gear(_))
+    }
+
+    /// What the stats take in from the timed spells.
+    pub fn timed_effects(&self) -> Vec<UseEffect> {
+        self.timed.iter().filter_map(|(t, _)| if let Timed::Gear(e) = t { Some(*e) } else { None }).collect()
+    }
+
+    /// The shields on the character: the damage each does to whoever hits it, and its school.
+    pub fn shields(&self) -> impl Iterator<Item = (f32, u32)> + '_ {
+        self.timed.iter().filter_map(|(t, _)| if let Timed::Shield { amount, school } = *t { Some((amount, school)) } else { None })
+    }
+
+    /// A number from the dice of the character's procs.
+    pub fn dice(&mut self) -> u32 {
+        self.rng = if self.rng == 0 { 0x2545_F491 } else { self.rng };
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        self.rng
     }
 
     /// Seconds before the item can be used again.
@@ -123,6 +162,7 @@ impl Consumed {
                 UseEffect::ManaOver(total, secs) => (buff.regen.1, buff.left, buff.needs_calm) = (buff.regen.1 + total as f32 / secs, buff.left.max(secs), true),
                 UseEffect::Boost(stat, amount, secs) if secs > 0.0 && (stat as usize) < 7 => (buff.boosts[stat as usize], buff.left) = (buff.boosts[stat as usize] + amount, buff.left.max(secs)),
                 UseEffect::Boost(..) => {}
+                UseEffect::Equip(..) => {}
                 UseEffect::Hearth => used.hearth = true,
                 UseEffect::Mount(display, percent) => used.mount = Some((display, percent)),
             }
@@ -174,7 +214,15 @@ impl Consumed {
                 b.left -= dt;
             }
         }
+        for (t, left) in &mut self.timed {
+            if let Timed::Regen(per_second) = *t {
+                tick.heal += per_second * dt.min(*left);
+            }
+            *left -= dt;
+        }
         tick.stats_changed = self.buffs.iter().any(|b| b.left <= 0.0 && b.boosts.iter().any(|v| *v != 0));
+        tick.timed_ended = self.timed.iter().any(|(t, left)| *left <= 0.0 && matches!(t, Timed::Gear(_)));
+        self.timed.retain(|(_, left)| *left > 0.0);
         self.buffs.retain(|b| b.left > 0.0);
         if let Some(left) = self.hearth {
             if !calm {

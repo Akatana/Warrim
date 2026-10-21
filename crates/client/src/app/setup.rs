@@ -134,6 +134,7 @@ impl State {
         // The wolves of `content/spawns.ron`.
         let mut wolves = Creatures::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &spawn_list()).map_err(|e| log::warn!("no creatures: {e:#}")).ok();
         if let Some(wolves) = &mut wolves {
+            wolves.set_routes(spawn_routes());
             wolves.set_spell_anims(foes.anims());
         }
         if let (Some(wolves), Some(saved)) = (&mut wolves, &loaded) {
@@ -162,6 +163,7 @@ impl State {
             chests,
             pickups,
             bodies,
+            pending_loot: None,
             pickup_props,
             pickups_stale: false,
             beds: bed_spots(&content::get().props, &args.map),
@@ -180,10 +182,12 @@ impl State {
             quit: false,
             reconfigure: false,
             names: true,
+            ragdolls: true,
             apply: false,
             apply_after: args.apply_after,
             mount: player_mount.clone(),
             levelfx: None,
+            stealth_sound: crate::visuals::state_sound(&player_mount, crate::visuals::STEALTH),
             moving: false,
             caster,
             foes,

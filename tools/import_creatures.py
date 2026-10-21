@@ -118,7 +118,8 @@ class Tables:
         if re.search(r"invisible|dummy", model, re.I):
             return None
         extra = d.u32(r, 3)
-        size = d.f32(r, 4) * self.model.f32(m, 4) * (scale or 1.0)
+        # The size is the creature's own scale, or the display's when it has none (the server does that: CMaNGOS makes the object scale the display's when the template has 0), times the model's.
+        size = (scale or d.f32(r, 4)) * self.model.f32(m, 4)
         if model.lower().startswith("character\\"):
             e = self.extra_row.get(extra)
             if e is None or self.extra.u32(e, 1) not in RACES:
@@ -194,6 +195,9 @@ def main():
         level = max(1, (c["MinLevel"] + c["MaxLevel"]) // 2)
         if level != 1:
             out.append("level: %d" % level)
+        # The creature type (1 beast, 2 dragonkin, 3 demon, 4 elemental, 5 giant, 6 undead, 7 humanoid, 8 critter, 9 mechanical): what the gear's bonuses "versus" name.
+        if c["CreatureType"] in range(1, 10):
+            out.append("kind: %d" % c["CreatureType"])
         out.append("body: %s" % body)
         if hostile:
             out.append("hostile: true")

@@ -102,11 +102,22 @@ impl State {
                 self.input.down = pressed;
                 if let (true, Mode::Walk, None, Some(p)) = (pressed, self.controller.mode, &self.free, &mut self.player) {
                     p.toggle_sneak();
+                    if let (true, Some(entry), Some(panels)) = (p.is_sneaking(), self.stealth_sound, &mut self.panels) {
+                        panels.emit(crate::audio::Sfx::Entry(entry));
+                    }
                 }
             }
             KeyCode::ShiftLeft | KeyCode::ShiftRight => self.input.fast = pressed,
             KeyCode::KeyE if pressed => self.interact(),
-            KeyCode::KeyE => self.bodies.iter_mut().for_each(|b| b.release()),
+            KeyCode::KeyE => {
+                // Let go of what is carried or dragged; a corpse the key was only tapped on is looted.
+                if let Some((corpse, since)) = self.pending_loot.take() {
+                    if since.elapsed() < super::interact::DRAG_HOLD {
+                        self.loot_corpse(corpse);
+                    }
+                }
+                self.bodies.iter_mut().for_each(|b| b.release());
+            }
             KeyCode::Tab if pressed => {
                 // The nearest enemy ahead; again, the next.
                 let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;

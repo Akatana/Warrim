@@ -240,18 +240,7 @@
             facing: 40.0,
         ),
     ],
-    spawns_added: [
-        (
-            creature: "deputy_willem",
-            at: (-8923.168, -135.87541),
-            facing: 248.86853,
-        ),
-        (
-            creature: "abbot_hollis",
-            at: (-8927.703, -139.0),
-            facing: 180.0,
-        ),
-    ],
+    spawns_added: [],
     props_removed: [],
     props_added: [],
 )

@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// How long the interact key is held before it drags a corpse instead of looting it.
+pub(super) const DRAG_HOLD: std::time::Duration = std::time::Duration::from_millis(350);
+
 impl State {
     /// Open or close the character sheet or the backpack; the mouse is free while one is open.
     pub(super) fn toggle_panel(&mut self, character: bool) {
@@ -31,7 +34,16 @@ impl State {
             return;
         }
         let body = self.bodies.as_ref().and_then(|b| b.near(feet, crate::physics::GRAB_RANGE));
-        if corpse.is_none() && chest.is_none() && pickup.is_none() && body.is_none() && near_bed(&self.beds, &self.world, feet) {
+        let drag = self.bodies.as_ref().and_then(|b| b.near_corpse(feet, crate::physics::GRAB_RANGE));
+        // A corpse with loot that can be dragged too: a tap of the key loots it, holding the key drags it (see `input.rs` and the frame).
+        if let (Some(i), Some(_), None) = (corpse, drag, self.pending_loot) {
+            self.pending_loot = Some((i, Instant::now()));
+            return;
+        }
+        if self.pending_loot.is_some() {
+            return;
+        }
+        if corpse.is_none() && chest.is_none() && pickup.is_none() && body.is_none() && drag.is_none() && near_bed(&self.beds, &self.world, feet) {
             if let Some(panels) = &mut self.panels {
                 panels.ask_sleep();
             }
@@ -46,8 +58,21 @@ impl State {
             self.use_pickup(i);
         } else if let Some(i) = talk {
             self.talk_to(i);
-        } else if let (Some(i), Some(bodies)) = (body, &mut self.bodies) {
-            bodies.grab(i);
+        } else if let (Some(h), Some(bodies)) = (body.or(drag), &mut self.bodies) {
+            bodies.grab(h);
+        }
+    }
+
+    /// Take hold of the nearest part of a corpse once the key was held long enough for it not to be a tap (see `pending_loot`).
+    pub(super) fn drag_if_held(&mut self) {
+        if self.pending_loot.is_some_and(|(_, since)| since.elapsed() >= DRAG_HOLD) {
+            self.pending_loot = None;
+            let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
+            if let Some(bodies) = &mut self.bodies {
+                if let Some(h) = bodies.near_corpse(feet, crate::physics::GRAB_RANGE) {
+                    bodies.grab(h);
+                }
+            }
         }
     }
 

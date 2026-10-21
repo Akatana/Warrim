@@ -145,7 +145,13 @@ fn store(d: &mut Data, sel: Sel, p: &Prop) {
     let facing = (-p.rotation[1]).rem_euclid(360.0);
     match sel {
         Sel::Prop(i) => d.cur.props[i] = p.clone(),
-        Sel::Creature(i) => (d.cur.spawns[i].at, d.cur.spawns[i].facing) = ((p.at.0, p.at.1), facing),
+        Sel::Creature(i) => {
+            let s = &mut d.cur.spawns[i];
+            if s.at != (p.at.0, p.at.1) {
+                s.height = None;
+            }
+            (s.at, s.facing) = ((p.at.0, p.at.1), facing);
+        }
         Sel::Chest(i) => (d.cur.chests[i].at, d.cur.chests[i].facing) = ((p.at.0, p.at.1), facing),
     }
 }
@@ -914,7 +920,7 @@ impl Editor {
                 p.scroll = d.cur.props.len().saturating_sub(10);
             }
             Aim::Creature => {
-                d.cur.spawns.push(Spawn { creature: self.placer.creature.clone(), at: (north, west), facing: turn, wander: crate::content::DEFAULT_WANDER });
+                d.cur.spawns.push(Spawn { creature: self.placer.creature.clone(), at: (north, west), facing: turn, wander: crate::content::DEFAULT_WANDER, height: None, respawn: None, path: Vec::new() });
                 let p = &mut self.pick[0];
                 p.selected = d.cur.spawns.len() - 1;
                 p.scroll = d.cur.spawns.len().saturating_sub(10);
@@ -1078,14 +1084,18 @@ fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind:
             g.text(x, y, w, "The selected creature", GOLD);
             y += ROW + 4.0;
             text_row_ref(g, &mut y, x, w, "Kind", 4, &mut s.creature, Ref::Creature, None);
+            let before = s.at;
             value_row(g, &mut y, x, w, "North", 0, &mut s.at.0);
             value_row(g, &mut y, x, w, "West", 1, &mut s.at.1);
+            if s.at != before {
+                s.height = None;
+            }
             value_row(g, &mut y, x, w, "Facing", 2, &mut s.facing);
             // How far from here it strolls, in yards (0 stands still).
             value_row(g, &mut y, x, w, "Wander", 3, &mut s.wander);
             s.wander = s.wander.max(0.0);
             if g.button(x, y, 150.0, "Here (where I stand)") {
-                (s.at, s.facing) = ((me.north, me.west), me.yaw);
+                (s.at, s.facing, s.height) = ((me.north, me.west), me.yaw, None);
             }
             if g.button(x + 156.0, y, 90.0, "Go to it") {
                 actions.push(Action::Teleport(s.at.0, s.at.1));
@@ -1120,7 +1130,7 @@ fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind:
         }
         y += ROW + 6.0;
         if g.button(x, y, 220.0, "New here, facing as I do") {
-            d.cur.spawns.push(Spawn { creature: current, at: (me.north, me.west), facing: me.yaw, wander: crate::content::DEFAULT_WANDER });
+            d.cur.spawns.push(Spawn { creature: current, at: (me.north, me.west), facing: me.yaw, wander: crate::content::DEFAULT_WANDER, height: None, respawn: None, path: Vec::new() });
             p.selected = d.cur.spawns.len() - 1;
             p.scroll = d.cur.spawns.len().saturating_sub(rows);
         }
@@ -2376,7 +2386,7 @@ fn item_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, it: &mut RawItem, pv: &mu
         it.spells.remove(i);
     }
     if g.button(x, *y, 150.0, "Add a spell line") {
-        it.spells.push(crate::items::ItemSpell { spell: 0, trigger: 0, charges: 0, cooldown: 0, effects: Vec::new(), text: String::new() });
+        it.spells.push(crate::items::ItemSpell { spell: 0, trigger: 0, charges: 0, cooldown: 0, ppm: 0.0, effects: Vec::new(), text: String::new() });
     }
     *y += ROW + 3.0;
 }
@@ -2768,7 +2778,7 @@ mod tests {
         cur.quests[0].reward.xp += 5;
         cur.chests.pop();
         cur.spawns[0].at.0 += 3.0;
-        cur.spawns.push(Spawn { creature: "wolf_pup".into(), at: (-8900.0, -100.0), facing: 12.0, wander: 0.0 });
+        cur.spawns.push(Spawn { creature: "wolf_pup".into(), at: (-8900.0, -100.0), facing: 12.0, wander: 0.0, height: None, respawn: None, path: Vec::new() });
         // A loot table made and one changed, a place moved and a place made.
         cur.loot.insert("pup".into(), content::RawTable { copper: (1, 2), items: vec![("linen_cloth".into(), (1, 1), 30.0)], also: Vec::new() });
         cur.loot.get_mut("wolf").unwrap().copper.1 += 4;
@@ -2799,7 +2809,7 @@ mod tests {
         content::check(&again).unwrap();
         // And a change that breaks a reference is caught before it is saved.
         let mut broken = cur.clone();
-        broken.spawns.push(Spawn { creature: "nobody".into(), at: (0.0, 0.0), facing: 0.0, wander: 5.0 });
+        broken.spawns.push(Spawn { creature: "nobody".into(), at: (0.0, 0.0), facing: 0.0, wander: 5.0, height: None, respawn: None, path: Vec::new() });
         assert!(content::check(&broken).is_err());
         let mut broken = cur.clone();
         broken.props[0].model = r"World\Generic\Thing.blp".into();

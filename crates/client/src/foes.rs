@@ -30,7 +30,7 @@ const DEEPEST: u32 = 2;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Effect {
     /// Damage: a physical one is cut by the armor and can be blocked with the shield; a magic one is neither.
-    Hurt { amount: f32, physical: bool },
+    Hurt { amount: f32, physical: bool, school: u32 },
     /// Mana taken; a burn hurts for as much as it took.
     Drain { amount: f32, burn: bool },
     /// The spell the player is casting is broken off.
@@ -73,6 +73,7 @@ pub struct Affliction {
     period: f32,
     next: f32,
     physical: bool,
+    school: u32,
     /// Where it came from (what a fear runs from).
     pub from: Vec3,
 }
@@ -149,7 +150,7 @@ impl Afflictions {
                 a.next -= dt;
                 while a.next <= 0.0 && a.period > 0.0 {
                     a.next += a.period;
-                    out.push(Effect::Hurt { amount: a.amount, physical: a.physical });
+                    out.push(Effect::Hurt { amount: a.amount, physical: a.physical, school: a.school });
                 }
             }
         }
@@ -233,7 +234,7 @@ impl Foes {
     /// What a creature did: shown, and what it does to the player at once.
     pub fn handle(&mut self, foe: Foe, feet: Vec3, wolves: &Creatures, fx: &mut Effects, renderer: &mut Renderer, gpu: &Gpu) -> Vec<Effect> {
         match foe {
-            Foe::Melee(amount) => vec![Effect::Hurt { amount, physical: true }],
+            Foe::Melee(amount) => vec![Effect::Hurt { amount, physical: true, school: 0 }],
             Foe::Begin { who, spell, at, yaw, height } => {
                 self.stop_glows(who, fx);
                 if let Some(vis) = self.visuals.get(&spell) {
@@ -358,9 +359,9 @@ impl Foes {
             let points = sp.points(n, cast.level, self.next());
             let weapon = if sp.is_ranged_attack() { cast.shot } else { cast.melee };
             let now = match e.kind {
-                2 => Some(Effect::Hurt { amount: points.max(0.0), physical: sp.school == 0 }),
-                17 | 58 | 121 => Some(Effect::Hurt { amount: (weapon + points).max(1.0), physical: true }),
-                31 => Some(Effect::Hurt { amount: (weapon * points / 100.0).max(1.0), physical: true }),
+                2 => Some(Effect::Hurt { amount: points.max(0.0), physical: sp.school == 0, school: sp.school }),
+                17 | 58 | 121 => Some(Effect::Hurt { amount: (weapon + points).max(1.0), physical: true, school: 0 }),
+                31 => Some(Effect::Hurt { amount: (weapon * points / 100.0).max(1.0), physical: true, school: 0 }),
                 8 => Some(Effect::Drain { amount: points.max(0.0), burn: false }),
                 62 => Some(Effect::Drain { amount: points.max(0.0), burn: true }),
                 68 => Some(Effect::Interrupt),
@@ -411,7 +412,7 @@ impl Foes {
                 _ => 0.0,
             };
             // A mark is only worth showing when something else of the spell is not already.
-            self.afflictions.add(Affliction { spell: sp.spell, icon: sp.icon.clone(), kind, left: seconds, amount, period, next: period, physical: sp.school == 0, from: cast.from });
+            self.afflictions.add(Affliction { spell: sp.spell, icon: sp.icon.clone(), kind, left: seconds, amount, period, next: period, physical: sp.school == 0, school: sp.school, from: cast.from });
         }
     }
 }
@@ -439,7 +440,7 @@ mod tests {
         // Its damage and the burning that follows.
         assert_eq!(Foes::reaches(fireball, &c, Vec3::new(0.0, 0.0, -20.0)), [0, 1]);
         let out = foes().resolve(fireball, &c, &[0]);
-        let Some((Some(Effect::Hurt { amount, physical: false }), None)) = out.first().copied() else { panic!("{out:?}") };
+        let Some((Some(Effect::Hurt { amount, physical: false, .. }), None)) = out.first().copied() else { panic!("{out:?}") };
         assert!((fireball.effects[0].low as f32..=fireball.effects[0].high as f32 + 20.0).contains(&amount), "{amount}");
         // Frost Armor is for its caster.
         let armor = cast(168, Aim::Itself);
@@ -462,14 +463,14 @@ mod tests {
         let c = cast(6660, Aim::Victim);
         let hits = Foes::reaches(shoot, &c, Vec3::new(0.0, 0.0, -20.0));
         let out = foes().resolve(shoot, &c, &hits);
-        let Some((Some(Effect::Hurt { amount, physical: true }), _)) = out.first().copied() else { panic!("{out:?}") };
+        let Some((Some(Effect::Hurt { amount, physical: true, .. }), _)) = out.first().copied() else { panic!("{out:?}") };
         assert!(amount >= c.shot, "its weapon and the points: {amount}");
         // Backstab (rank 1) hits with the melee weapon.
         let stab = spell(53);
         let c = cast(53, Aim::Victim);
         let hits = Foes::reaches(stab, &c, Vec3::new(0.0, 0.0, -2.0));
         let out = foes().resolve(stab, &c, &hits);
-        assert!(out.iter().any(|o| matches!(o.0, Some(Effect::Hurt { amount, physical: true }) if amount >= c.melee)), "{out:?}");
+        assert!(out.iter().any(|o| matches!(o.0, Some(Effect::Hurt { amount, physical: true, .. }) if amount >= c.melee)), "{out:?}");
     }
 
     #[test]
@@ -502,7 +503,7 @@ mod tests {
     #[test]
     fn the_control_auras_take_away_what_they_take_away() {
         let mut a = Afflictions::default();
-        let on = |kind| Affliction { spell: 1, icon: String::new(), kind, left: 5.0, amount: 0.0, period: 3.0, next: 3.0, physical: false, from: Vec3::X };
+        let on = |kind| Affliction { spell: 1, icon: String::new(), kind, left: 5.0, amount: 0.0, period: 3.0, next: 3.0, physical: false, school: 2, from: Vec3::X };
         a.add(on(Kind::Silence));
         assert!(a.cast_blocked() && !a.swing_blocked() && !a.shot_blocked());
         a.add(on(Kind::Disarm));

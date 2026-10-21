@@ -328,7 +328,8 @@ fn geoset_shown(id: u16, parts: &Parts, gear: &Gear, ears: u16) -> bool {
     }
     match id {
         0 => true,
-        1..=99 => id == parts.hair_geoset && !gear.hidden_by_helm(0, id),
+        // Bald (style 0, which the tables mark to show the scalp) shows the bare scalp, mesh part 1; without it the top of the head is open.
+        1..=99 => (id == parts.hair_geoset || (id == 1 && parts.hair_geoset == 0)) && !gear.hidden_by_helm(0, id),
         100..=199 => parts.facial_geosets.contains(&id) && !gear.hidden_by_helm(1, id - 100),
         200..=299 => parts.facial_geosets.contains(&id) && !gear.hidden_by_helm(2, id - 200),
         300..=399 => parts.facial_geosets.contains(&id) && !gear.hidden_by_helm(3, id - 300),
@@ -518,6 +519,26 @@ impl Character {
         self.animator.start_attack(&self.m2, seconds);
     }
 
+    /// A heavy swing of the weapon held, over `seconds`.
+    pub fn heavy_attack(&mut self, seconds: f32) {
+        self.animator.start_heavy(&self.m2, seconds);
+    }
+
+    /// The swings and the stance of the weapon held (animation ids, see `Animator::set_poses`).
+    pub fn set_poses(&mut self, light: u16, heavy: u16, ready: u16) {
+        self.animator.set_poses(&self.m2, light, heavy, ready);
+    }
+
+    /// A parry (`true`) or a dodge on the upper body, unless a swing or another one-shot is playing.
+    pub fn avoid(&mut self, parry: bool, seconds: f32) {
+        if self.animator.attacking() {
+            return;
+        }
+        if let Some(id) = if parry { self.animator.parry(&self.m2) } else { Some(crate::animator::DODGE) } {
+            self.animator.start_upper(&self.m2, id, seconds);
+        }
+    }
+
     /// Play animation `id` once on the upper body, over `seconds` (the cast of a spell).
     pub fn play_once(&mut self, id: u16, seconds: f32) {
         self.animator.start_upper(&self.m2, id, seconds);
@@ -559,6 +580,12 @@ impl Character {
             }
         }
         self.bones = anim::bone_matrices_with(&self.m2, body, self.clock_ms, &[], &poses);
+        anim::skin(&self.m2, &self.bones, &self.model.vertices, &mut self.vertices);
+    }
+
+    /// Pose the character with these bone matrices (a ragdoll's).
+    pub fn pose_with(&mut self, bones: Vec<Mat4>) {
+        self.bones = bones;
         anim::skin(&self.m2, &self.bones, &self.model.vertices, &mut self.vertices);
     }
 
@@ -654,7 +681,7 @@ mod tests {
         Some(Character::load(&mount, &ModelCache::default(), "player", &Appearance::default()).expect("character loads"))
     }
 
-    const STILL: Motion = Motion { speed: 0.0, forward_speed: 0.0, vertical_speed: 0.0, yaw_rate: 0.0, airborne: false, mounted: false, sneaking: false, swimming: false, side_speed: 0.0 };
+    const STILL: Motion = Motion { speed: 0.0, forward_speed: 0.0, vertical_speed: 0.0, yaw_rate: 0.0, airborne: false, mounted: false, sneaking: false, swimming: false, side_speed: 0.0, emote: None };
 
     #[test]
     fn real_character_animates_and_has_a_complete_body() {

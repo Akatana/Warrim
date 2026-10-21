@@ -87,6 +87,7 @@ impl State {
         }
         self.wolves = Creatures::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu, &spawn_list()).map_err(|e| log::warn!("no creatures: {e:#}")).ok();
         if let Some(wolves) = &mut self.wolves {
+            wolves.set_routes(spawn_routes());
             wolves.set_spell_anims(self.foes.anims());
         }
         self.chests = Chests::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu).map_err(|e| log::warn!("no chests: {e:#}")).ok();

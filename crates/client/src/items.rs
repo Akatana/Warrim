@@ -96,7 +96,7 @@ pub enum Wear {
     Finger,
     Trinket,
     Back,
-    /// A weapon held in one hand: the main hand (dual wielding is not modelled).
+    /// A weapon held in one hand: it goes in either hand (the off hand's blows do half the damage).
     OneHand,
     /// A weapon that goes in the main hand only.
     MainHand,
@@ -133,7 +133,8 @@ impl Wear {
             Wear::Finger => slot == 11 || slot == 12,
             Wear::Trinket => slot == 13 || slot == 14,
             Wear::Back => slot == 15,
-            Wear::OneHand | Wear::MainHand | Wear::TwoHand => slot == MAIN_HAND,
+            Wear::MainHand | Wear::TwoHand => slot == MAIN_HAND,
+            Wear::OneHand => slot == MAIN_HAND || slot == OFF_HAND,
             Wear::Shield | Wear::OffHand | Wear::Held => slot == OFF_HAND,
             Wear::Ranged | Wear::Thrown => slot == RANGED,
             Wear::Ammo => slot == 0,
@@ -212,6 +213,8 @@ pub enum UseEffect {
     Hearth,
     /// A steed to ride (a row of `CreatureDisplayInfo.dbc`) and the percent of the running speed it adds.
     Mount(u32, i32),
+    /// What a worn item gives, by the aura of the original: its number, the `misc` (the schools of a spell bonus) and the amount (see `Gear::add`).
+    Equip(u16, i32, i32),
 }
 
 /// What an item does besides what it is: a spell of the original that it casts when used (0), worn (1), or on a blow (2),
@@ -227,6 +230,9 @@ pub struct ItemSpell {
     /// Milliseconds before it can be used again (-1 for the spell's own).
     #[serde(default)]
     pub cooldown: i32,
+    /// For a spell that goes off on a hit: how many times a minute (0: the spell's own chance).
+    #[serde(default)]
+    pub ppm: f32,
     #[serde(default)]
     pub effects: Vec<UseEffect>,
     #[serde(default)]
@@ -239,6 +245,7 @@ pub struct ItemSpellDef {
     pub trigger: u8,
     pub charges: i32,
     pub cooldown: i32,
+    pub ppm: f32,
     pub effects: &'static [UseEffect],
     pub text: &'static str,
 }
@@ -511,7 +518,8 @@ impl Inventory {
     /// Right-click a backpack item: wear it if it can be worn (in a free place of those it fits, else the first), the old item taking its place.
     pub fn equip_from_bag(&mut self, slot: usize, level: u32) -> Result<(), EquipError> {
         let Some(s) = self.bag[slot] else { return Err(EquipError::DoesNotGoThere) };
-        let places: Vec<usize> = (0..SLOTS).filter(|&p| get(s.item).wear.fits(p)).collect();
+        // A one-hand weapon takes the main hand (the off hand is for clicking it there).
+        let places: Vec<usize> = (0..SLOTS).filter(|&p| get(s.item).wear.fits(p) && (get(s.item).wear != Wear::OneHand || p == MAIN_HAND)).collect();
         let Some(&target) = places.iter().find(|&&p| self.equipment[p].is_none()).or(places.first()) else { return Err(EquipError::DoesNotGoThere) };
         self.check_equip(s.item, target, level)?;
         let old = self.equipment[target].replace(s);
@@ -602,6 +610,77 @@ impl Inventory {
 }
 
 
+/// What the spells of the worn items add (`UseEffect::Equip`), summed.
+#[derive(Default)]
+struct Gear {
+    /// Damage of spells by school (physical, holy, fire, nature, frost, shadow, arcane) and healing.
+    spell_damage: [i32; 7],
+    healing: i32,
+    attack_power: i32,
+    ranged_attack_power: i32,
+    /// Percent: critical blows, critical spells (holy), hits, spell hits, dodge, parry, block; and attack speed of weapons and ranged weapons.
+    crit: f32,
+    spell_crit: [f32; 7],
+    /// By creature type (1 to 10): attack power with weapons, with ranged weapons, and the damage of spells against it.
+    ap_versus: [i32; 11],
+    ranged_ap_versus: [i32; 11],
+    spell_versus: [i32; 11],
+    hit: f32,
+    spell_hit: f32,
+    dodge: f32,
+    parry: f32,
+    block: f32,
+    haste: f32,
+    ranged_haste: f32,
+    /// Percent of the running speed (the best one counts).
+    run: f32,
+    block_value: i32,
+    /// Mana and health regained every 5 seconds.
+    mp5: i32,
+    hp5: i32,
+    resist: [i32; 6],
+}
+
+impl Gear {
+    /// Take in one effect: the original's aura 13 (damage of schools), 135 (healing), 99 and 124 (attack power, melee and ranged), 52 and 71 (crit, blows and
+    /// spells), 54 and 55 (hit), 49, 47, 51 (dodge, parry, block), 158 (block value), 85 and 161 (mana, health every 5 seconds), 138 and 141 (attack speed),
+    /// 31 (running speed), 22 (resistance of schools).
+    fn add(&mut self, aura: u16, misc: i32, amount: i32) {
+        let a = amount as f32;
+        let schools = |f: &mut dyn FnMut(usize)| (0..7).filter(|s| misc >> s & 1 == 1).for_each(f);
+        match aura {
+            13 => schools(&mut |s| self.spell_damage[s] += amount),
+            135 => self.healing += amount,
+            99 => self.attack_power += amount,
+            124 => self.ranged_attack_power += amount,
+            52 => self.crit += a,
+            71 => schools(&mut |s| self.spell_crit[s] += a),
+            102 | 131 | 180 => {
+                for t in (1..=10).filter(|t| misc >> (t - 1) & 1 == 1) {
+                    match aura {
+                        102 => self.ap_versus[t] += amount,
+                        131 => self.ranged_ap_versus[t] += amount,
+                        _ => self.spell_versus[t] += amount,
+                    }
+                }
+            }
+            54 => self.hit += a,
+            55 => self.spell_hit += a,
+            49 => self.dodge += a,
+            47 => self.parry += a,
+            51 => self.block += a,
+            158 => self.block_value += amount,
+            85 => self.mp5 += amount,
+            161 => self.hp5 += amount,
+            138 => self.haste += a,
+            141 => self.ranged_haste += a,
+            31 => self.run = self.run.max(a),
+            22 => schools(&mut |s| if s >= 1 { self.resist[s - 1] += amount }),
+            _ => {}
+        }
+    }
+}
+
 /// What the character is, from what is worn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stats {
@@ -613,57 +692,125 @@ pub struct Stats {
     /// Main hand weapon damage range, speed, and what attack power adds to it.
     pub damage: (f32, f32),
     pub speed: f32,
+    /// What a weapon in the off hand does per blow (half of its damage and what attack power adds), if one is wielded.
+    pub off_damage: Option<(f32, f32)>,
     pub max_health: f32,
+    /// Base mana, what intellect and the worn items add.
+    pub max_mana: f32,
+    /// 100, and a point for each point of agility.
+    pub max_stamina: f32,
     /// Weapon skill: 5 per level.
     pub attack: i32,
-    /// What the worn items add to the mana, and to the resistances (holy, fire, nature, frost, shadow, arcane).
-    pub mana: i32,
+    /// The resistances (holy, fire, nature, frost, shadow, arcane).
     pub resist: [i32; 6],
+    /// Chances in percent: to dodge a blow, to land a critical blow, to land a critical spell.
+    pub dodge: f32,
+    pub crit: f32,
+    /// The chance to land a critical spell by school (physical, holy, fire, nature, frost, shadow, arcane).
+    pub spell_crit: [f32; 7],
+    /// Chances in percent to parry and to block a blow (the second needs a shield), and what a block holds back.
+    pub parry: f32,
+    pub block: f32,
+    pub block_value: f32,
+    /// Health and mana regained each second (spirit): health out of combat, mana unless a spell was cast lately; the mana the worn items give
+    /// is regained always (`mana_regen_casting` is that alone).
+    pub health_regen: f32,
+    pub mana_regen: f32,
+    pub mana_regen_casting: f32,
+    /// Attack power with a bow, a crossbow or a gun, and its damage range and speed (none without one).
+    pub ranged_attack_power: i32,
+    pub ranged: Option<(f32, f32, f32)>,
+    /// What the worn items add to spells: damage by school (physical, holy, fire, nature, frost, shadow, arcane) and healing; the percent they add to the
+    /// chance to hit with weapons and with spells; health regained every second whatever the fight.
+    pub spell_damage: [i32; 7],
+    pub healing: i32,
+    pub hit: f32,
+    pub spell_hit: f32,
+    pub health_regen_always: f32,
+    /// What the worn items add against a type of creature (1 to 10): attack power, ranged attack power and the damage of spells.
+    pub ap_versus: [i32; 11],
+    pub ranged_ap_versus: [i32; 11],
+    pub spell_versus: [i32; 11],
+    /// The share of the running speed the worn items add (0.08 for 8 percent).
+    pub run_speed: f32,
 }
 
-/// Level 1 human paladin (`levels::attribute_bonus` adds the growth): strength, agility, stamina, intellect, spirit.
-const BASE_ATTRIBUTES: [i32; 5] = [22, 20, 22, 20, 21];
 /// Attack power per point of damage per second (`ATTACK_POWER_MAGIC_NUMBER`).
 pub const ATTACK_POWER_PER_DPS: f32 = 14.0;
 
 impl Stats {
-    /// What the character is at this level in this equipment, and with these boosts (the stats, armor and health that elixirs and the like give for a while).
-    pub fn of(equipment: &[Option<Stack>; SLOTS], level: u32, boosts: &[i32; 7]) -> Stats {
-        let mut attributes = BASE_ATTRIBUTES;
-        for (a, bonus) in attributes.iter_mut().zip(crate::levels::attribute_bonus(level)) {
-            *a += bonus;
-        }
+    /// What the character is at this level in this equipment, and with these boosts (the stats, armor and health that elixirs and the like give for a while) and
+    /// these effects (what spells put on it for a while).
+    pub fn of(equipment: &[Option<Stack>; SLOTS], level: u32, boosts: &[i32; 7], timed: &[UseEffect]) -> Stats {
+        let mut attributes = crate::levels::attributes(level);
         for (a, boost) in attributes.iter_mut().zip(boosts) {
             *a += boost;
         }
-        let (mut armor, mut health, mut mana, mut resist) = (boosts[5], boosts[6], 0, [0; 6]);
+        let (mut armor, mut health, mut mana, mut resist, mut gear) = (boosts[5], boosts[6], 0, [0; 6], Gear::default());
         for stack in equipment.iter().flatten() {
             let item = &get(stack.item);
             armor += item.armor;
             (health, mana) = (health + item.health, mana + item.mana);
             resist.iter_mut().zip(item.resist).for_each(|(r, i)| *r += i);
-            // What a worn item does with its spells, as far as the game models it: more of a stat, armor or health.
-            for effect in item.spells.iter().filter(|s| s.trigger == 1).flat_map(|s| s.effects) {
-                match *effect {
-                    UseEffect::Boost(stat @ 0..=4, amount, _) => attributes[stat as usize] += amount,
-                    UseEffect::Boost(5, amount, _) => armor += amount,
-                    UseEffect::Boost(6, amount, _) => health += amount,
-                    _ => {}
-                }
-            }
             for (a, s) in attributes.iter_mut().zip(item.stats) {
                 *a += s;
             }
         }
-        // Agility adds 2 armor per point; strength adds 2 attack power per point, less 20 for a paladin.
+        // What the spells of the worn items do, and what spells put on the character for a while, as far as the game models it: more of a stat, armor or health, or
+        // what `Gear` takes in.
+        let worn = equipment.iter().flatten().flat_map(|s| get(s.item).spells.iter().filter(|s| s.trigger == 1).flat_map(|s| s.effects.iter().copied()));
+        for effect in worn.chain(timed.iter().copied()) {
+            match effect {
+                UseEffect::Boost(stat @ 0..=4, amount, _) => attributes[stat as usize] += amount,
+                UseEffect::Boost(5, amount, _) => armor += amount,
+                UseEffect::Boost(6, amount, _) => health += amount,
+                UseEffect::Equip(aura, misc, amount) => gear.add(aura, misc, amount),
+                _ => {}
+            }
+        }
+        // Agility adds 2 armor per point; a paladin has 3 attack power per level and 2 per point of strength, less 20.
         armor += attributes[1] * 2;
-        let attack_power = (attributes[0] * 2 - 20).max(0);
+        resist.iter_mut().zip(gear.resist).for_each(|(r, g)| *r += g);
+        let attack_power = (level as i32 * 3 + attributes[0] * 2 - 20).max(0) + gear.attack_power;
         let (min, max, speed) = equipment[MAIN_HAND].and_then(|s| get(s.item).weapon).map_or((1.0, 2.0, 2.0), |w| (w.min, w.max, w.speed));
-        // The first 20 points of stamina give 1 health each, the rest 10 each, on top of the level's base.
-        let sta = attributes[2];
-        let max_health = (crate::levels::base_health(level) as i32 + sta.min(20) + (sta - 20).max(0) * 10 + health) as f32;
+        // The first 20 points of stamina give 1 health each, the rest 10 each; of intellect 1 mana each, the rest 15 each; on top of the level's base.
+        let [str, agi, sta, int, spi] = attributes.map(|a| a as f32);
+        let bonus = |points: f32, more: f32| points.min(20.0) + (points - 20.0).max(0.0) * more;
+        let max_health = crate::levels::base_health(level) as f32 + bonus(sta, 10.0) + health as f32;
+        let max_mana = crate::levels::base_mana(level) as f32 + bonus(int, 15.0) + mana as f32;
+        // CMaNGOS (`GetDodgeFromAgility`, `GetMeleeCritFromAgility`, `GetSpellCritFromIntellect`, `OCTRegenHPPerSpirit`, `OCTRegenMPPerSpirit`) for a paladin.
+        let lv = level.clamp(1, 60) as f32;
+        let rate = 4.6 * (60.0 - lv) / 59.0 + 20.0 * (lv - 1.0) / 59.0;
+        let dodge = 0.75 + agi / rate + gear.dodge;
+        let crit = agi / rate + gear.crit;
+        let spell_crit = gear.spell_crit.map(|g| 3.70 + int / (14.77 + 0.65 * level as f32) + g);
+        let (health_regen, mana_regen_casting) = (spi * 0.25, gear.mp5 as f32 / 5.0);
+        let mana_regen = (spi / 5.0 + 15.0) / 2.0 + mana_regen_casting;
+        // 5% to parry, and with a shield 5% to block what the shield and strength hold back (`UpdateParryPercentage`, `UpdateBlockPercentage`, `GetShieldBlockValue`).
+        let shield = equipment[OFF_HAND].map(|s| get(s.item)).filter(|i| i.wear == Wear::Shield);
+        let block_value = shield.map_or(0.0, |i| (i.block as f32 + gear.block_value as f32 + str / 20.0 - 1.0).max(0.0));
+        // Ranged attack power of a paladin: agility less 10.
+        let ranged_attack_power = (agi - 10.0).max(0.0) as i32 + gear.ranged_attack_power;
+        let ranged_bonus = |speed: f32| ranged_attack_power as f32 / ATTACK_POWER_PER_DPS * speed;
+        let ranged = equipment[RANGED].map(|s| get(s.item)).filter(|i| i.class == 2 && matches!(i.subclass, 2 | 3 | 18)).and_then(|i| i.weapon).map(|w| (w.min + ranged_bonus(w.speed), w.max + ranged_bonus(w.speed), w.speed / (1.0 + gear.ranged_haste / 100.0)));
         let bonus = attack_power as f32 / ATTACK_POWER_PER_DPS * speed;
-        Stats { level, attributes, armor, attack_power, damage: (min + bonus, max + bonus), speed, max_health, attack: 5 * level as i32, mana, resist }
+        let speed = speed / (1.0 + gear.haste / 100.0);
+        let off_damage = equipment[OFF_HAND].map(|s| get(s.item)).filter(|i| i.class == 2 && matches!(i.wear, Wear::OneHand | Wear::OffHand)).and_then(|i| i.weapon).map(|w| {
+            let bonus = attack_power as f32 / ATTACK_POWER_PER_DPS * w.speed;
+            ((w.min + bonus) / 2.0, (w.max + bonus) / 2.0)
+        });
+        Stats { level, attributes, armor, attack_power, damage: (min + bonus, max + bonus), off_damage, speed, max_health, max_mana, max_stamina: 100.0 + agi, attack: 5 * level as i32, resist, dodge, crit, spell_crit, parry: 5.0 + gear.parry, block: if shield.is_some() { 5.0 + gear.block } else { 0.0 }, block_value, health_regen, mana_regen, mana_regen_casting, ranged_attack_power, ranged,
+            spell_damage: gear.spell_damage, healing: gear.healing, hit: gear.hit, spell_hit: gear.spell_hit, health_regen_always: gear.hp5 as f32 / 5.0, run_speed: gear.run / 100.0, ap_versus: gear.ap_versus, ranged_ap_versus: gear.ranged_ap_versus, spell_versus: gear.spell_versus }
+    }
+
+    /// The share of the damage of a school of magic (the original's number: 1 holy, 2 fire, 3 nature, 4 frost, 5 shadow, 6 arcane) that its resistance stops
+    /// on average (CMaNGOS `CalculateAverageResistReduction`: resistance over 5 a level of the attacker, three fourths of it, no more than that; holy is ignored).
+    /// The attacker is taken to be of the character's level.
+    pub fn resistance(&self, school: u32) -> f32 {
+        match school {
+            2..=6 => (self.resist[school as usize - 1] as f32 / (5.0 * self.level as f32) * 0.75).clamp(0.0, 0.75),
+            _ => 0.0,
+        }
     }
 
     /// The share of physical damage armor stops (`armor / (armor + 400 + 85 * level)`).
@@ -726,25 +873,45 @@ mod tests {
     #[test]
     fn the_starting_kit_gives_the_stats_the_formulas_say() {
         let inv = Inventory::new();
-        let s = Stats::of(&inv.equipment, 1, &[0; 7]);
+        let s = Stats::of(&inv.equipment, 1, &[0; 7], &[]);
         // Shield armor 25 plus 2 per point of agility (20).
-        assert_eq!((s.armor, s.attack_power, s.attributes), (65, 24, [22, 20, 22, 20, 21]));
-        // 10 - 14 plus 24 / 14 x 2.6 = 4.46 from attack power.
-        assert!((s.damage.0 - 14.457).abs() < 0.01 && (s.damage.1 - 18.457).abs() < 0.01, "{:?}", s.damage);
-        // 60 + 20 + 2 x 10.
-        assert_eq!(s.max_health, 100.0);
+        // Attack power: 3 + 2 x 22 - 20.
+        assert_eq!((s.armor, s.attack_power, s.attributes), (65, 27, [22, 20, 22, 20, 22]));
+        // 10 - 14 plus 27 / 14 x 2.6 = 5.01 from attack power.
+        assert!((s.damage.0 - 15.014).abs() < 0.01 && (s.damage.1 - 19.014).abs() < 0.01, "{:?}", s.damage);
+        // Health: 28 + 20 + 2 x 10; mana: 59 + 20 (intellect 20 gives no more than 1 each).
+        assert_eq!((s.max_health, s.max_mana), (68.0, 79.0));
+        // Dodge 0.75 + 20 / 4.6, spell crit 3.7 + 20 / (14.77 + 0.65), regen from 22 spirit (health 0.25, mana 1/5 + 15, per 2 seconds).
+        assert!((s.dodge - 5.098).abs() < 0.01 && (s.crit - 4.348).abs() < 0.01 && s.spell_crit.iter().all(|c| (c - 4.997).abs() < 0.01));
+        assert!((s.health_regen - 5.5).abs() < 1e-4 && (s.mana_regen - 9.7).abs() < 1e-4);
+        // 5% to parry; the shield gives 5% to block; ranged attack power is agility less 10, and there is no bow.
+        assert_eq!((s.parry, s.block, s.ranged_attack_power, s.ranged, s.mana_regen_casting), (5.0, 5.0, 10, None, 0.0));
+        assert!((s.block_value - (get(inv.equipment[OFF_HAND].unwrap().item).block as f32 + 0.1)).abs() < 1e-4);
+        // "Restores 3 mana per 5 sec." on a wrist piece: regained always, on top of the spirit's.
+        let mut with_mp5 = inv.equipment;
+        with_mp5[8] = Some(Stack { item: find("i9448"), count: 1 });
+        let m = Stats::of(&with_mp5, 1, &[0; 7], &[]);
+        assert!((m.mana_regen_casting - 0.6).abs() < 1e-4 && (m.mana_regen - s.mana_regen - 0.6).abs() < 1e-4);
+        // A ring of +7 damage and healing, gloves of 1% crit and attack power, a shield of 2% more block: what the spells of worn items add.
+        let mut gear = inv.equipment;
+        (gear[10], gear[9], gear[OFF_HAND]) = (Some(Stack { item: find("i862"), count: 1 }), Some(Stack { item: find("i867"), count: 1 }), Some(Stack { item: find("i2040"), count: 1 }));
+        let g = Stats::of(&gear, 1, &[0; 7], &[]);
+        assert_eq!((g.healing, g.spell_damage), (7, [0, 7, 7, 7, 7, 7, 7]));
+        assert!((g.crit - s.crit - 1.0).abs() < 1e-4 && g.attack_power > s.attack_power && g.block == 7.0);
+        // "+30 Attack Power when fighting Undead" (the type 6): a creature of the original knows its type.
+        assert_eq!((g.ap_versus[6], g.ap_versus[1], crate::content::creature("c3").kind, crate::content::creature("wolf").kind), (30, 0, 6, 1));
         assert!((s.mitigation() - 65.0 / 550.0).abs() < 1e-4);
         // Without the sword: fists.
         let mut bare = inv.equipment;
         bare[MAIN_HAND] = None;
-        let fists = Stats::of(&bare, 1, &[0; 7]).damage;
-        assert!((fists.0 - (1.0 + 24.0 / 14.0 * 2.0)).abs() < 1e-3 && (fists.1 - fists.0 - 1.0).abs() < 1e-3, "{fists:?}");
+        let fists = Stats::of(&bare, 1, &[0; 7], &[]).damage;
+        assert!((fists.0 - (1.0 + 27.0 / 14.0 * 2.0)).abs() < 1e-3 && (fists.1 - fists.0 - 1.0).abs() < 1e-3, "{fists:?}");
     }
 
     #[test]
     fn a_higher_level_has_more_of_everything_that_grows() {
         let kit = Inventory::new().equipment;
-        let (one, ten) = (Stats::of(&kit, 1, &[0; 7]), Stats::of(&kit, 10, &[0; 7]));
+        let (one, ten) = (Stats::of(&kit, 1, &[0; 7], &[]), Stats::of(&kit, 10, &[0; 7], &[]));
         assert!(ten.attributes.iter().zip(one.attributes).all(|(a, b)| *a > b));
         // Strength and agility feed attack power and armor; stamina and the level's base feed health; skill is 5 a level.
         assert!(ten.attack_power > one.attack_power && ten.armor > one.armor && ten.max_health > one.max_health);
@@ -835,6 +1002,24 @@ mod tests {
         // Buying it back costs what it fetched.
         assert_eq!(inv.pay(Stack { item: find("linen_cloth"), count: 3 }, 39), Ok(()));
         assert_eq!(inv.money, 1000);
+    }
+
+    #[test]
+    fn a_one_hand_weapon_can_be_wielded_in_the_off_hand_for_half_a_blow() {
+        let mut inv = Inventory::new();
+        let (sword, dagger) = (find("longsword"), find("thorne_dagger"));
+        assert!(Stats::of(&inv.equipment, 1, &[0; 7], &[]).off_damage.is_none());
+        inv.equipment[OFF_HAND] = None;
+        inv.cursor = Some(Stack { item: dagger, count: 1 });
+        inv.click_equipment(OFF_HAND, 60).unwrap();
+        let stats = Stats::of(&inv.equipment, 1, &[0; 7], &[]);
+        let (min, max) = stats.off_damage.expect("no off-hand damage");
+        assert!(min >= 3.0 && max >= 5.5 && max < stats.damage.1, "{min} {max}");
+        // Right-click from the pack still takes the main hand; a two-hander sends the dagger back to the pack.
+        inv.add(Stack { item: sword, count: 1 });
+        let slot = inv.bag.iter().position(|b| b.is_some_and(|b| b.item == sword)).unwrap();
+        inv.equip_from_bag(slot, 60).unwrap();
+        assert_eq!(inv.equipment[OFF_HAND].map(|s| s.item), Some(dagger));
     }
 
     #[test]

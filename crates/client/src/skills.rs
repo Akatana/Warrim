@@ -31,6 +31,7 @@ pub enum Skill {
     Lockpicking,
     Riding,
     Swimming,
+    Diving,
     Cloth,
     Leather,
     Chain,
@@ -47,7 +48,7 @@ pub enum Skill {
 }
 
 /// How many skills there are.
-pub const COUNT: usize = 35;
+pub const COUNT: usize = 36;
 
 /// The rank of the original's skills of riding: apprentice, and journeyman (the nearest the game has, with only these two, to the original's tiers). Not trained by use:
 /// a riding instructor teaches them for a price.
@@ -77,6 +78,7 @@ pub const ALL: [Skill; COUNT] = [
     Skill::Lockpicking,
     Skill::Riding,
     Skill::Swimming,
+    Skill::Diving,
     Skill::Cloth,
     Skill::Leather,
     Skill::Chain,
@@ -164,6 +166,7 @@ impl Skill {
             Skill::Lockpicking => "Lockpicking",
             Skill::Riding => "Riding",
             Skill::Swimming => "Swimming",
+            Skill::Diving => "Diving",
             Skill::Cloth => "Cloth",
             Skill::Leather => "Leather",
             Skill::Chain => "Mail",
@@ -189,6 +192,7 @@ impl Skill {
             Skill::Sneaking => "Skill at moving unseen. Rises while you sneak about, and creatures notice you from less far away.".into(),
             Skill::Lockpicking => "Skill at picking locks. Rises with every lock you open, and the sweet spot of a lock grows wider.".into(),
             Skill::Swimming => "Skill at swimming. Rises while you swim, and swimming tires you less.".into(),
+            Skill::Diving => "Skill at holding your breath. Rises while your head is under water, and you can stay under longer before you start to drown.".into(),
             armor if armor.group() == Group::Armor => format!("Skill in wearing {} armor. Rises with every blow that lands on you, in the share of the pieces you wear of it, and each piece of it stops more damage.", armor.name().to_lowercase()),
             Skill::Riding => "Skill at riding. Learned from a riding instructor, for a price; it lets you ride the mounts that ask for it.".into(),
             class => format!("Skill in the arts of the {}. Rises with every spell of the class you cast, and its spells grow stronger. The greater tomes of the class ask for its rank.", class.name().to_lowercase()),
@@ -202,7 +206,7 @@ impl Skill {
 
     pub fn group(self) -> Group {
         match self {
-            Skill::Sneaking | Skill::Lockpicking | Skill::Riding | Skill::Swimming => Group::General,
+            Skill::Sneaking | Skill::Lockpicking | Skill::Riding | Skill::Swimming | Skill::Diving => Group::General,
             Skill::Cloth | Skill::Leather | Skill::Chain | Skill::Plate => Group::Armor,
             Skill::Warrior | Skill::Paladin | Skill::Hunter | Skill::Rogue | Skill::Priest | Skill::Shaman | Skill::Mage | Skill::Warlock | Skill::Druid => Group::Class,
             _ => Group::Weapon,
@@ -334,6 +338,11 @@ impl Skills {
         1.0 - 0.5 * self.power(Skill::Swimming)
     }
 
+    /// Seconds the breath lasts under water: half a minute at rank 1, two minutes at the top rank.
+    pub fn breath_seconds(&self) -> f32 {
+        30.0 + 90.0 * self.power(Skill::Diving)
+    }
+
     pub fn lock_window_factor(&self) -> f32 {
         1.0 + 0.5 * self.power(Skill::Lockpicking)
     }
@@ -422,11 +431,11 @@ mod tests {
         let mut s = Skills::new();
         let (d0, b0, n0, l0) = (s.damage_factor(Skill::Swords), s.block_cost_factor(), s.notice_factor(), s.lock_window_factor());
         assert!(d0 >= 1.0 && b0 <= 1.0 && n0 == 1.0 && l0 == 1.0);
-        assert_eq!(s.swim_cost_factor(), 1.0);
-        for skill in [Skill::Swords, Skill::Mage, Skill::Blocking, Skill::Sneaking, Skill::Lockpicking, Skill::Swimming] {
+        assert_eq!((s.swim_cost_factor(), s.breath_seconds()), (1.0, 30.0));
+        for skill in [Skill::Swords, Skill::Mage, Skill::Blocking, Skill::Sneaking, Skill::Lockpicking, Skill::Swimming, Skill::Diving] {
             s.train(skill, 1e6);
         }
-        assert_eq!(s.swim_cost_factor(), 0.5);
+        assert_eq!((s.swim_cost_factor(), s.breath_seconds()), (0.5, 120.0));
         assert_eq!((s.damage_factor(Skill::Swords), s.damage_factor(Skill::Mage)), (1.5, 2.0));
         assert_eq!((s.block_cost_factor(), s.notice_factor(), s.lock_window_factor()), (0.5, 0.5, 1.5));
     }
@@ -440,7 +449,7 @@ mod tests {
         }
         assert_eq!(ALL.iter().filter(|s| s.is_class()).count(), 9);
         assert_eq!(ALL.iter().filter(|s| s.group() == Group::Weapon).count(), 18);
-        assert_eq!(ALL.iter().filter(|s| s.group() == Group::General).count(), 4);
+        assert_eq!(ALL.iter().filter(|s| s.group() == Group::General).count(), 5);
         assert_eq!(ALL.iter().filter(|s| s.group() == Group::Armor).count(), 4);
     }
 

@@ -32,8 +32,11 @@ const SPRINT_RESUME: f32 = 25.0;
 const SWIM_DRAIN: f32 = 6.0;
 const SWIM_REST_DRAIN: f32 = 1.5;
 const BLOCK_COST: f32 = 20.0;
-/// Mana comes back at this many points a second.
-const MANA_REGEN: f32 = 4.0;
+/// Breath comes back this many seconds' worth a second at the surface, and a drowning character loses this share of its health a second.
+const BREATH_REGEN: f32 = 10.0;
+const DROWN_SHARE: f32 = 0.05;
+/// Seconds after a spell cost mana before the spirit gives any back (CMaNGOS `SetLastManaUse`).
+const MANA_WAIT: f32 = 5.0;
 const JUMP_COST: f32 = 10.0;
 /// Seconds a light swing takes at the most (a fast weapon swings faster), and a heavy one.
 const ATTACK_SECONDS: f32 = 0.65;
@@ -49,6 +52,8 @@ const HEAVY_COST: f32 = 25.0;
 pub const HEAVY_DAMAGE: f32 = 2.0;
 /// The least share of its damage a swing does, however soon after the last one it comes (see `Player::begin_swing`).
 const MIN_POWER: f32 = 0.15;
+/// The percent more that blows miss while a weapon is wielded in each hand.
+pub const DUAL_WIELD_MISS: f32 = 19.0;
 /// How fast the body turns into the archer's stance (per second, as the rate of an exponential approach).
 const AIM_TURN_RATE: f32 = 20.0;
 
@@ -139,6 +144,11 @@ pub struct Player {
     /// In the water, and what the skill in swimming makes of the stamina swimming costs (1 for none).
     swimming: bool,
     swim_cost: f32,
+    /// The head under water, the seconds of breath left and the most the skill in diving gives, and the seconds spent drowning towards the next blow.
+    submerged: bool,
+    breath: f32,
+    breath_max: f32,
+    drowning: f32,
     /// How big it is (the hull it walks with, and its scale).
     size: crate::character::Size,
     mount: Arc<Mount>,
@@ -150,6 +160,9 @@ pub struct Player {
     mitigation: f32,
     damage: (f32, f32),
     rng: u32,
+    /// What spirit gives back each second, of health and of mana (set by the game each frame), and the seconds since mana was spent.
+    regen: (f32, f32, f32),
+    mana_idle: f32,
     /// Sprint key held with stamina to spend (set by the game each frame).
     sprinting: bool,
     /// Crouched and quiet: slower, softer footsteps, harder to notice, and the first blow on one who has not noticed is heavier.
@@ -172,6 +185,15 @@ pub struct Player {
     /// The swing is at its cut and has not struck yet / has just struck (see `take_swing_hit`).
     hit_pending: bool,
     swing_hit: Option<(Swing, f32)>,
+    /// Swings that came for nothing (an extra attack of a weapon's spell) and are still to be made, and whether the last one taken was one.
+    extra: u32,
+    extra_now: bool,
+    /// What the off hand's weapon does per blow (wielded or not), whether it strikes after the swing that began, whether the swing in progress is its own, and whether the blow taken last was.
+    off_damage: Option<(f32, f32)>,
+    off_next: bool,
+    off_dagger: bool,
+    off_swing: bool,
+    off_hit: bool,
     /// The steed the character rides, if any; `dismount_wanted`: it is sent away at the start of the next `update`.
     steed: Option<Steed>,
     dismount_wanted: bool,
@@ -266,7 +288,7 @@ impl Player {
     pub fn load(mount: &Arc<Mount>, cache: &ModelCache, renderer: &mut Renderer, gpu: &Gpu, look: &crate::character::Appearance) -> Result<Player> {
         let character = Character::load(mount, cache, "player", look)?;
         let worn = Worn::new(&character, renderer, gpu);
-        Ok(Player { character, worn, mount: mount.clone(), cache: ModelCache::default(), view: View::First, body_turn: 0.0, attack: None, weapon_speed: 2.0, since_swing: 99.0, charge: None, refused: None, ranged: Ranged::default(), camera_distance: THIRD_PERSON_DISTANCE, follow: 1.0, last_eye: None, feet: Vec3::ZERO, facing: 0.0, mitigation: 0.0, damage: (12.0, 12.0), rng: 0x1234_5678, blocking: false, block_cost: 1.0, swimming: false, swim_cost: 1.0, size: crate::character::Size::of(mount, look).unwrap_or_else(|e| { log::warn!("no size for the player: {e:#}"); Default::default() }), sprinting: false, sneaking: false, exhausted: false, rested: 0.0, vitals: Vitals::full(), events: Vec::new(), steps: Stepper::default(), swings: 0, swing_pending: false, hit_pending: false, swing_hit: None, steed: None, dismount_wanted: false, sheathed: false, stowed: false, sheath_wait: 0.0, busy: 0.0, sheath_kind: "", retired: Vec::new(), look: *look, no_swing: false, no_shot: false })
+        Ok(Player { character, worn, mount: mount.clone(), cache: ModelCache::default(), view: View::First, body_turn: 0.0, attack: None, weapon_speed: 2.0, since_swing: 99.0, charge: None, refused: None, ranged: Ranged::default(), camera_distance: THIRD_PERSON_DISTANCE, follow: 1.0, last_eye: None, feet: Vec3::ZERO, facing: 0.0, mitigation: 0.0, damage: (12.0, 12.0), rng: 0x1234_5678, regen: (0.0, 0.0, 0.0), mana_idle: MANA_WAIT, blocking: false, block_cost: 1.0, swimming: false, swim_cost: 1.0, submerged: false, breath: 30.0, breath_max: 30.0, drowning: 0.0, size: crate::character::Size::of(mount, look).unwrap_or_else(|e| { log::warn!("no size for the player: {e:#}"); Default::default() }), sprinting: false, sneaking: false, exhausted: false, rested: 0.0, vitals: Vitals::full(), events: Vec::new(), steps: Stepper::default(), swings: 0, swing_pending: false, hit_pending: false, swing_hit: None, extra: 0, extra_now: false, off_damage: None, off_next: false, off_dagger: false, off_swing: false, off_hit: false, steed: None, dismount_wanted: false, sheathed: false, stowed: false, sheath_wait: 0.0, busy: 0.0, sheath_kind: "", retired: Vec::new(), look: *look, no_swing: false, no_shot: false })
     }
 
     pub fn toggle_view(&mut self) {
@@ -311,10 +333,11 @@ impl Player {
         if swing == Swing::Light {
             self.character.attack(length);
         } else {
-            self.character.play_once(crate::animator::ATTACK_2H, length);
+            self.character.heavy_attack(length);
         }
         self.swing_pending = true;
         self.hit_pending = true;
+        (self.off_swing, self.off_next) = (false, swing == Swing::Light && self.off_damage.is_some());
         // A grunt on every other swing, and on every heavy one.
         self.swings += 1;
         if self.swings % 2 == 1 || swing == Swing::Heavy {
@@ -498,11 +521,7 @@ impl Player {
     /// Take on what is worn: the stats (health, armor, the weapon's damage), the textures on the body, and the
     /// weapon and shield in the hands. Call at the start and whenever the equipment changes.
     pub fn set_equipment(&mut self, renderer: &mut Renderer, gpu: &Gpu, equipment: &[Option<Stack>; SLOTS], stats: &Stats) {
-        let health = &mut self.vitals.health;
-        let share = health.fraction();
-        health.max = stats.max_health;
-        health.current = (share * health.max).round().max(if health.current > 0.0 { 1.0 } else { 0.0 });
-        (self.mitigation, self.damage, self.weapon_speed) = (stats.mitigation(), stats.damage, stats.speed);
+        self.apply_stats(stats);
         // What the weapons are made of says how they sound in the sheath: the main hand's, else the shield's.
         let handling = |slot: usize| equipment[slot].map(|s| items::get(s.item).handling).unwrap_or("");
         self.sheath_kind = match (handling(items::MAIN_HAND), handling(items::OFF_HAND)) {
@@ -511,10 +530,21 @@ impl Player {
             (_, h) if !h.is_empty() => "SHIELD",
             _ => "",
         };
+        // The swings and the ready stance follow the weapon in the main hand (the original's weapon subclasses).
+        use crate::animator::*;
+        let (light, heavy, ready) = match equipment[items::MAIN_HAND].map(|s| items::get(s.item)).filter(|i| i.class == 2).map(|i| i.subclass) {
+            None | Some(13) => (ATTACK_UNARMED, ATTACK_UNARMED, READY_UNARMED),
+            Some(15) => (ATTACK_1H_PIERCE, ATTACK_2H, READY_1H),
+            Some(1 | 5 | 8) => (ATTACK_2H, ATTACK_2HL, READY_1H + 1),
+            Some(6 | 17) => (ATTACK_2HL_PIERCE, ATTACK_2HL, READY_1H + 2),
+            Some(10) => (ATTACK_2HL, ATTACK_2HL, READY_1H + 2),
+            _ => (ATTACK_1H, ATTACK_2H, READY_1H),
+        };
+        self.character.set_poses(light, heavy, ready);
+        self.off_dagger = equipment[items::OFF_HAND].is_some_and(|s| items::get(s.item).class == 2 && items::get(s.item).subclass == 15);
         self.ranged.launcher = equipment[items::RANGED].map(|s| items::get(s.item)).filter(|i| i.class == 2 && matches!(i.subclass, 2 | 3 | 18)).and_then(|i| {
-            let w = i.weapon?;
-            let bonus = stats.attack_power as f32 / items::ATTACK_POWER_PER_DPS * w.speed;
-            Some(Launcher { damage: (w.min + bonus, w.max + bonus), draw: w.speed, ammo_kind: if i.subclass == 3 { 3 } else { 2 } })
+            let (min, max, speed) = stats.ranged?;
+            Some(Launcher { damage: (min, max), draw: speed, ammo_kind: if i.subclass == 3 { 3 } else { 2 } })
         });
         self.ranged.visual = self.ranged.launcher.zip(equipment[items::RANGED]).map_or_else(Default::default, |(_, s)| crate::visuals::of_shot(&self.mount, items::get(s.item).visual.shot as u32));
         // What flies is the second model of the ammo's display: ArrowFlight_01 painted with Arrow_A_01Brown, BulletFlight_01 with bullet.
@@ -530,9 +560,54 @@ impl Player {
         }
     }
 
+    /// Take on the stats (health and mana, armor, the damage and speed of the weapons) without dressing the body again: what a spell that went off or ran out changes.
+    pub fn apply_stats(&mut self, stats: &Stats) {
+        let health = &mut self.vitals.health;
+        let share = health.fraction();
+        health.max = stats.max_health;
+        health.current = (share * health.max).round().max(if health.current > 0.0 { 1.0 } else { 0.0 });
+        let mana = &mut self.vitals.mana;
+        let share = mana.fraction();
+        mana.max = stats.max_mana;
+        mana.current = share * mana.max;
+        let stamina = &mut self.vitals.stamina;
+        let share = stamina.fraction();
+        stamina.max = stats.max_stamina;
+        stamina.current = share * stamina.max;
+        (self.mitigation, self.damage, self.weapon_speed, self.off_damage) = (stats.mitigation(), stats.damage, stats.speed, stats.off_damage);
+        if let (Some(l), Some((min, max, speed))) = (&mut self.ranged.launcher, stats.ranged) {
+            (l.damage, l.draw) = ((min, max), speed);
+        }
+    }
+
     /// The damage of a sword swing: a whole number between the weapon's lowest and highest.
     pub fn roll_damage(&mut self) -> f32 {
-        self.roll(self.damage)
+        self.roll(self.off_damage.filter(|_| self.off_hit).unwrap_or(self.damage))
+    }
+
+    /// A blow was parried or dodged: the character raises the weapon or steps aside.
+    pub fn avoided(&mut self, parry: bool) {
+        if self.attack.is_none() && self.ranged.drawn.is_none() && !self.blocking {
+            self.character.avoid(parry, 0.5);
+        }
+    }
+
+    /// A number from 0 up to 100 by the dice (a chance in percent is met when this is below it).
+    pub fn percent(&mut self) -> f32 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        (self.rng % 10_000) as f32 / 100.0
+    }
+
+    /// Whether something with this chance (percent) happens, by the dice.
+    pub fn chance(&mut self, percent: f32) -> bool {
+        self.percent() < percent
+    }
+
+    /// Health and mana regained each second (the stats' regen; the game passes no health while in combat).
+    pub fn set_regen(&mut self, health: f32, mana: f32, mana_casting: f32) {
+        self.regen = (health, mana, mana_casting);
     }
 
     fn roll(&mut self, damage: (f32, f32)) -> f32 {
@@ -658,6 +733,16 @@ impl Player {
         }
     }
 
+    /// Tell the player whether its head is under water, and how many seconds of breath the skill in diving gives it.
+    pub fn set_diving(&mut self, submerged: bool, max_seconds: f32) {
+        (self.submerged, self.breath_max) = (submerged, max_seconds);
+    }
+
+    /// The breath left and the most there is, in seconds, while the head is under water or the breath is not yet back; none otherwise.
+    pub fn breath(&self) -> Option<(f32, f32)> {
+        (self.submerged || self.breath < self.breath_max).then_some((self.breath, self.breath_max))
+    }
+
     /// Tell the player the sprint key is down and was granted this frame.
     pub fn set_sprinting(&mut self, on: bool) {
         self.sprinting = on;
@@ -728,8 +813,9 @@ impl Player {
             return false;
         }
         resource.current -= amount;
-        if matches!(cost, crate::content::Cost::Stamina(_)) {
-            self.rested = 0.0;
+        match cost {
+            crate::content::Cost::Mana(_) => self.mana_idle = 0.0,
+            crate::content::Cost::Stamina(_) => self.rested = 0.0,
         }
         true
     }
@@ -744,8 +830,10 @@ impl Player {
 
     /// Back on one's feet after dying: health, mana and stamina full again, the shield down.
     pub fn revive(&mut self) {
-        self.vitals = Vitals::full();
-        self.exhausted = false;
+        for r in [&mut self.vitals.health, &mut self.vitals.mana, &mut self.vitals.stamina] {
+            r.current = r.max;
+        }
+        (self.exhausted, self.breath, self.drowning) = (false, self.breath_max, 0.0);
         self.sneaking = false;
         self.set_block(false);
         self.dismount();
@@ -754,7 +842,34 @@ impl Player {
     /// Whether the sword reached the end of its cut since the last call: this is when it hits what is in front.
     /// The swing that reached the end of its cut since the last call, and the share of the damage it does.
     pub fn take_swing_hit(&mut self) -> Option<(Swing, f32)> {
-        self.swing_hit.take()
+        self.extra_now = false;
+        self.off_hit = self.swing_hit.is_some() && self.off_swing;
+        self.swing_hit.take().or_else(|| {
+            (self.extra > 0).then(|| {
+                (self.extra, self.extra_now) = (self.extra - 1, true);
+                (Swing::Light, 1.0)
+            })
+        })
+    }
+
+    /// `n` swings come for nothing, one after another (a weapon's spell).
+    pub fn extra_swings(&mut self, n: u32) {
+        self.extra += n;
+    }
+
+    /// Whether a weapon is wielded in the off hand too.
+    pub fn is_dual_wielding(&self) -> bool {
+        self.off_damage.is_some()
+    }
+
+    /// Whether the swing taken last was the off hand's.
+    pub fn is_off_hand(&self) -> bool {
+        self.off_hit
+    }
+
+    /// Whether the swing taken last was one of the extra ones (they bring no extra swings of their own).
+    pub fn is_extra_swing(&self) -> bool {
+        self.extra_now
     }
 
     pub fn is_blocking(&self) -> bool {
@@ -772,8 +887,29 @@ impl Player {
 
     /// Sprinting on the move drains stamina; otherwise it comes back after a rest.
     fn update_stamina(&mut self, dt: f32, motion: &Motion) {
+        // Under water the breath runs out; with none left the character drowns, a blow a second. At the surface it comes back fast.
+        if self.submerged {
+            self.breath = (self.breath - dt).clamp(0.0, self.breath_max);
+            if self.breath <= 0.0 && self.vitals.health.current > 0.0 {
+                self.drowning += dt;
+                if self.drowning >= 1.0 {
+                    self.drowning -= 1.0;
+                    self.take_magic(self.vitals.health.max * DROWN_SHARE);
+                }
+            }
+        } else {
+            self.breath = (self.breath + BREATH_REGEN * dt).min(self.breath_max);
+            self.drowning = 0.0;
+        }
+        self.mana_idle += dt;
         let mana = &mut self.vitals.mana;
-        mana.current = (mana.current + MANA_REGEN * dt).min(mana.max);
+        // Spirit gives nothing back for a while after a spell; what the worn items give comes always.
+        let per_second = if self.mana_idle >= MANA_WAIT { self.regen.1 } else { self.regen.2 };
+        mana.current = (mana.current + per_second * dt).min(mana.max);
+        let health = &mut self.vitals.health;
+        if health.current > 0.0 {
+            health.current = (health.current + self.regen.0 * dt).min(health.max);
+        }
         let stamina = &mut self.vitals.stamina;
         if self.swimming && !self.exhausted {
             let moving = motion.speed > 0.3 || motion.vertical_speed.abs() > 0.3;
@@ -820,6 +956,13 @@ impl Player {
             }
             if *t >= *length {
                 self.attack = None;
+                // The off hand follows the swing with its own (half the damage, no stamina).
+                if std::mem::take(&mut self.off_next) {
+                    self.attack = Some((0.0, ATTACK_SECONDS, Swing::Light, 1.0));
+                    (self.off_swing, self.swing_pending, self.hit_pending) = (true, true, true);
+                    let dagger = self.off_dagger;
+                    self.character.play_once(if dagger { crate::animator::ATTACK_OFF_PIERCE } else { crate::animator::ATTACK_OFF }, ATTACK_SECONDS);
+                }
             }
         }
         motion.sneaking = self.sneaking;
@@ -894,6 +1037,25 @@ mod tests {
             stepper.update(1.0 / 60.0, &motion, &mut out);
         }
         out
+    }
+
+    #[test]
+    fn a_light_swing_with_an_off_hand_weapon_is_followed_by_its_blow_for_less_damage() {
+        let mut p = player_for_tests();
+        (p.damage, p.off_damage) = ((10.0, 10.0), Some((3.0, 3.0)));
+        (p.attack_press(), p.attack_release());
+        assert!(p.off_next, "no off-hand blow follows");
+        p.heavy_attack();
+        p.attack = None;
+        p.vitals.stamina.current = p.vitals.stamina.max;
+        p.heavy_attack();
+        assert!(!p.off_next, "a heavy swing has no off-hand blow");
+        (p.swing_hit, p.off_swing) = (Some((Swing::Light, 1.0)), true);
+        p.take_swing_hit();
+        assert!(p.is_off_hand() && p.roll_damage() == 3.0);
+        (p.off_swing, p.swing_hit) = (false, Some((Swing::Light, 1.0)));
+        p.take_swing_hit();
+        assert!(!p.is_off_hand() && p.roll_damage() == 10.0);
     }
 
     #[test]
@@ -1050,6 +1212,10 @@ mod tests {
             block_cost: 1.0,
             swimming: false,
             swim_cost: 1.0,
+            submerged: false,
+            breath: 30.0,
+            breath_max: 30.0,
+            drowning: 0.0,
             size: Default::default(),
             sneaking: false,
             exhausted: false,
@@ -1060,6 +1226,8 @@ mod tests {
             mitigation: 0.0,
             damage: (12.0, 12.0),
             rng: 1,
+            regen: (0.0, 0.0, 0.0),
+            mana_idle: MANA_WAIT,
             camera_distance: THIRD_PERSON_DISTANCE,
             follow: 1.0,
             events: Vec::new(),
@@ -1068,6 +1236,13 @@ mod tests {
             swing_pending: false,
             hit_pending: false,
             swing_hit: None,
+            extra: 0,
+            extra_now: false,
+            off_damage: None,
+            off_next: false,
+            off_dagger: false,
+            off_swing: false,
+            off_hit: false,
             steed: None,
             dismount_wanted: false,
             sheathed: false,
@@ -1149,6 +1324,33 @@ mod tests {
             p.update_stamina(1.0 / 60.0, &swimming);
         }
         assert!(p.is_worn_out() && p.vitals.stamina.current > 1.0);
+    }
+
+    #[test]
+    fn the_breath_lasts_as_long_as_diving_gives_then_drowns_and_comes_back_at_the_surface() {
+        if mpq::find_wow_dir().is_none() {
+            return eprintln!("skipped: no game data");
+        }
+        let mut p = player_for_tests();
+        let still = Motion::default();
+        assert_eq!(p.breath(), None);
+        p.set_diving(true, 60.0);
+        p.breath = 60.0;
+        for _ in 0..59 * 60 {
+            p.update_stamina(1.0 / 60.0, &still);
+        }
+        // Nearly a minute under: breath left, no harm done.
+        assert!(p.breath().is_some_and(|(left, max)| left > 0.5 && max == 60.0));
+        assert_eq!(p.vitals.health.current, p.vitals.health.max);
+        for _ in 0..5 * 60 {
+            p.update_stamina(1.0 / 60.0, &still);
+        }
+        assert!(p.breath().unwrap().0 == 0.0 && p.vitals.health.current < p.vitals.health.max);
+        p.set_diving(false, 60.0);
+        for _ in 0..7 * 60 {
+            p.update_stamina(1.0 / 60.0, &still);
+        }
+        assert_eq!(p.breath(), None);
     }
 
     #[test]

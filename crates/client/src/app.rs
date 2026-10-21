@@ -115,9 +115,14 @@ fn pickup_props() -> Vec<content::Prop> {
     content::get().props.iter().filter(|p| p.pickup.is_some() || p.physics).cloned().collect()
 }
 
+/// The respawn time and the patrol of each spawn, in the order of `spawn_list`.
+fn spawn_routes() -> Vec<(Option<f32>, Vec<content::Waypoint>)> {
+    content::get().spawns.iter().map(|s| (s.respawn, s.path.clone())).collect()
+}
+
 /// The creatures of `content/spawns.ron`: (kind, feet position in render space, heading in radians, yards it strolls).
 fn spawn_list() -> Vec<(usize, Vec3, f32, f32)> {
-    content::get().spawns.iter().map(|s| (content::creature_index(&s.creature), wow_to_render([s.at.0, s.at.1, 0.0]), s.facing.to_radians(), s.wander)).collect()
+    content::get().spawns.iter().map(|s| (content::creature_index(&s.creature), wow_to_render([s.at.0, s.at.1, s.height.unwrap_or(0.0)]), s.facing.to_radians(), s.wander)).collect()
 }
 
 struct State {
@@ -148,6 +153,8 @@ struct State {
     pickups_stale: bool,
     /// Where the beds are (render space): the props flagged `sleep`.
     beds: Vec<Vec3>,
+    /// A lootable corpse that can also be dragged, and when the interact key went down on it: a tap loots it, holding drags it.
+    pending_loot: Option<(usize, Instant)>,
     map: String,
     /// The chest being picked and the lock, while the lockpicking is on; whether the lock is being turned; seconds into it.
     lock: Option<(usize, Lockpick)>,
@@ -172,12 +179,16 @@ struct State {
     reconfigure: bool,
     /// The names over creatures show (the interface options).
     names: bool,
+    /// Whether dying creatures fall as ragdolls (the interface options).
+    ragdolls: bool,
     /// The editor asked for the content it saved to be taken into use (and when to ask it by itself: `--apply-after`).
     apply: bool,
     apply_after: Option<f32>,
     mount: Arc<Mount>,
     /// The level up effect while it plays, and whether the character moved this frame (a cast fails when he does).
     levelfx: Option<usize>,
+    /// The sound entry of the original's Stealth, played when a sneak begins.
+    stealth_sound: Option<u32>,
     moving: bool,
     caster: crate::casting::Spellcaster,
     /// What the spells of creatures do to the player, and the auras that have hold of him.

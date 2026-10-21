@@ -349,9 +349,9 @@ mod tests {
         assert!(inv.equip_from_bag(1, 60).is_ok());
         inv.cursor = Some(Stack { item: items::find("tough_wolf_meat"), count: 7 });
         let mut log = QuestLog::default();
-        log.accept(quest("wolves_in_the_valley"));
-        log.killed(content::creature_index("wolf"));
-        log.done.push(quest("a_word_with_the_trader"));
+        log.accept(quest("q7"));
+        log.killed(content::creature_index("c6"));
+        log.done.push(quest("q783"));
         (inv, Progress { level: 5, xp: 1234 }, log)
     }
 
@@ -380,8 +380,8 @@ mod tests {
         let text = r#"(version: 1, position: (0.0, 0.0), heading: 0.0, pitch: 0.0, health: 1.0, level: 999, xp: 999999, money: 5,
             equipment: [(16, "longsword", 1), (5, "round_shield", 1), (3, "does_not_exist", 1), (99, "hatchet", 1)],
             bag: [(0, "linen_cloth", 500), (0, "scuffed_boots", 1), (77, "hearthstone", 1)],
-            quests: [("wolves_in_the_valley", [9]), ("wolves_in_the_valley", [1, 1]), ("no_such_quest", [])],
-            done: ["wolves_in_the_valley", "also_missing"])"#;
+            quests: [("q7", [9, 4]), ("q7", [1]), ("no_such_quest", [])],
+            done: ["q7", "also_missing"])"#;
         let save: Save = ron::from_str(text).unwrap();
         let (mut inv, mut progress, mut log) = (Inventory::new(), Progress::new(), QuestLog::default());
         let notes = save.apply(&mut inv, &mut progress, &mut log);
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(inv.bag[0], Some(Stack { item: items::find("linen_cloth"), count: 20 }));
         assert_eq!(progress, Progress { level: MAX_LEVEL, xp: 0 });
         // The quest is taken once, with its kills made to fit; being both active and done counts as active.
-        assert_eq!(log.active, vec![Active { quest: quest("wolves_in_the_valley"), kills: vec![9, 0] }]);
+        assert_eq!(log.active, vec![Active { quest: quest("q7"), kills: vec![9] }]);
         assert!(log.done.is_empty());
     }
 

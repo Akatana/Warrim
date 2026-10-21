@@ -94,6 +94,11 @@ pub fn setup(tree: &mut Tree) -> Result<()> {
     tree.show("CastingBarFrame", false);
     // Above the health, mana and stamina bars of this game's action bar (the original's sits just above its own).
     tree.set_point("CastingBarFrame", Point::Bottom, Some("UIParent"), Some(Point::Bottom), 0.0, 100.0);
+    // The breath bar: the original's first mirror timer, blue.
+    tree.instantiate("MirrorTimer1")?;
+    tree.show("MirrorTimer1", false);
+    // (its label is drawn by `draw_overlay`: the engine draws a frame's own text under its children, so the bar would cover it.)
+    tree.set_region_hidden("MirrorTimer1Text", true);
     tree.instantiate(SPELLBOOK)?;
     tree.show(SPELLBOOK, false);
     // One book of spells (no pets, no tabs), and the lines of one list.
@@ -208,6 +213,19 @@ impl Panels {
         }
     }
 
+    /// The breath left and the most there is, in seconds (none: the bar goes away), as the player reports it each frame.
+    pub fn set_breath(&mut self, breath: Option<(f32, f32)>) {
+        if let Some((left, max)) = breath {
+            if !self.breath_shown {
+                self.tree.show("MirrorTimer1", true);
+            }
+            self.tree.set_bar("MirrorTimer1StatusBar", left / max, Some([0.0, 0.5, 1.0, 1.0]));
+        } else if self.breath_shown {
+            self.tree.show("MirrorTimer1", false);
+        }
+        self.breath_shown = breath.is_some();
+    }
+
     // ---- the spellbook
 
     pub fn spellbook_open(&self) -> bool {
@@ -302,18 +320,55 @@ impl Panels {
         }
     }
 
+    /// What the numbers of a spell (spells.ron, written for level 1) are multiplied by: the rank of the class skill and the
+    /// character level, which grows like its health so a heal or a bolt keeps its share of it.
+    pub fn spell_power(&self, class: Skill) -> f32 {
+        self.skills.damage_factor(class) * levels::spell_scale(self.progress.level)
+    }
+
+    /// What the worn items add to what a spell does: the damage of its school (the healing for a heal) times what its cast time gives it (CMaNGOS: 1.5 to 3.5
+    /// seconds out of 3.5, a third of that for what hits an area), less for spells below level 20.
+    pub fn spell_bonus(&self, spell: usize) -> f32 {
+        let def = content::spell(spell);
+        let (cast, school, level) = content::classic_spell(def.spell).map_or((0, 0, 20), |c| (c.cast, c.school, c.level));
+        let power = match def.effect {
+            Effect::Heal { .. } => self.stats.healing,
+            _ => self.stats.spell_damage[(school as usize).min(6)],
+        };
+        let area = if matches!(def.effect, Effect::Area { .. }) { 1.0 / 3.0 } else { 1.0 };
+        let penalty = if level > 0 && level < 20 { 1.0 - (20.0 - level as f32) * 0.0375 } else { 1.0 };
+        power as f32 * (cast.clamp(1500, 3500) as f32 / 3500.0) * area * penalty
+    }
+
+    /// The chance to land a critical hit with a spell: by its school (the physical ones crit as blows do).
+    pub fn spell_crit(&self, spell: usize) -> f32 {
+        match content::classic_spell(content::spell(spell).spell).map_or(0, |c| c.school) {
+            0 => self.stats.crit,
+            school => self.stats.spell_crit[(school as usize).min(6)],
+        }
+    }
+
+    /// What a spell costs at the character level: mana grows like its numbers (stamina does not).
+    pub fn spell_cost(&self, cost: Cost) -> Cost {
+        match cost {
+            Cost::Mana(n) => Cost::Mana(n * levels::spell_scale(self.progress.level)),
+            stamina => stamina,
+        }
+    }
+
     /// The tooltip of a spell: its cost and range, its cooldown, what it does at the skill the character has, and what it is.
     pub(super) fn spell_lines(&self, spell: usize) -> Vec<TipLine> {
         let def = content::spell(spell);
-        let power = self.skills.damage_factor(def.class);
-        let cost = match def.cost {
+        let power = self.spell_power(def.class);
+        let bonus = self.spell_bonus(spell);
+        let cost = match self.spell_cost(def.cost) {
             Cost::Mana(n) => format!("{n:.0} Mana"),
             Cost::Stamina(n) => format!("{n:.0} Stamina"),
         };
         let (range, effect) = match def.effect {
-            Effect::Damage { min, max, range } => (format!("{range:.0} yd range"), format!("Hurts the target for {:.0} to {:.0}.", min * power, max * power)),
-            Effect::Area { min, max, radius } => (format!("{radius:.0} yd around you"), format!("Hurts every enemy near you for {:.0} to {:.0}.", min * power, max * power)),
-            Effect::Heal { min, max } => ("Self".to_string(), format!("Heals you for {:.0} to {:.0}.", min * power, max * power)),
+            Effect::Damage { min, max, range } => (format!("{range:.0} yd range"), format!("Hurts the target for {:.0} to {:.0}.", min * power + bonus, max * power + bonus)),
+            Effect::Area { min, max, radius } => (format!("{radius:.0} yd around you"), format!("Hurts every enemy near you for {:.0} to {:.0}.", min * power + bonus, max * power + bonus)),
+            Effect::Heal { min, max } => ("Self".to_string(), format!("Heals you for {:.0} to {:.0}.", min * power + bonus, max * power + bonus)),
         };
         vec![
             TipLine::new(def.name.clone(), WHITE),
@@ -504,6 +559,6 @@ mod tests {
         let folded = rows(&[true, false, false, false]);
         assert_eq!(folded.len(), 4 + skills::ALL.iter().filter(|s| s.group() != Group::Class).count());
         let names: Vec<&str> = folded.iter().filter_map(|r| if let Row::Skill(s) = r { Some(s.name()) } else { None }).collect();
-        assert_eq!(names, ["Axes", "Block", "Bows", "Crossbows", "Daggers", "Fist Weapons", "Guns", "Maces", "Polearms", "Spears", "Staves", "Swords", "Thrown", "Two-Handed Axes", "Two-Handed Maces", "Two-Handed Swords", "Unarmed", "Wands", "Cloth", "Leather", "Mail", "Plate Mail", "Lockpicking", "Riding", "Stealth", "Swimming"]);
+        assert_eq!(names, ["Axes", "Block", "Bows", "Crossbows", "Daggers", "Fist Weapons", "Guns", "Maces", "Polearms", "Spears", "Staves", "Swords", "Thrown", "Two-Handed Axes", "Two-Handed Maces", "Two-Handed Swords", "Unarmed", "Wands", "Cloth", "Leather", "Mail", "Plate Mail", "Diving", "Lockpicking", "Riding", "Stealth", "Swimming"]);
     }
 }

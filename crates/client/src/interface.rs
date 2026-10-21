@@ -7,6 +7,8 @@ pub struct InterfaceSettings {
     pub invert_mouse: bool,
     pub npc_names: bool,
     pub buff_durations: bool,
+    /// Whether dying creatures fall as ragdolls (off: they keep their death animation).
+    pub ragdolls: bool,
     /// `cameraYawMoveSpeed`: 90 to 270 degrees a second of the original; the game's own look speed is that of 180.
     pub look_speed: f32,
     /// `cameraDistanceMaxFactor`: 1 to 2 times the usual distance behind the character.
@@ -15,7 +17,7 @@ pub struct InterfaceSettings {
 
 impl Default for InterfaceSettings {
     fn default() -> Self {
-        InterfaceSettings { invert_mouse: false, npc_names: true, buff_durations: false, look_speed: 180.0, follow: 1.0 }
+        InterfaceSettings { invert_mouse: false, npc_names: true, buff_durations: false, ragdolls: true, look_speed: 180.0, follow: 1.0 }
     }
 }
 

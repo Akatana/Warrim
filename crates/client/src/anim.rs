@@ -233,8 +233,13 @@ impl LookTracks {
 
     /// The look of a batch `age_ms` after its model began to play.
     pub fn look(&self, refs: BatchRefs, age_ms: f32) -> BatchLook {
-        let time = self.start + age_ms.rem_euclid(self.length);
-        let (g, seq) = (&self.global_sequences[..], self.seq);
+        self.look_in(refs, self.seq, self.start + age_ms.rem_euclid(self.length), age_ms)
+    }
+
+    /// The look of a batch while sequence `seq` of the model is at `time` (milliseconds on the model's own clock: its start plus the time into it), `age_ms` after
+    /// the model began (for the tracks that run on the global clock): what a creature that plays its own animations shows (a log it carries only in some of them).
+    pub fn look_in(&self, refs: BatchRefs, seq: usize, time: f32, age_ms: f32) -> BatchLook {
+        let g = &self.global_sequences[..];
         let lerp3 = |a: [f32; 3], b: [f32; 3], f: f32| Vec3::from(a).lerp(Vec3::from(b), f).to_array();
         let lerp1 = |a: f32, b: f32, f: f32| a + (b - a) * f;
         let mut look = BatchLook::STILL;

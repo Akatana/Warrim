@@ -112,6 +112,8 @@ pub struct CreatureDef {
     pub name: String,
     /// Its level: what it is worth in experience, and how it compares with the player's.
     pub level: u32,
+    /// Its type (1 beast, 2 dragonkin, 3 demon, 4 elemental, 5 giant, 6 undead, 7 humanoid, 8 critter, 9 mechanical; 0 none): what the bonuses of gear "versus" name.
+    pub kind: u32,
     /// The line under the name: `<Stormwind Guard>` (for a tooltip, which the game does not have yet).
     #[allow(dead_code)]
     pub title: Option<String>,
@@ -159,6 +161,8 @@ pub struct RawCreature {
     pub name: String,
     #[serde(default = "one")]
     pub level: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub kind: u32,
     #[serde(default)]
     pub title: Option<String>,
     pub body: RawBody,
@@ -183,6 +187,9 @@ pub struct RawCreature {
     pub brain: Brain,
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
 fn hundred() -> f32 {
     100.0
 }
@@ -200,6 +207,46 @@ pub struct Spawn {
     /// How far from `at` it strolls, yards (0 stands still): the database's `spawndist`, whose usual value is the default.
     #[serde(default = "default_wander", skip_serializing_if = "is_default_wander")]
     pub wander: f32,
+    /// The height it stands at, where the database has one: what puts a creature on the floor of a building (an upper floor) and not on the terrain under it.
+    /// None for those the editor made or moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
+    /// Seconds from its death until it is back, where the database gives its own (the kind's `respawn` otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub respawn: Option<f32>,
+    /// A patrol: the places it walks to one after the other, round and round. Empty for one that stays or strolls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<Waypoint>,
+}
+
+/// A place of a patrol: where, the seconds it stands there, the heading it turns to while it does, and what it does there.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Waypoint {
+    pub at: (f32, f32),
+    #[serde(default)]
+    pub wait: f32,
+    /// Degrees clockwise from north (only where it stands for a while).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facing: Option<f32>,
+    /// The original's waypoint script of the place: (seconds after it arrives, what it does).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<(f32, Step)>,
+}
+
+/// One thing a waypoint script does (of the original's script commands, those that act on the creature itself).
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub enum Step {
+    /// Walk (false) or run (true) from here on.
+    Run(bool),
+    /// Stroll at random within this many yards of here for this many seconds, then go on.
+    Roam(f32, f32),
+    /// Stand where it is: no more patrol until it is back from a fight or has died and come again.
+    Idle,
+    /// Play this animation (of the model) while it stands, until another is asked for; 0 stops it. (A state emote.)
+    Emote(u16),
+    /// Look like this kind of creature from now on (it stays what it is).
+    Morph(String),
 }
 
 /// The database's default `spawndist`.
@@ -307,6 +354,9 @@ pub struct Quest {
     pub choice: Vec<Stack>,
     /// The quest (an earlier index) that has to be done first.
     pub requires: Option<usize>,
+    /// The quest's level (0 for none), and the items given when it is taken.
+    pub level: u32,
+    pub start_items: Vec<Stack>,
 }
 
 /// A chest in the world (`content/chests.ron`).
@@ -757,6 +807,12 @@ pub struct RawQuest {
     pub requires: Option<String>,
     #[serde(default)]
     pub reward: RawReward,
+    /// The quest's level (0 for none): the experience falls as the character outgrows it.
+    #[serde(default)]
+    pub level: u32,
+    /// Items given when the quest is taken (a letter to deliver), and taken away again when it is given up.
+    #[serde(default)]
+    pub start_items: Vec<(String, u32)>,
 }
 
 /// What a creature or chest drops (`content/loot.ron`): copper from low to high, and items with a count (low, high) and a chance in percent.
@@ -904,7 +960,7 @@ fn build_item(raw: RawItem, display: Option<&Displays>, spells: &[SpellDef]) -> 
     let (kind, s) = ((leak(kind.0), leak(kind.1)), raw.stats);
     let tome = raw.tome.as_deref().map(|id| spells.iter().position(|s| s.id == id).with_context(|| format!("tome of unknown spell {id}"))).transpose()?;
     ensure!(!raw.quest || raw.sell == 0, "{} is a quest item, which is not sold", raw.id);
-    let item_spells: Vec<items::ItemSpellDef> = raw.spells.iter().map(|s| items::ItemSpellDef { spell: s.spell, trigger: s.trigger, charges: s.charges, cooldown: s.cooldown, effects: Box::leak(s.effects.clone().into_boxed_slice()), text: leak(s.text.clone()) }).collect();
+    let item_spells: Vec<items::ItemSpellDef> = raw.spells.iter().map(|s| items::ItemSpellDef { spell: s.spell, trigger: s.trigger, charges: s.charges, cooldown: s.cooldown, ppm: s.ppm, effects: Box::leak(s.effects.clone().into_boxed_slice()), text: leak(s.text.clone()) }).collect();
     let weight = raw.weight.unwrap_or_else(|| default_weight(&raw));
     ensure!(weight >= 0.0, "{} weighs less than nothing", raw.id);
     Ok(ItemDef {
@@ -1103,7 +1159,9 @@ impl Overlay {
 /// The objects the original game puts in its maps (`content/classic_props.ron`, made by `tools/import_props.py`): they are among the props, and the editor
 /// keeps only what it changed of them (those it took away go to the overlay, those it moved or made are in `props.ron`).
 pub fn classic_props() -> Result<Vec<Prop>> {
-    ron::from_str(&source("classic_props.ron", include_str!("../../../content/classic_props.ron"))).context("classic_props.ron")
+    let mut props: Vec<Prop> = ron::from_str(&source("classic_props.ron", include_str!("../../../content/classic_props.ron"))).context("classic_props.ron")?;
+    props.extend(ron::from_str::<Vec<Prop>>(&source("classic_pickups.ron", include_str!("../../../content/classic_pickups.ron"))).context("classic_pickups.ron")?);
+    Ok(props)
 }
 
 /// The entries of `base` that `current` lacks, and those of `current` that `base` lacks (a list of entries without ids: whole entries are compared).
@@ -1158,14 +1216,31 @@ impl Raws {
                 let mut creatures: Vec<RawCreature> = ron::from_str(&source("creatures.ron", include_str!("../../../content/creatures.ron"))).context("creatures.ron")?;
                 let mut classic: Vec<RawCreature> = ron::from_str(&source("classic_creatures.ron", include_str!("../../../content/classic_creatures.ron"))).context("classic_creatures.ron")?;
                 let mut brains: BTreeMap<String, Brain> = ron::from_str(&source("classic_creature_ai.ron", include_str!("../../../content/classic_creature_ai.ron"))).context("classic_creature_ai.ron")?;
+                // What the people of the original's Northshire say (`tools/import_northshire.py`): a merchant keeps its wares and takes the words.
+                let mut gossip: BTreeMap<String, Gossip> = ron::from_str(&source("classic_gossip.ron", include_str!("../../../content/classic_gossip.ron"))).context("classic_gossip.ron")?;
                 for c in &mut classic {
                     c.brain = brains.remove(&c.id).unwrap_or_default();
+                    match (gossip.remove(&c.id), &mut c.gossip) {
+                        (Some(said), Some(own)) => own.greeting = said.greeting,
+                        (Some(said), none) => *none = Some(said),
+                        _ => {}
+                    }
                 }
                 creatures.extend(classic);
+                // The looks that the waypoint scripts of Northshire's people change into (`tools/import_northshire.py`).
+                creatures.extend(ron::from_str::<Vec<RawCreature>>(&source("classic_morphs.ron", include_str!("../../../content/classic_morphs.ron"))).context("classic_morphs.ron")?);
                 creatures
             },
-            quests: ron::from_str(&source("quests.ron", include_str!("../../../content/quests.ron"))).context("quests.ron")?,
-            spawns: ron::from_str(&source("spawns.ron", include_str!("../../../content/spawns.ron"))).context("spawns.ron")?,
+            quests: {
+                let mut quests: Vec<RawQuest> = ron::from_str(&source("quests.ron", include_str!("../../../content/quests.ron"))).context("quests.ron")?;
+                quests.extend(ron::from_str::<Vec<RawQuest>>(&source("classic_quests.ron", include_str!("../../../content/classic_quests.ron"))).context("classic_quests.ron")?);
+                quests
+            },
+            spawns: {
+                let mut spawns: Vec<Spawn> = ron::from_str(&source("spawns.ron", include_str!("../../../content/spawns.ron"))).context("spawns.ron")?;
+                spawns.extend(ron::from_str::<Vec<Spawn>>(&source("classic_spawns.ron", include_str!("../../../content/classic_spawns.ron"))).context("classic_spawns.ron")?);
+                spawns
+            },
             chests: ron::from_str(&source("chests.ron", include_str!("../../../content/chests.ron"))).context("chests.ron")?,
             pois: {
                 let mut pois: Vec<Poi> = ron::from_str(&source("pois.ron", include_str!("../../../content/pois.ron"))).context("pois.ron")?;
@@ -1296,7 +1371,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
             ensure!(vendor.iter().all(|&i| items[i].buy > 0), "creature {}: sells an item that has no price", c.id);
             let sells = c.gossip.as_ref().is_some_and(|g| g.options.iter().any(|o| matches!(o.action, Action::Vendor)));
             ensure!(sells == !vendor.is_empty(), "creature {}: a vendor line needs wares and wares need a vendor line", c.id);
-            Ok(CreatureDef { id: c.id, name: c.name, level: c.level, title: c.title, body, hostile: c.hostile, neutral: c.neutral, health: c.health, bite_damage: c.bite_damage, respawn: c.respawn, loot: c.loot, gossip: c.gossip, vendor, brain: c.brain })
+            Ok(CreatureDef { id: c.id, name: c.name, level: c.level, kind: c.kind, title: c.title, body, hostile: c.hostile, neutral: c.neutral, health: c.health, bite_damage: c.bite_damage, respawn: c.respawn, loot: c.loot, gossip: c.gossip, vendor, brain: c.brain })
         })
         .collect::<Result<Vec<_>>>()?;
     for c in &creatures {
@@ -1306,6 +1381,11 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
     }
     for s in &spawns {
         ensure!(creatures.iter().any(|c| c.id == s.creature), "spawn of unknown creature {}", s.creature);
+        for step in s.path.iter().flat_map(|w| &w.steps) {
+            if let (_, Step::Morph(id)) = step {
+                ensure!(creatures.iter().any(|c| c.id == *id), "a patrol of {} turns into unknown creature {id}", s.creature);
+            }
+        }
     }
 
     let creature = |id: &str| creatures.iter().position(|c| c.id == id).with_context(|| format!("unknown creature {id}"));
@@ -1327,8 +1407,9 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
             let choice = q.reward.choice.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count })).collect::<Result<Vec<_>>>()?;
             // The window has ten places for them.
             ensure!(reward_items.len() + choice.len() <= 10 && choice.len() != 1, "too many reward items, or a choice of one");
+            let start_items = q.start_items.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count })).collect::<Result<Vec<_>>>()?;
             let requires = q.requires.as_deref().map(|r| quests.iter().position(|o| o.id == r).with_context(|| format!("requires {r}, which must come earlier in the file"))).transpose()?;
-            Ok(Quest { id: q.id.clone(), title: q.title.clone(), giver: creature(&q.giver)?, turn_in: creature(&q.turn_in)?, details: q.details.clone(), objective: q.objective.clone(), progress: q.progress.clone(), completion: q.completion.clone(), goals, copper: q.reward.copper, xp: q.reward.xp, items: reward_items, choice, requires })
+            Ok(Quest { id: q.id.clone(), title: q.title.clone(), giver: creature(&q.giver)?, turn_in: creature(&q.turn_in)?, details: q.details.clone(), objective: q.objective.clone(), progress: q.progress.clone(), completion: q.completion.clone(), goals, copper: q.reward.copper, xp: q.reward.xp, items: reward_items, choice, requires, level: q.level, start_items })
         };
         let quest = build().with_context(|| format!("quest {id}"))?;
         quests.push(quest);
@@ -1406,10 +1487,12 @@ mod tests {
                         assert!(c.spawns.iter().any(|s| s.creature == c.creatures[creature].id), "{}: nobody of {} stands in the world", q.title, c.creatures[creature].id);
                     }
                     Goal::Collect { item, .. } => {
-                        // Dropped by a creature that stands in the world (or a chest), or bought.
+                        // Dropped by a creature that stands in the world (or a chest), picked up from an object, or bought.
                         let dropped = c.creatures.iter().any(|cr| cr.loot.as_ref().is_some_and(|t| c.spawns.iter().any(|s| s.creature == cr.id) && c.loot[t].items.iter().any(|d| d.0 == item)));
                         let sold = c.creatures.iter().any(|cr| cr.vendor.contains(&item));
-                        assert!(dropped || sold, "{}: {} cannot be had", q.title, c.items[item].name);
+                        let picked = c.props.iter().any(|p| p.pickup.as_ref().is_some_and(|k| k.item == c.items[item].id));
+                        let given = q.start_items.iter().any(|s| s.item == item);
+                        assert!(dropped || sold || picked || given, "{}: {} cannot be had", q.title, c.items[item].name);
                     }
                 }
             }

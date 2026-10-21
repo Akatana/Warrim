@@ -1,7 +1,7 @@
 // Spells: two for each class, a basic one (`level: 1`, which asks for nothing) and a greater one whose tome (an item of items.ron with a
 // `tome`) asks for that rank of the class skill (`level`). `cost` is mana or stamina, `cooldown` seconds. The effect is `Damage` (the
 // selected creature within `range` yards), `Area` (every enemy within `radius` yards of the caster) or `Heal` (the caster); the numbers
-// grow with the rank of the class skill, which casting trains. `spell` is the row of the original's Spell.dbc whose cast time, pictures
+// are those of level 1 and grow with the rank of the class skill, which casting trains, and with the character level (`levels::spell_scale`; the mana cost grows with it too). `spell` is the row of the original's Spell.dbc whose cast time, pictures
 // (SpellVisual.dbc: what shows on the hands while it is cast, the missile, what shows where it hits) and sounds it has. Icons are names
 // in Interface\Icons.
 [

@@ -130,6 +130,9 @@ def entry_text(i, display_rows, spells):
             extra += ", charges: %d" % i["spellcharges_%d" % n]
         if cd > 0:
             extra += ", cooldown: %d" % cd
+        # Spells that go off on a hit: how often a minute (instead of the spell's own chance).
+        if i["spellppmRate_%d" % n] > 0:
+            extra += ", ppm: %s" % f(i["spellppmRate_%d" % n])
         effects = spells.effects(sid) if spells and i["spelltrigger_%d" % n] in (0, 1, 5) else []
         if effects:
             extra += ", effects: [%s]" % ", ".join(effects)

@@ -17,6 +17,8 @@ use crate::worn::Worn;
 use crate::loot::Loot;
 use crate::quests::Marker;
 use crate::models::{ModelCache, ModelCpu, ModelVertex};
+use crate::physics::{Bodies, RAGDOLL_REACH};
+use crate::ragdoll::Ragdoll;
 use crate::renderer::{Gpu, Renderer};
 use crate::ui::{Quad, Ui, FULL_UV, WHITE};
 use anyhow::{Context, Result};
@@ -31,6 +33,8 @@ const STAND: u16 = 0;
 const WALK: u16 = 4;
 const RUN: u16 = 5;
 const DEATH: u16 = 1;
+/// How hard (yards a second) a creature is thrown away from the player as it dies.
+const RAGDOLL_PUSH: f32 = 3.0;
 const WOUND: u16 = 9;
 const BITE: u16 = 16;
 /// The stance held while a spell is cast at a target, and the cast itself (the animations of `AnimationData.dbc`; a spell's own kit may name others).
@@ -132,6 +136,15 @@ impl State {
     }
 }
 
+/// What is put on a creature: damage over time (the damage of a tick, the seconds between ticks, the seconds it lasts), a stun for some seconds, or a slow
+/// that leaves it with a share of its pace for some seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Status {
+    Over { amount: f32, period: f32, seconds: f32 },
+    Stun(f32),
+    Slow(f32, f32),
+}
+
 /// What the player is, to a creature that looks at him: where he is and faces, how well he is, what he is doing and which spells have hold of him.
 pub struct Watch<'a> {
     pub feet: Vec3,
@@ -228,6 +241,19 @@ pub struct Mob {
     /// How far from home it strolls (yards; 0 stands still), and the walks left in the stroll it is on.
     wander: f32,
     legs: u32,
+    /// Seconds from its death until it is back (its spawn's own, else its kind's).
+    respawn: f32,
+    /// A patrol: the places it walks to, round and round, and the one it walks to next. Empty for none.
+    route: Vec<Stop>,
+    next: usize,
+    /// What its waypoint scripts have done: it runs between the places, stands and stays, holds an animation while it stands, and how it looks (a kind).
+    run: bool,
+    stopped: bool,
+    emote: Option<u16>,
+    look: usize,
+    /// Strolling at random round a place (centre, yards, seconds left) before it goes on with the patrol, and script steps waiting for their time (seconds, what).
+    roam: Option<(Vec3, f32, f32)>,
+    todo: Vec<(f32, content::Step)>,
     /// What the corpse holds, rolled at its death, until it is looted away or the creature is back.
     pub loot: Option<Loot>,
     rng: u32,
@@ -241,6 +267,12 @@ pub struct Mob {
     pub mana: f32,
     /// Spells whose auras are on it, and the seconds they last yet.
     auras: Vec<(u32, f32)>,
+    /// What the player's spells and the gear's put on it: damage over time (the damage of a tick, seconds between ticks, seconds to the next, seconds left),
+    /// seconds stunned, the share of its pace a slow leaves it with and the seconds that lasts, and whether the damage over time killed it.
+    over: Vec<(f32, f32, f32, f32)>,
+    stun: f32,
+    slow: (f32, f32),
+    slain_over: bool,
     /// What it did since the last step, for the game.
     out: Vec<Act>,
     /// Whether it fought at the last step (the start and the end of a fight are noticed from the change).
@@ -280,6 +312,15 @@ fn flat(v: Vec3) -> Vec3 {
     Vec3::new(v.x, 0.0, v.z)
 }
 
+/// A place of a patrol in the world: where (render space), the seconds it stands there, the heading it turns to (radians), and its script.
+#[derive(Clone, Debug)]
+struct Stop {
+    at: Vec3,
+    wait: f32,
+    facing: Option<f32>,
+    steps: Vec<(f32, content::Step)>,
+}
+
 /// A creature as saved: everything that makes it this creature in this moment (its kind by id).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MobSave {
@@ -293,6 +334,17 @@ pub struct MobSave {
     rng: u32,
     rest: f32,
     pause: f32,
+    /// How far along its patrol it is and what its waypoint scripts made of it (a save from before has none of this: it starts its patrol afresh).
+    #[serde(default)]
+    next: usize,
+    #[serde(default)]
+    run: bool,
+    #[serde(default)]
+    stopped: bool,
+    #[serde(default)]
+    emote: Option<u16>,
+    #[serde(default)]
+    look: Option<String>,
 }
 
 impl Mob {
@@ -308,6 +360,11 @@ impl Mob {
             rng: self.rng,
             rest: self.rest,
             pause: self.pause,
+            next: self.next,
+            run: self.run,
+            stopped: self.stopped,
+            emote: self.emote,
+            look: (self.look != self.kind).then(|| content::get().creatures[self.look].id.clone()),
         }
     }
 
@@ -316,12 +373,21 @@ impl Mob {
         if saved.kind != self.def.id || flat(saved.home - self.home).length() > 1.0 {
             return false;
         }
-        (self.pos, self.yaw, self.health, self.state, self.rng, self.rest, self.pause) = (saved.pos, saved.yaw, saved.health.min(self.def.health), saved.state, saved.rng, saved.rest, saved.pause);
+        // The height is not taken: it is found again from the spawn's floor (a save made before a spawn knew its floor holds the terrain under a building).
+        (self.pos, self.yaw, self.health, self.state, self.rng, self.rest, self.pause) = (Vec3::new(saved.pos.x, self.pos.y, saved.pos.z), saved.yaw, saved.health.min(self.def.health), saved.state, saved.rng, saved.rest, saved.pause);
         // A spell half cast, a run for help or a step back is not kept: it goes on fighting.
         if matches!(self.state, State::Cast(..) | State::Flee(..) | State::Kite(_)) {
             self.state = State::Chase;
         }
         self.loot = saved.loot.as_ref().map(crate::save::loot_from_save);
+        // Its patrol goes on from the place it was walking to (if the places are still there).
+        if saved.next < self.route.len() {
+            self.next = saved.next;
+        }
+        (self.run, self.stopped, self.emote) = (saved.run, saved.stopped, saved.emote);
+        if let Some(i) = saved.look.as_ref().and_then(|id| content::get().creatures.iter().position(|c| c.id == *id)) {
+            self.look = i;
+        }
         self.fought = false;
         self.fresh = !self.is_dead();
         true
@@ -347,6 +413,15 @@ impl Mob {
             rest: 0.0,
             wander: WANDER_DEFAULT,
             legs: 0,
+            respawn: def.respawn,
+            route: Vec::new(),
+            next: 0,
+            run: false,
+            stopped: false,
+            emote: None,
+            look: kind,
+            roam: None,
+            todo: Vec::new(),
             loot: None,
             rng: seed,
             stride: 0.0,
@@ -354,6 +429,10 @@ impl Mob {
             rt: Some(Runtime::new(&def.brain, seed)),
             mana: def.brain.mana,
             auras: Vec::new(),
+            over: Vec::new(),
+            stun: 0.0,
+            slow: (1.0, 0.0),
+            slain_over: false,
             out: Vec::new(),
             fought: false,
             pending: None,
@@ -394,8 +473,55 @@ impl Mob {
 
     /// Set out for a place round home: any direction, any distance up to `wander` (so the places cluster near home, as in CMaNGOS).
     fn start_leg(&mut self) {
-        let (angle, radius) = (self.random() * std::f32::consts::TAU, self.random() * self.wander);
-        self.state = State::Wander(self.home + Vec3::new(angle.sin(), 0.0, angle.cos()) * radius);
+        // Round home, or round the place where a script told it to stroll.
+        let (centre, range) = self.roam.map_or((self.home, self.wander), |r| (r.0, r.1));
+        let (angle, radius) = (self.random() * std::f32::consts::TAU, self.random() * range);
+        self.state = State::Wander(centre + Vec3::new(angle.sin(), 0.0, angle.cos()) * radius);
+    }
+
+    /// At the place of the patrol it was walking to: it turns to the heading the place asks, does what the place's script says (some of it a while after), stands there as
+    /// long as the place asks, and goes on to the next.
+    fn arrive(&mut self) {
+        let stop = self.route[self.next].clone();
+        self.next = (self.next + 1) % self.route.len();
+        self.state = State::Idle;
+        // The original makes a path of one place without a wait stand for five seconds.
+        self.rest = if self.route.len() == 1 && stop.wait <= 0.0 { 5.0 } else { stop.wait };
+        if let (true, Some(facing)) = (stop.wait > 0.0, stop.facing) {
+            self.yaw = facing;
+        }
+        for (delay, step) in stop.steps {
+            if delay <= 0.0 {
+                self.do_step(&step);
+            } else {
+                self.todo.push((delay, step));
+            }
+        }
+    }
+
+    /// Do one thing of a waypoint script.
+    fn do_step(&mut self, step: &content::Step) {
+        use content::Step;
+        match step {
+            Step::Run(on) => self.run = *on,
+            Step::Roam(radius, seconds) => {
+                self.roam = Some((self.pos, *radius, *seconds));
+                self.rest = self.new_rest();
+            }
+            Step::Idle => self.stopped = true,
+            Step::Emote(anim) => self.emote = (*anim != 0).then_some(*anim),
+            Step::Morph(id) => {
+                if let Some(kind) = content::get().creatures.iter().position(|c| c.id == *id) {
+                    self.look = kind;
+                }
+            }
+        }
+    }
+
+    /// It is back as it was at the start: the patrol from its first place, walking, as it looked.
+    fn reset_route(&mut self) {
+        (self.next, self.run, self.stopped, self.emote, self.look, self.roam) = (0, false, false, None, self.kind, None);
+        self.todo.clear();
     }
 
     /// Dead, or waiting in the pool of summoned creatures: either way it is not in the world.
@@ -422,6 +548,54 @@ impl Mob {
         };
     }
 
+    /// Something is put on it (see `Status`).
+    pub fn afflict(&mut self, status: Status) {
+        if self.is_dead() {
+            return;
+        }
+        match status {
+            Status::Over { amount, period, seconds } => self.over.push((amount, period, period, seconds)),
+            Status::Stun(seconds) => self.stun = self.stun.max(seconds),
+            Status::Slow(share, seconds) => self.slow = if self.slow.1 > 0.0 { (self.slow.0.min(share), self.slow.1.max(seconds)) } else { (share, seconds) },
+        }
+    }
+
+    /// `dt` seconds go by for what is on it: the damage over time, a stun that holds it still (`None`: it does nothing), a slow that makes its time run
+    /// slower (the whole of it, not only its feet: a shortcut, as the gear that slows is rare). Returns the seconds it lives.
+    fn afflicted(&mut self, dt: f32) -> Option<f32> {
+        if self.is_dead() {
+            (self.over, self.stun, self.slow) = (Vec::new(), 0.0, (1.0, 0.0));
+            return Some(dt);
+        }
+        let mut damage = 0.0;
+        for o in &mut self.over {
+            o.2 -= dt;
+            // A tick that is a hair late for the steps of the frames is still the tick of its second.
+            while o.2 <= 1e-3 {
+                o.2 += o.1.max(0.1);
+                damage += o.0;
+            }
+            o.3 -= dt;
+        }
+        self.over.retain(|o| o.3 > 0.0);
+        if damage > 0.0 && !self.is_dead() {
+            self.health -= damage;
+            if self.health <= 0.0 {
+                self.sounds.push(Cry::Death);
+                self.loot = self.def.loot.as_deref().and_then(content::drop_table).map(|table| table.roll(&mut self.rng));
+                self.slain_over = true;
+                self.die();
+                return Some(dt);
+            }
+        }
+        self.slow.1 = (self.slow.1 - dt).max(0.0);
+        if self.stun > 0.0 {
+            self.stun = (self.stun - dt).max(0.0);
+            return None;
+        }
+        Some(if self.slow.1 > 0.0 { dt * self.slow.0 } else { dt })
+    }
+
     /// It is dead: what it cast stops, and its death events play.
     fn die(&mut self) {
         if matches!(self.state, State::Cast(_, _, _, false)) {
@@ -444,13 +618,18 @@ impl Mob {
     /// The player's sword swing from `from` facing `yaw` reaches this creature if it is hostile, within `reach` yards
     /// and within 60 degrees of straight ahead (or so close that the angle does not matter): it takes `damage`.
     pub fn struck_by(&mut self, from: Vec3, yaw: f32, reach: f32, damage: f32) -> bool {
-        let to = flat(self.pos - from);
-        let ahead = to.length() < 0.5 || to.normalize().dot(Vec3::new(yaw.sin(), 0.0, -yaw.cos())) > 0.5;
-        let hit = self.def.attackable() && !self.is_dead() && to.length() <= reach && ahead;
+        let hit = self.in_swing(from, yaw, reach);
         if hit {
             self.hurt(damage);
         }
         hit
+    }
+
+    /// Whether a swing from `from` facing `yaw` reaches this creature (see `struck_by`).
+    fn in_swing(&self, from: Vec3, yaw: f32, reach: f32) -> bool {
+        let to = flat(self.pos - from);
+        let ahead = to.length() < 0.5 || to.normalize().dot(Vec3::new(yaw.sin(), 0.0, -yaw.cos())) > 0.5;
+        self.def.attackable() && !self.is_dead() && to.length() <= reach && ahead
     }
 
     /// How close this creature is to noticing a sneaking player at `target` (feet): 0 beyond its normal range, 1 once it has noticed
@@ -724,6 +903,9 @@ impl Mob {
         self.pending = None;
         self.charge = 0.0;
         self.oom = false;
+        // What its waypoint scripts did does not outlast a fight.
+        (self.run, self.stopped, self.roam) = (false, false, None);
+        self.todo.clear();
     }
 
     /// Turn on the player when a friend calls for help (a creature that is not already fighting).
@@ -758,6 +940,7 @@ impl Mob {
     /// creatures and `roster` the creatures that are about. Returns what it did.
     #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, dt: f32, watch: &Watch, me: usize, roster: &[Friend], ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool) -> Vec<Act> {
+        let Some(dt) = self.afflicted(dt) else { return Vec::new() };
         let target = watch.feet;
         self.pause = (self.pause - dt).max(0.0);
         self.kite = (self.kite - dt).max(0.0);
@@ -768,6 +951,19 @@ impl Mob {
         });
         self.moving = false;
         (self.me, self.player) = (me, target);
+        if !self.todo.is_empty() && !self.is_dead() {
+            let mut due = Vec::new();
+            self.todo.retain_mut(|t| {
+                t.0 -= dt;
+                if t.0 <= 0.0 {
+                    due.push(t.1.clone());
+                }
+                t.0 > 0.0
+            });
+            for step in due {
+                self.do_step(&step);
+            }
+        }
         let to = flat(target - self.pos);
         let dist = to.length();
         // The way to the player: what a spell needs to be cast at him.
@@ -785,12 +981,13 @@ impl Mob {
         match self.state {
             State::Unborn => {}
             State::Dead(t) => {
-                if t + dt < self.def.respawn {
+                if t + dt < self.respawn {
                     self.state = State::Dead(t + dt);
                 } else if self.summoned {
                     self.state = State::Unborn;
                 } else {
                     (self.pos, self.health, self.loot) = (self.home, self.def.health, None);
+                    self.reset_route();
                     self.mana = self.def.brain.mana;
                     self.rest = self.new_rest();
                     self.state = State::Idle;
@@ -804,11 +1001,13 @@ impl Mob {
                 if self.def.hostile && !self.def.brain.calm && (target - self.pos).length() < noticed {
                     self.state = State::Chase;
                     self.sounds.push(Cry::Aggro);
-                } else if self.def.attackable() {
+                } else if self.def.attackable() || !self.route.is_empty() {
                     match self.state {
                         State::Wander(goal) => {
                             let left = flat(goal - self.pos);
-                            if left.length() < 0.3 {
+                            if left.length() < 0.3 && self.roam.is_none() && !self.route.is_empty() {
+                                self.arrive();
+                            } else if left.length() < 0.3 {
                                 self.legs = self.legs.saturating_sub(1);
                                 if self.legs > 0 {
                                     self.start_leg();
@@ -817,7 +1016,8 @@ impl Mob {
                                 }
                             } else {
                                 self.yaw = left.x.atan2(-left.z);
-                                let step = self.walk(left.normalize() * (WALK_SPEED * dt).min(left.length()), &blocked);
+                                let pace = if self.run { RUN_SPEED } else { WALK_SPEED };
+                                let step = self.walk(left.normalize() * (pace * dt).min(left.length()), &blocked);
                                 if step == 0.0 {
                                     // Something is in the way: it gives up the stroll.
                                     (self.state, self.rest, self.legs) = (State::Idle, self.new_rest(), 0);
@@ -831,7 +1031,22 @@ impl Mob {
                         }
                         _ => {
                             self.rest -= dt;
-                            if self.rest <= 0.0 && self.wander > 0.0 {
+                            if let Some((centre, radius, left)) = self.roam {
+                                // A script has it stroll round here for a while, and then the patrol goes on.
+                                if left <= dt {
+                                    (self.roam, self.rest) = (None, 0.0);
+                                } else {
+                                    self.roam = Some((centre, radius, left - dt));
+                                    if self.rest <= 0.0 {
+                                        self.legs = 1 + (self.random() * 3.0) as u32;
+                                        self.start_leg();
+                                    }
+                                }
+                            } else if self.rest <= 0.0 && !self.route.is_empty() {
+                                if !self.stopped {
+                                    self.state = State::Wander(self.route[self.next].at);
+                                }
+                            } else if self.rest <= 0.0 && self.wander > 0.0 {
                                 self.legs = 1 + (self.random() * 3.0) as u32;
                                 self.start_leg();
                             }
@@ -1029,9 +1244,11 @@ impl Mob {
     /// The animation the creature plays; `anims` are the ones its spells ask for (the stance held while casting, the cast).
     fn animation(&self, anims: &SpellAnims) -> u16 {
         match self.state {
-            State::Idle | State::Unborn => STAND,
+            State::Idle => self.emote.unwrap_or(STAND),
+            State::Unborn => STAND,
             State::Return(t) if t < RETURN_WAIT => STAND,
             State::Return(_) => RUN,
+            State::Wander(_) if self.run => RUN,
             State::Wander(_) => WALK,
             State::Chase if self.moving => RUN,
             State::Chase => STAND,
@@ -1056,6 +1273,16 @@ struct BeastRig {
     scale: f32,
 }
 
+/// The model of a kind of beast with its skins (none for a person).
+fn beast_rig(def: &CreatureDef, mount: &Mount, cache: &ModelCache) -> Result<Option<BeastRig>> {
+    let Body::Beast { model, skins, scale } = &def.body else { return Ok(None) };
+    let m2 = M2::parse(&mount.read(model)?).with_context(|| format!("{} model", def.name))?;
+    let skins: Vec<(u32, &str)> = skins.iter().map(|(slot, file)| (*slot, file.as_str())).collect();
+    let template = cache.creature(mount, model, &skins)?;
+    let idle_base = m2.sequences.iter().position(|s| s.id == STAND).unwrap_or(0);
+    Ok(Some(BeastRig { m2, template, idle_base, scale: *scale }))
+}
+
 /// A person on screen: a character of some race and sex dressed in his outfit, standing.
 pub(crate) struct Person {
     character: Character,
@@ -1067,6 +1294,9 @@ pub(crate) struct Person {
     released: bool,
     /// How tall the model is, yards (a tauren is more than a gnome).
     height: f32,
+    /// The animation it holds while it stands (a state emote), and whether it runs when it strolls: set by its creature before each pose.
+    emote: Option<u16>,
+    run: bool,
 }
 
 /// How tall a human man is, yards: what the heights below (the quest mark, the name, the click) were made for.
@@ -1093,7 +1323,7 @@ impl Person {
         let mut worn = Worn::new(&character, renderer, gpu);
         worn.dress(&mut character, look, mount, &cache, renderer, gpu, equipment)?;
         let height = character.model.vertices.iter().map(|v| v.pos[1]).fold(0.0, f32::max).max(0.5);
-        Ok(Person { character, worn, swinging: false, casting: false, released: false, height })
+        Ok(Person { character, worn, swinging: false, casting: false, released: false, height, emote: None, run: false })
     }
 
     /// Stand, run after the player, swing the weapon for a bite, or fall and lie (the model's own death animation) when dead.
@@ -1119,15 +1349,27 @@ impl Person {
             State::Chase if moving => RUN_SPEED,
             State::Flee(..) | State::Kite(_) => RUN_SPEED,
             State::Return(t) if t >= RETURN_WAIT => RUN_SPEED,
+            State::Wander(_) if self.run => RUN_SPEED,
             State::Wander(_) => WALK_SPEED,
             _ => 0.0,
         };
         match state {
             State::Dead(seconds) => self.character.lie(seconds * 1000.0),
-            _ => self.character.update(dt, &Motion { speed, forward_speed: speed, ..Motion::default() }, true),
+            _ => self.character.update(dt, &Motion { speed, forward_speed: speed, emote: self.emote.filter(|_| state == State::Idle), ..Motion::default() }, true),
         }
         renderer.update_entity_vertices(gpu, self.worn.body, &self.character.vertices);
         let orient = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - yaw);
+        self.worn.place(renderer, &self.character, pos, orient, false, false);
+        self.worn.animate(dt, forward, viewer, renderer, gpu, &self.character, pos, orient, false, false);
+    }
+
+    /// Lie as a ragdoll poses the body (`bones`, none: as it lay), with what hangs on it.
+    #[allow(clippy::too_many_arguments)]
+    fn tumble(&mut self, bones: Option<Vec<Mat4>>, dt: f32, pos: Vec3, orient: Mat4, forward: Vec3, viewer: Vec3, renderer: &mut Renderer, gpu: &Gpu) {
+        if let Some(bones) = bones {
+            self.character.pose_with(bones);
+            renderer.update_entity_vertices(gpu, self.worn.body, &self.character.vertices);
+        }
         self.worn.place(renderer, &self.character, pos, orient, false, false);
         self.worn.animate(dt, forward, viewer, renderer, gpu, &self.character, pos, orient, false, false);
     }
@@ -1166,6 +1408,8 @@ enum Visual {
         anim: Channel,
         /// The idle sequence last seen, to notice when it changes to a fidget.
         last_seq: usize,
+        /// The kind whose model it shows (a waypoint script can change it).
+        shown: usize,
     },
     Person(Person),
 }
@@ -1184,6 +1428,9 @@ struct Creature {
     /// The entities of its three quest marks (those creatures that can be talked to have them), and the one shown.
     marks: Option<[usize; 3]>,
     want: Option<Marker>,
+    /// It fell as a ragdoll when it died, and lies as that until it is back; whether it was dead at the last frame.
+    ragdoll: Option<Ragdoll>,
+    was_dead: bool,
 }
 
 /// The rectangle (x0, y0, x1, y1 in pixels) that a thing `height` yards tall standing at `feet` covers on a `size` screen seen
@@ -1235,6 +1482,8 @@ pub struct Creatures {
     target: Option<usize>,
     /// The quest items that the active quests want (`QuestLog::wanted`): what dies now may drop them, and no other quest item.
     wanted: Vec<usize>,
+    /// Whether the creatures that die fall as ragdolls (the interface options).
+    pub ragdolls: bool,
     /// The animations the creatures' spells ask for.
     anims: SpellAnims,
 }
@@ -1278,19 +1527,21 @@ impl Creatures {
                 all.extend((0..count).map(|_| (summoned, pos, yaw, wander, Some(parent))));
             }
         }
+        // The looks that the waypoint scripts turn creatures into.
+        for id in content::get().spawns.iter().flat_map(|s| &s.path).flat_map(|w| &w.steps).filter_map(|(_, step)| if let content::Step::Morph(id) = step { Some(id) } else { None }) {
+            if let Some(kind) = defs.iter().position(|d| d.id == *id).filter(|&k| rigs[k].is_none()) {
+                rigs[kind] = beast_rig(&defs[kind], mount, cache)?;
+            }
+        }
         for (n, &(kind, pos, yaw, wander, parent)) in all.iter().enumerate() {
             let def = &defs[kind];
             let visual = match &def.body {
-                Body::Beast { model, skins, scale } => {
+                Body::Beast { .. } => {
                     if rigs[kind].is_none() {
-                        let m2 = M2::parse(&mount.read(model)?).with_context(|| format!("{} model", def.name))?;
-                        let skins: Vec<(u32, &str)> = skins.iter().map(|(slot, file)| (*slot, file.as_str())).collect();
-                        let template = cache.creature(mount, model, &skins)?;
-                        let idle_base = m2.sequences.iter().position(|s| s.id == STAND).unwrap_or(0);
-                        rigs[kind] = Some(BeastRig { m2, template, idle_base, scale: *scale });
+                        rigs[kind] = beast_rig(def, mount, cache)?;
                     }
                     let rig = rigs[kind].as_ref().unwrap();
-                    Visual::Beast { entity: renderer.add_entity(gpu, &rig.template), anim: Channel::new(&rig.m2, STAND, &mut rng), last_seq: usize::MAX }
+                    Visual::Beast { entity: renderer.add_entity(gpu, &rig.template), anim: Channel::new(&rig.m2, STAND, &mut rng), last_seq: usize::MAX, shown: kind }
                 }
                 // A look that does not exist for the race (a face, a hair style) is shown as the default of the race instead.
                 Body::Humanoid { outfit, look } => Visual::Person(match Person::load(outfit, look, mount, renderer, gpu, &format!("npc/{n}")) {
@@ -1308,9 +1559,9 @@ impl Creatures {
             if parent.is_some() {
                 (mob.summoned, mob.state) = (true, State::Unborn);
             }
-            creatures.push(Creature { mob, parent, visual, marks, want: None });
+            creatures.push(Creature { mob, parent, visual, marks, want: None, ragdoll: None, was_dead: false });
         }
-        Ok(Creatures { rigs, creatures, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, wanted: Vec::new(), anims: SpellAnims::new() })
+        Ok(Creatures { rigs, creatures, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, wanted: Vec::new(), ragdolls: true, anims: SpellAnims::new() })
     }
 
     /// Where the creatures of the given kinds are now (render space): the living ones, else the corpses (which wait to come back).
@@ -1323,6 +1574,17 @@ impl Creatures {
     /// Every creature as it is, in spawn order.
     pub fn snapshot(&self) -> Vec<MobSave> {
         self.creatures.iter().map(|c| c.mob.snapshot()).collect()
+    }
+
+    /// Give the spawned creatures their own respawn times and patrols (the n-th is the n-th spawned): the seconds to come back, and the places to walk to.
+    pub fn set_routes(&mut self, routes: Vec<(Option<f32>, Vec<content::Waypoint>)>) {
+        for (c, (respawn, path)) in self.creatures.iter_mut().zip(routes) {
+            c.mob.respawn = respawn.unwrap_or(c.mob.def.respawn);
+            c.mob.route = path
+                .into_iter()
+                .map(|w| Stop { at: crate::coords::wow_to_render([w.at.0, w.at.1, 0.0]), wait: w.wait, facing: w.facing.map(f32::to_radians), steps: w.steps })
+                .collect();
+        }
     }
 
     /// Put saved creatures back (the n-th saved is the n-th spawned); those that do not match the spawn list any more start afresh.
@@ -1359,7 +1621,7 @@ impl Creatures {
     /// Advance every creature and pose it. Returns what they did that the game acts on (the swings that landed on the player, the spells begun, stopped
     /// and gone off), and the sounds the creatures made with the place they came from.
     #[allow(clippy::too_many_arguments)]
-    pub fn update(&mut self, dt: f32, watch: &Watch, ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool, renderer: &mut Renderer, gpu: &Gpu) -> (Vec<Foe>, Vec<(Sfx, Vec3)>) {
+    pub fn update(&mut self, dt: f32, watch: &Watch, ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool, mut physics: Option<&mut Bodies>, renderer: &mut Renderer, gpu: &Gpu) -> (Vec<Foe>, Vec<(Sfx, Vec3)>) {
         self.clock_ms += dt * 1000.0;
         let player = watch.feet;
         let (mut foes, mut cries) = (Vec::new(), Vec::new());
@@ -1412,7 +1674,13 @@ impl Creatures {
             }
             (c.mob.hidden, c.mob.notice) = (watch.sneaking.is_some(), watch.sneaking.unwrap_or(1.0));
             let height = Self::height_of(c);
-            for act in c.mob.step(dt, watch, i, &roster, &ground, &blocked) {
+            let acts = c.mob.step(dt, watch, i, &roster, &ground, &blocked);
+            // What the damage over time slew is a kill of the player's.
+            if std::mem::take(&mut c.mob.slain_over) {
+                self.deaths.push(kind);
+                c.mob.loot = c.mob.loot.take().map(|mut l| { l.only_wanted(&self.wanted); l }).filter(|l| !l.is_empty());
+            }
+            for act in acts {
                 match act {
                     Act::Melee(damage) => foes.push(Foe::Melee(damage)),
                     Act::Begin(spell) => foes.push(Foe::Begin { who: i, spell, at: c.mob.pos, yaw: c.mob.yaw, height }),
@@ -1422,9 +1690,49 @@ impl Creatures {
                     Act::Assist(radius) => assists.push((i, radius)),
                 }
             }
+            // A creature that dies falls as a ragdoll if the physics has room for it, until it is back.
+            let dead = matches!(c.mob.state, State::Dead(_));
+            if let Some(r) = c.ragdoll.take() {
+                match physics.as_deref_mut() {
+                    Some(p) if dead && r.alive(p) => c.ragdoll = Some(r),
+                    Some(p) => r.remove(p),
+                    None => {}
+                }
+            }
+            let fresh = dead && !c.was_dead && matches!(c.mob.state, State::Dead(t) if t < 0.5);
+            c.was_dead = dead;
+            let push = flat(c.mob.pos - player).normalize_or_zero() * RAGDOLL_PUSH + Vec3::Y * 1.5;
+            let spawn_here = fresh && self.ragdolls && flat(c.mob.pos - player).length() < RAGDOLL_REACH;
             match &mut c.visual {
-                Visual::Beast { entity, anim, last_seq } => {
-                    let rig = self.rigs[kind].as_ref().expect("a beast has its rig");
+                Visual::Beast { entity, anim, last_seq, shown } => {
+                    // A script changed how it looks: the model of the new kind takes the place of the old.
+                    if *shown != c.mob.look {
+                        match self.rigs[c.mob.look].as_ref() {
+                            Some(rig) => {
+                                renderer.remove_entity(*entity);
+                                (*entity, *anim, *last_seq, *shown) = (renderer.add_entity(gpu, &rig.template), Channel::new(&rig.m2, STAND, &mut self.rng), usize::MAX, c.mob.look);
+                            }
+                            None => c.mob.look = *shown,
+                        }
+                    }
+                    let rig = self.rigs[*shown].as_ref().expect("a beast has its rig");
+                    let orient = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - c.mob.yaw) * Mat4::from_scale(Vec3::splat(rig.scale));
+                    if let (true, Some(p)) = (spawn_here, physics.as_deref_mut()) {
+                        let bones = anim::bone_matrices_with(&rig.m2, anim.mix(&rig.m2), self.clock_ms, &[], &[]);
+                        c.ragdoll = Ragdoll::spawn(p, &rig.m2, &rig.template, bones, Mat4::from_translation(c.mob.pos) * orient, push);
+                    }
+                    if let Some(rd) = c.ragdoll.as_mut() {
+                        if let Some(bones) = physics.as_deref_mut().and_then(|p| rd.bones(p)) {
+                            anim::skin(&rig.m2, &bones, &rig.template.vertices, &mut self.vertices);
+                            renderer.update_entity_vertices(gpu, *entity, &self.vertices);
+                            // The corpse is where it has been moved to (what is looted and clicked on).
+                            if let Some(at) = physics.as_deref().and_then(|p| rd.corpse_at(p)) {
+                                c.mob.pos = Vec3::new(at.x, ground(at.x, at.z, at.y).unwrap_or(c.mob.pos.y), at.z);
+                            }
+                        }
+                        renderer.set_entity(*entity, rd.origin(), orient, true);
+                        continue;
+                    }
                     anim.request(&rig.m2, c.mob.animation(&self.anims), true, &mut self.rng);
                     anim.advance(&rig.m2, dt * 1000.0, 1.0, true, &mut self.rng);
                     // An idle that turns into a fidget (a look around, a shake) comes with a growl.
@@ -1435,11 +1743,32 @@ impl Creatures {
                     let bones = anim::bone_matrices_with(&rig.m2, anim.mix(&rig.m2), self.clock_ms, &[], &[]);
                     anim::skin(&rig.m2, &bones, &rig.template.vertices, &mut self.vertices);
                     renderer.update_entity_vertices(gpu, *entity, &self.vertices);
+                    // Batches that the model shows only in some animations (the logs a peasant carries) fade in and out by its tracks.
+                    if let Some(tracks) = &rig.template.tracks {
+                        let pose = anim.mix(&rig.m2).to;
+                        let looks: Vec<_> = rig.template.batches.iter().map(|b| tracks.look_in(b.refs, pose.seq, pose.time, self.clock_ms)).collect();
+                        renderer.set_entity_looks(gpu, *entity, &looks);
+                    }
                     let orient = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - c.mob.yaw) * Mat4::from_scale(Vec3::splat(rig.scale));
                     renderer.set_entity(*entity, c.mob.pos, orient, true);
                 }
                 Visual::Person(person) => {
+                    let orient = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - c.mob.yaw);
+                    if let (true, Some(p)) = (spawn_here, physics.as_deref_mut()) {
+                        c.ragdoll = Ragdoll::spawn(p, &person.character.m2, &person.character.model, person.character.bones.clone(), Mat4::from_translation(c.mob.pos) * orient, push);
+                    }
+                    if let Some(rd) = c.ragdoll.as_mut() {
+                        let bones = physics.as_deref_mut().and_then(|p| rd.bones(p));
+                        if bones.is_some() {
+                            if let Some(at) = physics.as_deref().and_then(|p| rd.corpse_at(p)) {
+                                c.mob.pos = Vec3::new(at.x, ground(at.x, at.z, at.y).unwrap_or(c.mob.pos.y), at.z);
+                            }
+                        }
+                        person.tumble(bones, dt, rd.origin(), orient, (c.mob.pos + Vec3::Y - self.viewer).normalize_or_zero(), self.viewer, renderer, gpu);
+                        continue;
+                    }
                     let anims = if let State::Cast(spell, ..) = c.mob.state { c.mob.spell_anims(spell, &self.anims) } else { (READY_SPELL, CAST_SPELL) };
+                    (person.emote, person.run) = (c.mob.emote, c.mob.run);
                     person.pose(dt, c.mob.pos, c.mob.yaw, c.mob.state, c.mob.moving, anims, (c.mob.pos + Vec3::Y - self.viewer).normalize_or_zero(), self.viewer, renderer, gpu)
                 }
             }
@@ -1494,14 +1823,19 @@ impl Creatures {
 
     /// The player's sword swing: every hostile creature it reaches (see `Mob::struck_by`) takes `damage`. Returns where
     /// above each the damage should show.
-    pub fn strike(&mut self, from: Vec3, yaw: f32, damage: f32, unaware_bonus: f32) -> Vec<(Vec3, f32, bool)> {
+    /// `against(level, kind)` is what the blow does to a creature of that level and type: `None` when it misses (it is listed with no damage), else the damage
+    /// the gear adds against its type. Each hit is listed with the creature (its index) it landed on.
+    pub fn strike(&mut self, from: Vec3, yaw: f32, damage: f32, unaware_bonus: f32, against: &mut dyn FnMut(u32, u32) -> Option<f32>) -> Vec<(Vec3, f32, bool, usize)> {
         let (mut hits, mut ids) = (Vec::new(), Vec::new());
         for (i, c) in self.creatures.iter_mut().enumerate() {
             // A creature that has not noticed the player takes the blow harder (`unaware_bonus`, 1 for none).
             let sneak = matches!(c.mob.state, State::Idle | State::Wander(_)) && unaware_bonus > 1.0;
-            let dealt = if sneak { damage * unaware_bonus } else { damage };
-            if c.mob.struck_by(from, yaw, SWORD_REACH, dealt) {
-                hits.push((c.mob.pos + Vec3::Y * 0.9, dealt, sneak));
+            let extra = if c.mob.in_swing(from, yaw, SWORD_REACH) { against(c.mob.def.level, c.mob.def.kind) } else { Some(0.0) };
+            let dealt = (damage + extra.unwrap_or(0.0)) * if sneak { unaware_bonus } else { 1.0 };
+            if extra.is_none() {
+                hits.push((c.mob.pos + Vec3::Y * 0.9, 0.0, false, i));
+            } else if c.mob.struck_by(from, yaw, SWORD_REACH, dealt) {
+                hits.push((c.mob.pos + Vec3::Y * 0.9, dealt, sneak, i));
                 ids.push(i);
                 if c.mob.is_dead() {
                     self.deaths.push(c.mob.kind);
@@ -1554,12 +1888,31 @@ impl Creatures {
         Some(c.mob.pos + Vec3::Y * 0.9)
     }
 
-    /// A spell hurts every hostile creature within `radius` yards of `centre`, each for what `roll` gives. Returns where above
+    /// Put something on creature `i`.
+    pub fn afflict(&mut self, i: usize, status: Status) {
+        if let Some(c) = self.creatures.get_mut(i) {
+            c.mob.afflict(status);
+        }
+    }
+
+    /// The creature that is fighting the player and is nearest to `feet` (what hits back at him is aimed at it), within a short reach.
+    pub fn attacker(&self, feet: Vec3) -> Option<usize> {
+        (0..self.creatures.len())
+            .filter(|&i| self.creatures[i].mob.state.fights() && !self.creatures[i].mob.is_dead() && flat(self.creatures[i].mob.pos - feet).length() <= 12.0)
+            .min_by(|&a, &b| flat(self.creatures[a].mob.pos - feet).length().total_cmp(&flat(self.creatures[b].mob.pos - feet).length()))
+    }
+
+    /// The level and the type of creature `i`, if it is a hostile one that is alive.
+    pub fn enemy_info(&self, i: usize) -> Option<(u32, u32)> {
+        self.enemy_at(i).map(|_| (self.creatures[i].mob.def.level, self.creatures[i].mob.def.kind))
+    }
+
+    /// A spell hurts every hostile creature within `radius` yards of `centre`, each for what `roll` gives (by its level and type). Returns where above
     /// each the damage shows, and how much it was.
-    pub fn spell_area(&mut self, centre: Vec3, radius: f32, mut roll: impl FnMut() -> f32) -> Vec<(Vec3, f32)> {
+    pub fn spell_area(&mut self, centre: Vec3, radius: f32, mut roll: impl FnMut(u32, u32) -> f32) -> Vec<(Vec3, f32)> {
         let near: Vec<usize> = (0..self.creatures.len()).filter(|&i| self.enemy_at(i).is_some_and(|p| flat(p - centre).length() <= radius)).collect();
         near.into_iter().filter_map(|i| {
-            let damage = roll();
+            let damage = roll(self.creatures[i].mob.def.level, self.creatures[i].mob.def.kind);
             self.spell_hit(i, damage).map(|at| (at, damage))
         }).collect()
     }
@@ -1842,6 +2195,38 @@ mod tests {
         assert!(matches!(wolf.state, State::Return(_)));
     }
 
+    /// A wound that bleeds, a stun that holds it, a slow that makes its time run slower.
+    #[test]
+    fn what_is_put_on_a_creature_hurts_holds_or_slows_it() {
+        let far = Vec3::new(100.0, 0.0, 0.0);
+        let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+        let full = wolf.health;
+        wolf.afflict(Status::Over { amount: 3.0, period: 1.0, seconds: 5.0 });
+        run(&mut wolf, 5.5, far);
+        assert!((full - wolf.health - 15.0).abs() < 1e-3, "five ticks of three: {}", full - wolf.health);
+        // A stun: it stands where it is for the seconds, then chases.
+        wolf.state = State::Chase;
+        wolf.pos = Vec3::new(10.0, 0.0, 0.0);
+        wolf.afflict(Status::Stun(1.0));
+        run(&mut wolf, 0.9, Vec3::ZERO);
+        assert_eq!(wolf.pos.x, 10.0);
+        run(&mut wolf, 0.6, Vec3::ZERO);
+        assert!(wolf.pos.x < 10.0);
+        // A slow to a share of the pace: it covers that share of the ground.
+        let (mut quick, mut slow) = (Mob::new(kind(), Vec3::new(30.0, 0.0, 0.0), 0.0), Mob::new(kind(), Vec3::new(30.0, 0.0, 0.0), 0.0));
+        (quick.state, slow.state) = (State::Chase, State::Chase);
+        slow.afflict(Status::Slow(0.5, 10.0));
+        run(&mut quick, 1.0, Vec3::ZERO);
+        run(&mut slow, 1.0, Vec3::ZERO);
+        assert!(((30.0 - slow.pos.x) / (30.0 - quick.pos.x) - 0.5).abs() < 0.1, "{} {}", slow.pos.x, quick.pos.x);
+        // Damage over time can kill, and says so once.
+        let mut weak = Mob::new(kind(), Vec3::ZERO, 0.0);
+        weak.health = 2.0;
+        weak.afflict(Status::Over { amount: 5.0, period: 1.0, seconds: 5.0 });
+        run(&mut weak, 1.5, far);
+        assert!(weak.is_dead() && std::mem::take(&mut weak.slain_over) && !weak.slain_over);
+    }
+
     #[test]
     fn a_wolf_that_gave_up_waits_then_runs_home_and_heals_unless_hit_again() {
         let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
@@ -1968,6 +2353,104 @@ mod tests {
         }
         assert!(walked && rested, "it walks, then stands again");
         assert!(farthest > 1.0 && farthest <= WANDER_DEFAULT + 0.5, "strolled {farthest} yards from home");
+    }
+
+    fn stop(x: f32, z: f32, wait: f32, steps: Vec<(f32, content::Step)>) -> Stop {
+        Stop { at: Vec3::new(x, 0.0, z), wait, facing: None, steps }
+    }
+
+    /// A guard (a friendly creature) with a patrol, run for `seconds` far from any player; calls `watch` after each step.
+    fn patrol(route: Vec<Stop>, seconds: f32, mut watch: impl FnMut(&Mob)) -> Mob {
+        let mut guard = Mob::new(content::creature_index("c1642"), Vec3::ZERO, 0.0);
+        guard.route = route;
+        let far = Vec3::new(500.0, 0.0, 500.0);
+        for _ in 0..(seconds * 60.0) as usize {
+            guard.update(1.0 / 60.0, far, flat_ground, open);
+            watch(&guard);
+        }
+        guard
+    }
+
+    #[test]
+    fn a_patrol_walks_its_places_in_turn_standing_and_facing_where_they_ask_and_comes_back_in_its_own_time() {
+        // Three places, the second asking for ten seconds standing with the face turned.
+        let mut route = vec![stop(10.0, 0.0, 0.0, vec![]), stop(10.0, 10.0, 10.0, vec![]), stop(0.0, 10.0, 0.0, vec![])];
+        route[1].facing = Some(1.0);
+        let (mut reached, mut stood) = ([false; 3], 0.0f32);
+        let places: Vec<Vec3> = route.iter().map(|r| r.at).collect();
+        patrol(route, 120.0, |g| {
+            for (r, place) in reached.iter_mut().zip(&places) {
+                *r |= flat(g.pos - *place).length() < 0.5;
+            }
+            if flat(g.pos - places[1]).length() < 0.5 && g.state == State::Idle {
+                stood += 1.0 / 60.0;
+                assert_eq!(g.yaw, 1.0, "it turns to the heading of the place while it stands");
+            }
+        });
+        assert_eq!(reached, [true; 3], "every place of the patrol is reached");
+        assert!(stood > 9.0, "it stands at the second place: {stood} s");
+        // Its own respawn time is the one it waits.
+        let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+        wolf.respawn = 20.0;
+        wolf.state = State::Dead(0.0);
+        run(&mut wolf, 19.0, Vec3::new(500.0, 0.0, 500.0));
+        assert!(wolf.is_dead());
+        run(&mut wolf, 2.0, Vec3::new(500.0, 0.0, 500.0));
+        assert!(!wolf.is_dead());
+    }
+
+    #[test]
+    fn the_scripts_of_the_places_make_it_run_hold_an_animation_change_its_look_and_stay_where_it_is() {
+        use content::Step;
+        let wolf = content::creature_index("wolf");
+        // The first place: run from here on at once, hold animation 136 after half a second, and look like a wolf after a second. The second: stay.
+        let route = vec![stop(10.0, 0.0, 2.0, vec![(0.0, Step::Run(true)), (0.5, Step::Emote(136)), (1.0, Step::Morph("wolf".into()))]), stop(30.0, 0.0, 0.0, vec![(0.0, Step::Idle)])];
+        let (mut emote_seen, mut look_seen, mut fastest) = (None, None, 0.0f32);
+        let mut last = Vec3::ZERO;
+        let guard = patrol(route, 40.0, |g| {
+            if g.state == State::Idle && flat(g.pos - Vec3::new(10.0, 0.0, 0.0)).length() < 0.5 {
+                emote_seen = emote_seen.or(g.emote);
+                look_seen = look_seen.or((g.look == wolf).then_some(true));
+            }
+            fastest = fastest.max(flat(g.pos - last).length() * 60.0);
+            last = g.pos;
+        });
+        assert_eq!((emote_seen, look_seen), (Some(136), Some(true)));
+        assert!(fastest > WALK_SPEED * 1.5, "it ran between the places: {fastest}");
+        assert!(guard.stopped && flat(guard.pos - Vec3::new(30.0, 0.0, 0.0)).length() < 0.5 && guard.state == State::Idle, "it stays at the last place");
+        // Back from the dead it starts again, walking, as it looked.
+        let mut guard = guard;
+        guard.state = State::Dead(guard.respawn);
+        run(&mut guard, 1.0, Vec3::new(500.0, 0.0, 500.0));
+        assert_eq!((guard.next, guard.run, guard.stopped, guard.emote, guard.look), (0, false, false, None, guard.kind));
+    }
+
+    #[test]
+    fn a_script_can_have_it_stroll_round_a_place_for_a_while_before_the_patrol_goes_on() {
+        let route = vec![stop(10.0, 0.0, 0.0, vec![(0.0, content::Step::Roam(6.0, 20.0))]), stop(40.0, 0.0, 0.0, vec![])];
+        let (mut strayed, mut left_at) = (0.0f32, None);
+        patrol(route, 60.0, |g| {
+            if g.roam.is_some() {
+                strayed = strayed.max(flat(g.pos - Vec3::new(10.0, 0.0, 0.0)).length());
+            } else if g.next == 0 || left_at.is_some() {
+            } else {
+                left_at = Some(());
+            }
+        });
+        assert!(strayed > 1.0 && strayed <= 6.5, "it strolled within six yards of the place: {strayed}");
+        assert!(left_at.is_some(), "and then went on");
+    }
+
+    #[test]
+    fn how_far_along_its_patrol_a_creature_is_comes_back_with_the_save() {
+        let route = vec![stop(10.0, 0.0, 30.0, vec![(0.0, content::Step::Run(true))]), stop(10.0, 10.0, 0.0, vec![]), stop(0.0, 10.0, 0.0, vec![])];
+        let guard = patrol(route.clone(), 20.0, |_| {});
+        assert_eq!((guard.next, guard.run), (1, true), "at the first place, bound for the second");
+        let saved: MobSave = ron::from_str(&ron::to_string(&guard.snapshot()).unwrap()).unwrap();
+        let mut back = Mob::new(content::creature_index("c1642"), Vec3::ZERO, 0.0);
+        back.route = route;
+        assert!(back.restore(&saved));
+        assert_eq!((back.next, back.run), (1, true));
     }
 
     #[test]

@@ -24,6 +24,20 @@ pub fn roll(rng: &mut u32, min: f32, max: f32, power: f32) -> f32 {
     ((min + (*rng % ((max - min).max(0.0) as u32 + 1)) as f32) * power).round()
 }
 
+/// What a spell does: `roll` and what the gear adds, half as much again with a chance of `crit` percent (a critical spell).
+fn spell_roll(rng: &mut u32, min: f32, max: f32, power: f32, bonus: f32, crit: f32) -> f32 {
+    let amount = (roll(rng, min, max, power) + bonus).round().max(0.0);
+    if dice(rng) < crit { (amount * 1.5).round() } else { amount }
+}
+
+/// A number from 0 up to 100 by the dice `rng` (a chance in percent is met when this is below it).
+fn dice(rng: &mut u32) -> f32 {
+    *rng ^= *rng << 13;
+    *rng ^= *rng >> 17;
+    *rng ^= *rng << 5;
+    (*rng % 10_000) as f32 / 100.0
+}
+
 /// What casting works on, borrowed from the game.
 pub struct Ctx<'a> {
     pub player: &'a mut Player,
@@ -127,12 +141,13 @@ impl Spellcaster {
             }
             victim = Some((target, at));
         }
-        let enough = match def.cost {
+        let cost = ctx.panels.spell_cost(def.cost);
+        let enough = match cost {
             Cost::Mana(n) => ctx.player.vitals.mana.current >= n,
             Cost::Stamina(n) => ctx.player.vitals.stamina.current >= n,
         };
         if !enough {
-            return Err(match def.cost {
+            return Err(match cost {
                 Cost::Mana(_) => "Not enough mana.",
                 Cost::Stamina(_) => "Not enough stamina.",
             });
@@ -288,6 +303,12 @@ impl Spellcaster {
         ctx.player.use_ammo();
         let from = ctx.player.attachment_world(2).map_or(feet + Vec3::Y * 1.3, |m| m.w_axis.truncate());
         let aimed = ctx.wolves.as_ref().and_then(|w| w.aim(feet, yaw, ARROW_RANGE));
+        // An arrow may miss, as a blow of a weapon does.
+        let (mob, kind) = aimed.and_then(|(t, _)| ctx.wolves.as_ref()?.enemy_info(t)).unwrap_or((ctx.panels.progress.level, 0));
+        let speed = ctx.panels.stats.ranged.map_or(2.0, |r| r.2);
+        let damage = damage + ctx.panels.stats.ranged_ap_versus[kind as usize % 11] as f32 / crate::items::ATTACK_POWER_PER_DPS * speed;
+        let missed = dice(&mut self.rng) < crate::levels::melee_miss(ctx.panels.progress.level, mob, ctx.panels.stats.hit);
+        let damage = if missed { 0.0 } else { damage };
         let (target, last_seen) = aimed.map_or((usize::MAX, Vec3::new(from.x + yaw.sin() * ARROW_RANGE, feet.y, from.z - yaw.cos() * ARROW_RANGE)), |(t, at)| (t, at));
         if aimed.is_some() {
             ctx.panels.train(skill, shot.power);
@@ -312,9 +333,22 @@ impl Spellcaster {
         Self::show(ctx, &vis.impact, false, at, 0.0, CHEST / 0.7, false);
         Self::sound(ctx, vis.impact.sound);
         if alive.is_some() {
+            if f.damage <= 0.0 {
+                if let Some(text) = ctx.text.as_mut() {
+                    text.message("Miss");
+                }
+                return;
+            }
             let hit = ctx.wolves.as_mut().and_then(|w| w.spell_hit(f.target, f.damage));
             if let (Some(hit), Some(text)) = (hit, ctx.text.as_mut()) {
                 text.damage_dealt(hit, f.damage as u32);
+            }
+            // The spells of the ranged weapon that go off on a shot that lands.
+            if let (true, Some(weapon), Some(wolves)) = (f.pitched, ctx.panels.inv.equipment[crate::items::RANGED], ctx.wolves.as_mut()) {
+                let (level, speed) = (ctx.panels.progress.level, ctx.panels.stats.ranged.map_or(2.0, |r| r.2));
+                let mut out = Vec::new();
+                crate::procs::on_hit(weapon.item, speed, level, &mut || ctx.panels.consumed.dice(), &mut out);
+                crate::procs::apply(out, Some(f.target), ctx.player, ctx.panels, wolves, ctx.text.as_deref_mut());
             }
         }
     }
@@ -324,18 +358,22 @@ impl Spellcaster {
     fn go(&mut self, ctx: &mut Ctx, spell: usize, feet: Vec3) {
         let def = content::spell(spell);
         let Ok(victim) = self.check(ctx, spell, feet) else { return };
-        if !ctx.player.spend(def.cost) {
+        if !ctx.player.spend(ctx.panels.spell_cost(def.cost)) {
             return;
         }
         let vis = self.visuals.get(spell).cloned().unwrap_or_default();
         let yaw = ctx.player.facing();
-        let power = ctx.panels.skills.damage_factor(def.class);
+        let power = ctx.panels.spell_power(def.class);
+        let crit = ctx.panels.spell_crit(spell);
+        let versus = ctx.panels.stats.spell_versus;
+        let bonus = ctx.panels.spell_bonus(spell);
+        let (level, spell_hit) = (ctx.panels.progress.level, ctx.panels.stats.spell_hit);
         // What it does to the character itself or to all round, now.
         match def.effect {
             Effect::Area { min, max, radius } => {
                 let mut rng = self.rng;
                 if let Some(wolves) = ctx.wolves.as_mut() {
-                    let hits = wolves.spell_area(feet, radius, || roll(&mut rng, min, max, power));
+                    let hits = wolves.spell_area(feet, radius, |mob, kind| if dice(&mut rng) < crate::levels::spell_miss(level, mob, spell_hit) { 0.0 } else { spell_roll(&mut rng, min, max, power, bonus + versus[kind as usize % 11] as f32, crit) });
                     for (hit, damage) in hits {
                         if let Some(text) = ctx.text.as_mut() {
                             text.damage_dealt(hit, damage as u32);
@@ -346,7 +384,7 @@ impl Spellcaster {
                 self.rng = rng;
             }
             Effect::Heal { min, max } => {
-                let healed = ctx.player.heal(roll(&mut self.rng, min, max, power));
+                let healed = ctx.player.heal(spell_roll(&mut self.rng, min, max, power, bonus, crit));
                 if let Some(text) = ctx.text.as_mut() {
                     text.healed(healed as u32);
                 }
@@ -364,7 +402,8 @@ impl Spellcaster {
             Self::sound(ctx, vis.impact.sound);
         }
         if let (Effect::Damage { min, max, .. }, Some((target, at))) = (def.effect, victim) {
-            let damage = roll(&mut self.rng, min, max, power);
+            let (mob, kind) = ctx.wolves.as_ref().and_then(|w| w.enemy_info(target)).unwrap_or((level, 0));
+            let damage = if dice(&mut self.rng) < crate::levels::spell_miss(level, mob, spell_hit) { 0.0 } else { spell_roll(&mut self.rng, min, max, power, bonus + versus[kind as usize % 11] as f32, crit) };
             let from = ctx.player.attachment_world(1).map_or(feet + Vec3::Y * 1.3, |m| m.w_axis.truncate());
             match vis.missile.as_deref() {
                 Some(model) => {

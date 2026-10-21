@@ -36,16 +36,25 @@ const HOLD_DISTANCE: f32 = 1.4;
 const HOLD_HEIGHT: f32 = 1.0;
 const HOLD_PULL: f32 = 12.0;
 const HOLD_LOSE: f32 = 3.5;
+/// The same for a corpse that is dragged by a part of it: low, slower, and it may trail further behind.
+const DRAG_DISTANCE: f32 = 1.2;
+const DRAG_HEIGHT: f32 = 0.6;
+const DRAG_LOSE: f32 = 5.0;
+const DRAG_FASTEST: f32 = 6.0;
 /// The fastest a body is carried or thrown (yards a second).
 const FASTEST: f32 = 12.0;
 /// The arena: the half width of the terrain patch and the radius of the objects around its middle (yards), how far the player may walk from the middle
 /// before it is made again, how far a body may roam from the middle before it is put to sleep, and how long (seconds) more ground loading waits.
-const PATCH: f32 = 16.0;
-const OBJECTS: f32 = 20.0;
+const PATCH: f32 = 32.0;
+const OBJECTS: f32 = 24.0;
 const REMAKE: f32 = 5.0;
-const ROAM: f32 = 15.0;
+const ROAM: f32 = 28.0;
 const LOADING_WAIT: f32 = 1.0;
-const PATCH_STEP: f32 = 0.5;
+const PATCH_STEP: f32 = 0.75;
+/// How near (yards) the player must be to a body that sleeps for the arena to be there before he wakes it.
+const WAKE_REACH: f32 = 6.0;
+/// How far from the player (yards) a corpse can be and still fall as a ragdoll: the arena is sure to reach it.
+pub const RAGDOLL_REACH: f32 = 26.0;
 
 /// What the world under the bodies gives: terrain heights and the collision triangles of its objects (render space).
 pub trait Ground {
@@ -69,11 +78,11 @@ impl Ground for World {
     }
 }
 
-fn to(v: Vec3) -> Vector {
+pub(crate) fn to(v: Vec3) -> Vector {
     Vector::new(v.x, v.y, v.z)
 }
 
-fn from(v: Vector) -> Vec3 {
+pub(crate) fn from(v: Vector) -> Vec3 {
     Vec3::new(v.x, v.y, v.z)
 }
 
@@ -91,7 +100,12 @@ fn held_groups() -> InteractionGroups {
 }
 
 fn player_groups() -> InteractionGroups {
-    InteractionGroups::new(Group::GROUP_2, Group::GROUP_1, InteractionTestMode::And)
+    InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_3, InteractionTestMode::And)
+}
+
+/// The parts of a ragdoll collide with the ground, the props and the player, not with each other; those of a corpse that is dragged leave the player alone.
+pub(crate) fn ragdoll_groups(held: bool) -> InteractionGroups {
+    InteractionGroups::new(Group::GROUP_3, if held { Group::ALL ^ Group::GROUP_2 ^ Group::GROUP_3 } else { Group::ALL ^ Group::GROUP_3 }, InteractionTestMode::And)
 }
 
 struct Body {
@@ -114,9 +128,14 @@ struct Arena {
 }
 
 pub struct Bodies {
-    sim: PhysicsWorld,
+    /// Which world this is (the props are loaded again when they change, into a world of their own).
+    pub(crate) id: u64,
+    pub(crate) sim: PhysicsWorld,
     list: Vec<Body>,
-    held: Option<usize>,
+    /// The body being carried (a prop) or dragged (a part of a ragdoll).
+    held: Option<RigidBodyHandle>,
+    /// The last number given to a ragdoll (the `user_data` of its parts).
+    ragdolls: u128,
     player: RigidBodyHandle,
     /// Where the cylinder was (its middle) at the last step, and where the player's feet were.
     cylinder: Option<Vec3>,
@@ -126,15 +145,17 @@ pub struct Bodies {
     time: f32,
 }
 
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl Bodies {
-    fn empty() -> Bodies {
+    pub(crate) fn empty() -> Bodies {
         let mut sim = PhysicsWorld::default();
         sim.gravity = to(Vec3::NEG_Y * GRAVITY);
         let (player, _) = sim.insert(
             RigidBodyBuilder::kinematic_position_based().can_sleep(false),
             ColliderBuilder::cylinder(PLAYER_HALF, PLAYER_RADIUS).collision_groups(player_groups()),
         );
-        Bodies { sim, list: Vec::new(), held: None, player, cylinder: None, arena: None, owed: 0.0, time: 0.0 }
+        Bodies { id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed), sim, list: Vec::new(), held: None, ragdolls: 0, player, cylinder: None, arena: None, owed: 0.0, time: 0.0 }
     }
 
     /// The bodies among `props` that stand in `map` (the models that can be drawn as objects: `.m2` files).
@@ -174,48 +195,80 @@ impl Bodies {
         self.held.is_some()
     }
 
+    /// A number for the parts of a new ragdoll (none of the props has one).
+    pub(crate) fn new_ragdoll(&mut self) -> u128 {
+        self.ragdolls += 1;
+        self.ragdolls
+    }
+
     fn pos(&self, i: usize) -> Vec3 {
         from(self.sim.bodies[self.list[i].handle].translation())
     }
 
-    /// The nearest one within `range` yards of `from` (feet, render space) that is not already held.
-    pub fn near(&self, from_feet: Vec3, range: f32) -> Option<usize> {
-        let gap = |i: usize| {
-            let aabb = self.sim.colliders[self.list[i].collider].compute_aabb();
-            let (dx, dz) = ((aabb.mins.x - from_feet.x).max(from_feet.x - aabb.maxs.x).max(0.0), (aabb.mins.z - from_feet.z).max(from_feet.z - aabb.maxs.z).max(0.0));
-            (dx.hypot(dz), aabb.mins.y < from_feet.y + REACH_UP && aabb.maxs.y > from_feet.y - REACH_DOWN)
-        };
-        (0..self.list.len())
-            .filter(|&i| self.held != Some(i) && self.list[i].ready)
-            .map(|i| (i, gap(i)))
-            .filter(|&(_, (d, reach))| d <= range && reach)
-            .min_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
-            .map(|(i, _)| i)
+    /// The nearest of `candidates` within `range` yards of `from_feet` (feet, render space) that the player can reach, by the box around it.
+    fn nearest(&self, from_feet: Vec3, range: f32, candidates: impl Iterator<Item = (RigidBodyHandle, ColliderHandle)>) -> Option<RigidBodyHandle> {
+        candidates
+            .filter(|&(h, _)| self.held != Some(h))
+            .map(|(h, c)| {
+                let aabb = self.sim.colliders[c].compute_aabb();
+                let (dx, dz) = ((aabb.mins.x - from_feet.x).max(from_feet.x - aabb.maxs.x).max(0.0), (aabb.mins.z - from_feet.z).max(from_feet.z - aabb.maxs.z).max(0.0));
+                (h, dx.hypot(dz), aabb.mins.y < from_feet.y + REACH_UP && aabb.maxs.y > from_feet.y - REACH_DOWN)
+            })
+            .filter(|&(_, d, reach)| d <= range && reach)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(h, ..)| h)
     }
 
-    /// Take hold of body `i`: it follows the player until it is let go.
-    pub fn grab(&mut self, i: usize) {
-        if i >= self.list.len() {
+    /// The nearest prop within `range` yards of `from_feet` that is not already held.
+    pub fn near(&self, from_feet: Vec3, range: f32) -> Option<RigidBodyHandle> {
+        self.nearest(from_feet, range, self.list.iter().filter(|b| b.ready).map(|b| (b.handle, b.collider)))
+    }
+
+    /// The nearest part of a corpse (a ragdoll) within `range` yards of `from_feet`: what is dragged by.
+    pub fn near_corpse(&self, from_feet: Vec3, range: f32) -> Option<RigidBodyHandle> {
+        self.nearest(from_feet, range, self.sim.bodies.iter().filter(|(_, b)| b.user_data != 0).filter_map(|(h, b)| Some((h, *b.colliders().first()?))))
+    }
+
+    /// Put the colliders of body `h` (and of the whole ragdoll, for a part of one) in the groups of a body that is held, or back in its own.
+    fn set_held_groups(&mut self, h: RigidBodyHandle, held: bool) {
+        let tag = self.sim.bodies[h].user_data;
+        let bodies: Vec<RigidBodyHandle> = if tag == 0 { vec![h] } else { self.sim.bodies.iter().filter(|(_, b)| b.user_data == tag).map(|(h, _)| h).collect() };
+        for b in bodies {
+            for c in self.sim.bodies[b].colliders().to_vec() {
+                let groups = match (tag, held) {
+                    (0, true) => held_groups(),
+                    (0, false) => body_groups(),
+                    _ => ragdoll_groups(held),
+                };
+                self.sim.colliders[c].set_collision_groups(groups);
+            }
+        }
+    }
+
+    /// Take hold of a prop or a part of a corpse: it follows the player until it is let go.
+    pub fn grab(&mut self, h: RigidBodyHandle) {
+        if self.sim.bodies.get(h).is_none() {
             return;
         }
         self.release();
-        self.held = Some(i);
-        let (handle, collider) = (self.list[i].handle, self.list[i].collider);
-        let body = &mut self.sim.bodies[handle];
+        self.held = Some(h);
+        self.set_held_groups(h, true);
+        let body = &mut self.sim.bodies[h];
         body.wake_up(true);
         body.set_gravity_scale(0.0, true);
-        self.sim.colliders[collider].set_collision_groups(held_groups());
     }
 
     /// Let go: it falls from where it is, with the speed it was carried at.
     pub fn release(&mut self) {
-        let Some(i) = self.held.take() else { return };
-        let (handle, collider) = (self.list[i].handle, self.list[i].collider);
-        let body = &mut self.sim.bodies[handle];
+        let Some(h) = self.held.take() else { return };
+        if self.sim.bodies.get(h).is_none() {
+            return;
+        }
+        self.set_held_groups(h, false);
+        let body = &mut self.sim.bodies[h];
         body.set_gravity_scale(1.0, true);
         let speed = from(body.linvel()).clamp_length_max(FASTEST);
         body.set_linvel(to(speed), true);
-        self.sim.colliders[collider].set_collision_groups(body_groups());
     }
 
     /// Simulate, and show each body where it is. `feet` is the player's (render space), `forward` the way he faces (level).
@@ -231,7 +284,7 @@ impl Bodies {
         }
     }
 
-    fn step(&mut self, dt: f32, feet: Vec3, forward: Vec3, ground: &impl Ground) {
+    pub(crate) fn step(&mut self, dt: f32, feet: Vec3, forward: Vec3, ground: &impl Ground) {
         let dt = dt.clamp(0.0, 0.1);
         self.time += dt;
         self.owed += dt;
@@ -241,8 +294,11 @@ impl Bodies {
                 self.list[i].ready = ground.height(p.x, p.z).is_some();
             }
         }
-        // The arena is there while a body is near the player.
-        let near = (0..self.list.len()).any(|i| self.list[i].ready && flat(self.pos(i), feet) < PATCH);
+        // The arena is there while a body is awake near the player, or one that sleeps is near enough to be woken by him.
+        let near = self.sim.bodies.iter().any(|(_, b)| {
+            let d = flat(from(b.translation()), feet);
+            b.is_dynamic() && (d < WAKE_REACH || (!b.is_sleeping() && d < PATCH))
+        });
         let stale = self.arena.as_ref().is_none_or(|a| flat(a.center, feet) > REMAKE || (a.stamp != ground.stamp() && self.time - a.made > LOADING_WAIT));
         if near && stale {
             self.make_arena(feet, ground);
@@ -269,25 +325,27 @@ impl Bodies {
         }
         // Whatever rolled off the arena (or was left awake when the player went away) lies where it is.
         if let Some(center) = self.arena.as_ref().map(|a| a.center) {
-            for i in 0..self.list.len() {
-                if self.held != Some(i) && flat(self.pos(i), center) > ROAM {
-                    self.sim.bodies[self.list[i].handle].sleep();
+            let held = self.held;
+            for (handle, body) in self.sim.bodies.iter_mut() {
+                if body.is_dynamic() && !body.is_sleeping() && Some(handle) != held && flat(from(body.translation()), center) > ROAM {
+                    body.sleep();
                 }
             }
         }
     }
 
-    /// The held body is pulled to the place in front of the player, and let go when it cannot get there (behind a wall).
+    /// The held body is pulled to the place in front of the player (a part of a corpse nearer the ground and slower), and let go when it cannot get there (behind a wall).
     fn pull_held(&mut self, feet: Vec3, forward: Vec3) {
-        let Some(i) = self.held else { return };
-        let target = feet + forward * HOLD_DISTANCE + Vec3::Y * HOLD_HEIGHT;
-        let away = target - self.pos(i);
-        if away.length() > HOLD_LOSE {
+        let Some(h) = self.held else { return };
+        let corpse = self.sim.bodies[h].user_data != 0;
+        let (distance, height, lose, fastest) = if corpse { (DRAG_DISTANCE, DRAG_HEIGHT, DRAG_LOSE, DRAG_FASTEST) } else { (HOLD_DISTANCE, HOLD_HEIGHT, HOLD_LOSE, FASTEST) };
+        let away = feet + forward * distance + Vec3::Y * height - from(self.sim.bodies[h].translation());
+        if away.length() > lose {
             self.release();
             return;
         }
-        let body = &mut self.sim.bodies[self.list[i].handle];
-        body.set_linvel(to((away * HOLD_PULL).clamp_length_max(FASTEST)), true);
+        let body = &mut self.sim.bodies[h];
+        body.set_linvel(to((away * HOLD_PULL).clamp_length_max(fastest)), true);
         body.set_angvel(to(Vec3::ZERO), true);
     }
 
@@ -402,8 +460,8 @@ mod tests {
         bodies.add(&cuboid(Vec3::new(0.1, 0.1, 0.1)), Vec3::new(10.5, 0.0, 10.0), Quat::IDENTITY, 1.0, 0);
         let feet = Vec3::new(10.0, 0.0, 10.0);
         bodies.step(TICK, feet, Vec3::X, &Flat);
-        let i = bodies.near(feet, GRAB_RANGE).expect("near enough to take");
-        bodies.grab(i);
+        let h = bodies.near(feet, GRAB_RANGE).expect("near enough to take");
+        bodies.grab(h);
         run(&mut bodies, 120, |_| feet);
         let target = feet + Vec3::X * HOLD_DISTANCE + Vec3::Y * HOLD_HEIGHT;
         assert!((bodies.pos(0) - target).length() < 0.1, "held at {}", bodies.pos(0));

@@ -77,6 +77,8 @@ pub struct Panels {
     /// The spellbook's page, the spell a click on it asked to cast, and the skills tab's list.
     book_page: usize,
     cast_bar: magic::CastBar,
+    /// Whether the breath bar (the original's first mirror timer) shows.
+    breath_shown: bool,
     spell_click: Option<usize>,
     /// The action picked up from the spellbook, until the mouse button comes up.
     drag: Option<crate::actionbar::Action>,
@@ -87,6 +89,8 @@ pub struct Panels {
     cursor: Option<(f32, f32)>,
     /// Items were worn or taken off since `take_equipment_change`.
     equipment_changed: bool,
+    /// The stats changed with no change of what is worn (a spell went off or ran out): the player takes them on.
+    stats_dirty: bool,
     /// The corpse being looted (as the game numbers its corpses) and what is left on it.
     loot: Option<(usize, Loot)>,
     /// Loot left behind by a window that closed, for the game to put back on its corpse.
@@ -227,6 +231,12 @@ fn bag_button(slot: usize) -> String {
     format!("{BACKPACK}Item{}", BACKPACK_SIZE - slot)
 }
 
+/// The text of the original with the player filled in, for the one named `name` of race `race`.
+fn speak_to(name: &str, race: crate::character::Race, text: &str) -> String {
+    let race = race.name();
+    text.replace("$N", name).replace("$n", name).replace("$R", race).replace("$r", &race.to_lowercase()).replace("$C", "Paladin").replace("$c", "paladin")
+}
+
 impl Panels {
     pub fn new(mount: Arc<Mount>, renderer: &mut Renderer, gpu: &Gpu) -> Result<Panels> {
         let registry = Rc::new(Registry::load(&mount)?);
@@ -354,7 +364,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), spell_click: None, drag: None, skill_list: Default::default(), inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, target_portrait, target: None, menu: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, target_portrait, target: None, menu: Default::default() };
         panels.refresh();
         Ok(panels)
     }
@@ -509,8 +519,8 @@ impl Panels {
         let (quest, q) = (active.quest, content::quest(active.quest));
         let black = [0.0, 0.0, 0.0, 1.0];
         self.tree.set_text("QuestLogQuestTitle", &q.title);
-        self.tree.set_text("QuestLogObjectivesText", &q.objective.replace("$N", &self.name));
-        self.tree.set_text("QuestLogQuestDescription", &q.details.replace("$N", &self.name));
+        self.tree.set_text("QuestLogObjectivesText", &self.speak(&q.objective));
+        self.tree.set_text("QuestLogQuestDescription", &self.speak(&q.details));
         for i in 1..=LOG_GOALS {
             let line = format!("QuestLogObjective{i}");
             let Some(goal) = q.goals.get(i - 1) else {
@@ -561,6 +571,9 @@ impl Panels {
         self.tree.show(POPUP, false);
         self.popup = None;
         self.quests.abandon(quest);
+        for stack in &content::quest(quest).start_items {
+            self.inv.remove(stack.item, stack.count);
+        }
         self.ready.remove(&quest);
         self.events.push(Sfx::Named("igQuestLogAbandonQuest"));
         self.fill_log();
@@ -699,6 +712,11 @@ impl Panels {
 
     // ---- gossip
 
+    /// What a creature or quest says, with the player filled in: `$N` the name, `$R` the race, `$C` the class (`$n`, `$r`, `$c` as the original writes them, race and class in lower case).
+    fn speak(&self, text: &str) -> String {
+        speak_to(&self.name, self.race, text)
+    }
+
     /// Open the talk window for creature `creature` of kind `def`. The character sheet and the loot window close.
     pub fn open_gossip(&mut self, creature: usize, def: &'static CreatureDef) {
         self.tree.show(CHARACTER, false);
@@ -732,7 +750,7 @@ impl Panels {
         let Some((_, def, said)) = &self.gossip else { return };
         let Some(gossip) = &def.gossip else { return };
         let (def, answered) = (*def, said.is_some());
-        let text = said.as_deref().unwrap_or(&gossip.greeting).replace("$N", &self.name).replace("$R", self.race.name()).replace("$C", "Paladin");
+        let text = self.speak(said.as_deref().unwrap_or(&gossip.greeting));
         let kind = kind_of(def);
         let mut lines = Vec::new();
         if !answered {
@@ -770,7 +788,11 @@ impl Panels {
         let mut trained = None;
         match line {
             Line::Available(quest) => return self.open_quest(creature, def, quest, QuestScreen::Detail),
-            Line::Active(quest) => return self.open_quest(creature, def, quest, QuestScreen::Progress),
+            Line::Active(quest) => {
+                // As in the original: a quest that is done and asks for no items goes straight to its reward (the window of what is still missing only comes with items).
+                let ready = self.quests.complete(quest, &self.inv) && !content::quest(quest).goals.iter().any(|g| matches!(g, content::Goal::Collect { .. }));
+                return self.open_quest(creature, def, quest, if ready { QuestScreen::Reward } else { QuestScreen::Progress });
+            }
             Line::Option(o) => match &def.gossip.as_ref().expect("a gossip line has gossip").options[o].action {
                 Action::Say(reply) => *said = Some(reply.clone()),
                 Action::Vendor => return self.open_merchant(creature, def),
@@ -907,7 +929,8 @@ impl Panels {
             self.tree.reset_scroll(scroll);
         }
         let q = content::quest(quest);
-        let say = |text: &str| text.replace("$N", &self.name);
+        let (name, race) = (self.name.clone(), self.race);
+        let say = |text: &str| speak_to(&name, race, text);
         for (panel, which) in [("QuestFrameDetailPanel", QuestScreen::Detail), ("QuestFrameProgressPanel", QuestScreen::Progress), ("QuestFrameRewardPanel", QuestScreen::Reward)] {
             self.tree.show(panel, which == screen);
         }
@@ -963,6 +986,9 @@ impl Panels {
         match button {
             "QuestFrameAcceptButton" => {
                 if self.quests.accept(quest) {
+                    for stack in &q.start_items {
+                        self.inv.add(*stack);
+                    }
                     self.notice(&self.string("ERR_QUEST_ACCEPTED_S").replacen("%s", &q.title, 1));
                     self.events.push(Sfx::Named("QUESTADDED"));
                     self.refresh_quest_marks(quest);
@@ -990,9 +1016,10 @@ impl Panels {
                     if q.copper > 0 {
                         self.notice(&self.string("ERR_QUEST_REWARD_MONEY_S").replacen("%s", &coins(q.copper), 1));
                     }
-                    if q.xp > 0 {
-                        self.notice(&self.string("ERR_QUEST_REWARD_EXP_I").replacen("%d", &q.xp.to_string(), 1));
-                        self.gain_xp(q.xp);
+                    let xp = crate::levels::quest_xp(q.xp, q.level, self.progress.level);
+                    if xp > 0 {
+                        self.notice(&self.string("ERR_QUEST_REWARD_EXP_I").replacen("%d", &xp.to_string(), 1));
+                        self.gain_xp(xp);
                     }
                     for stack in self.reward_choice.map(|i| q.choice[i]).iter().chain(&q.items) {
                         self.notice(&self.string("ERR_QUEST_REWARD_ITEM_S").replacen("%s", crate::items::get(stack.item).name, 1));
@@ -1366,8 +1393,9 @@ impl Panels {
         self.inv.equipment[crate::items::RANGED].map_or(crate::skills::Skill::Unarmed, |w| crate::skills::Skill::of_weapon(crate::items::get(w.item).subclass))
     }
 
-    pub fn weapon_skill(&self) -> crate::skills::Skill {
-        self.inv.equipment[crate::items::MAIN_HAND].map_or(crate::skills::Skill::Unarmed, |w| crate::skills::Skill::of_weapon(crate::items::get(w.item).subclass))
+    /// The skill of the weapon in the main hand, or in the off hand.
+    pub fn weapon_skill(&self, off: bool) -> crate::skills::Skill {
+        self.inv.equipment[if off { crate::items::OFF_HAND } else { crate::items::MAIN_HAND }].map_or(crate::skills::Skill::Unarmed, |w| crate::skills::Skill::of_weapon(crate::items::get(w.item).subclass))
     }
 
     /// The spell is known from now on and goes on the action bar.
@@ -1550,6 +1578,9 @@ impl Panels {
         if tick.stats_changed {
             self.equipment_changed = true;
             self.refresh();
+        } else if tick.timed_ended {
+            self.stats_dirty = true;
+            self.refresh();
         }
         match tick.way_home {
             Some(crate::consume::WayHome::Arrived) => self.cast_stop(),
@@ -1702,6 +1733,19 @@ impl Panels {
         self.refresh();
     }
 
+    /// A spell of a weapon or of the gear puts something on the character for some seconds (see `procs`).
+    pub fn proc_timed(&mut self, what: crate::consume::Timed, seconds: f32) {
+        if self.consumed.add_timed(what, seconds) {
+            self.stats_dirty = true;
+            self.refresh();
+        }
+    }
+
+    /// Whether the stats changed since the last call without a change of what is worn.
+    pub fn take_stats_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.stats_dirty)
+    }
+
     /// Whether items were worn or taken off since the last call: the player's loadout needs updating.
     pub fn take_equipment_change(&mut self) -> bool {
         std::mem::take(&mut self.equipment_changed)
@@ -1715,7 +1759,7 @@ impl Panels {
 
     /// Set everything the frames show from the inventory and the stats.
     pub fn refresh(&mut self) {
-        self.stats = Stats::of(&self.inv.equipment, self.progress.level, &self.consumed.boosts());
+        self.stats = Stats::of(&self.inv.equipment, self.progress.level, &self.consumed.boosts(), &self.consumed.timed_effects());
         self.stats.armor += self.skills.armor_bonus(&self.inv.equipment);
         let s = self.stats;
         let t = &mut self.tree;
@@ -1740,13 +1784,22 @@ impl Panels {
         t.set_text("CharacterDamageFrameStatText", &if low < 100 && high < 100 { format!("{low} - {high}") } else { format!("{low}-{high}") });
         t.set_text("CharacterAttackPowerFrameLabel", &power_label);
         t.set_text("CharacterAttackPowerFrameStatText", &s.attack_power.to_string());
+        // The ranged block: with a bow, crossbow or gun the skill, the damage and the attack power; else not applicable.
         let n_a = t.string("NOT_APPLICABLE");
-        for (frame, label) in [("RangedAttack", ranged.as_str()), ("RangedDamage", damage_label.as_str()), ("RangedAttackPower", power_label.as_str())] {
+        let (r_attack, r_damage, r_power) = match s.ranged {
+            Some((min, max, _)) => {
+                let (low, high) = ((min.floor() as i32).max(1), (max.ceil() as i32).max(1));
+                (s.attack.to_string(), if low < 100 && high < 100 { format!("{low} - {high}") } else { format!("{low}-{high}") }, s.ranged_attack_power.to_string())
+            }
+            None => (n_a.clone(), n_a.clone(), n_a),
+        };
+        for (frame, label, text) in [("RangedAttack", ranged.as_str(), r_attack), ("RangedDamage", damage_label.as_str(), r_damage), ("RangedAttackPower", power_label.as_str(), r_power)] {
             t.set_text(&format!("Character{frame}FrameLabel"), label);
-            t.set_text(&format!("Character{frame}FrameStatText"), &n_a);
+            t.set_text(&format!("Character{frame}FrameStatText"), &text);
         }
-        for i in 1..=5 {
-            t.set_text(&format!("MagicResText{i}"), "0");
+        // The resistance frames are arcane, fire, nature, frost and shadow, in that order.
+        for (i, school) in [5, 1, 2, 3, 4].into_iter().enumerate() {
+            t.set_text(&format!("MagicResText{}", i + 1), &s.resist[school].to_string());
         }
 
         // The equipment slots: the item, or the picture of what goes there.
@@ -2039,6 +2092,81 @@ impl Panels {
         lines
     }
 
+    /// The tooltip of a stat of the character sheet: the original's (the stat and the class's words on it), and under it what the game works
+    /// out of it (the original shows none of these numbers; its 1.12 sheet has no lines for them).
+    fn stat_lines(&self, name: &str) -> Option<Vec<TipLine>> {
+        let s = self.stats;
+        let level = self.progress.level;
+        let head = |text: String| TipLine::new(text, WHITE);
+        let note = |text: String| TipLine::new(text, GOLD);
+        let more = |text: String| TipLine::new(text, WHITE);
+        if let Some(i) = name.strip_prefix("CharacterStatFrame").and_then(|n| n.chars().next()?.to_digit(10)).filter(|i| (1..=5).contains(i)) {
+            let i = i as usize - 1;
+            let stat = ["STRENGTH", "AGILITY", "STAMINA", "INTELLECT", "SPIRIT"][i];
+            let words = self.string(&format!("PALADIN_{stat}_TOOLTIP"));
+            let words = if words.starts_with("PALADIN_") { self.string(&format!("DEFAULT_{stat}_TOOLTIP")) } else { words };
+            let mut lines = vec![head(format!("{} {}", self.string(&format!("SPELL_STAT{i}_NAME")), s.attributes[i])), note(words)];
+            match i {
+                0 => {
+                    lines.push(more(format!("Melee attack power: {}", s.attack_power)));
+                    if s.block > 0.0 {
+                        lines.push(more(format!("Block value: {:.0}", s.block_value)));
+                    }
+                }
+                1 => lines.extend([
+                    more(format!("Critical strike chance: {:.2}%", s.crit)),
+                    more(format!("Dodge chance: {:.2}%", s.dodge)),
+                    more(format!("Ranged attack power: {}", s.ranged_attack_power)),
+                ]),
+                2 => lines.push(more(format!("Maximum health: {:.0}", s.max_health))),
+                3 => {
+                    let (low, high) = s.spell_crit[1..].iter().fold((f32::MAX, 0.0f32), |(l, h), c| (l.min(*c), h.max(*c)));
+                    let crit = if high - low < 0.005 { format!("{low:.2}%") } else { format!("{low:.2}% to {high:.2}% by school") };
+                    lines.extend([more(format!("Spell critical strike chance: {crit}")), more(format!("Maximum mana: {:.0}", s.max_mana))]);
+                    if s.healing > 0 || s.spell_damage.iter().any(|d| *d > 0) {
+                        lines.push(more(format!("Healing done: +{}; holy damage done: +{}", s.healing, s.spell_damage[1])));
+                    }
+                    if s.spell_hit != 0.0 {
+                        lines.push(more(format!("Chance to hit with spells: +{:.0}%", s.spell_hit)));
+                    }
+                }
+                _ => lines.extend([
+                    more(format!("Health regeneration: {:.1} per second out of combat", s.health_regen)),
+                    more(format!("Mana regeneration: {:.1} per second ({:.1} just after a spell)", s.mana_regen, s.mana_regen_casting)),
+                ]),
+            }
+            return Some(lines);
+        }
+        Some(match name {
+            "CharacterArmorFrame" => {
+                let reduction = 100.0 * s.mitigation();
+                let words = self.string("ARMOR_TOOLTIP").replacen("%d", &level.to_string(), 1).replacen("%.1f%%", &format!("{reduction:.1}%"), 1);
+                vec![
+                    head(format!("{} {}", self.string("ARMOR"), s.armor)),
+                    note(words),
+                    more(format!("Dodge chance: {:.2}%", s.dodge)),
+                    more(format!("Parry chance: {:.2}%", s.parry)),
+                    more(format!("Block chance: {:.2}%", s.block)),
+                ]
+            }
+            "CharacterAttackFrame" => vec![
+                head(self.string("ATTACK_TOOLTIP")),
+                note(self.string("ATTACK_TOOLTIP_SUBTEXT")),
+                more(format!("Critical strike chance: {:.2}%", s.crit)),
+                more(format!("Chance to miss a creature of your level: {:.1}%", crate::levels::melee_miss(level, level, s.hit))),
+            ],
+            "CharacterAttackPowerFrame" => vec![
+                head(format!("{} {}", self.string("MELEE_ATTACK_POWER"), s.attack_power)),
+                note(self.string("MELEE_ATTACK_POWER_TOOLTIP").replacen("%.1f", &format!("{:.1}", s.attack_power as f32 / crate::items::ATTACK_POWER_PER_DPS), 1)),
+            ],
+            "CharacterRangedAttackPowerFrame" if s.ranged.is_some() => vec![
+                head(format!("{} {}", self.string("RANGED_ATTACK_POWER"), s.ranged_attack_power)),
+                note(self.string("RANGED_ATTACK_POWER_TOOLTIP").replacen("%.1f", &format!("{:.1}", s.ranged_attack_power as f32 / crate::items::ATTACK_POWER_PER_DPS), 1)),
+            ],
+            _ => return None,
+        })
+    }
+
     /// The tooltip for the frame under the mouse, if it has one.
     fn tooltip(&self) -> Option<Vec<TipLine>> {
         let hover = self.tree.hover?;
@@ -2081,6 +2209,9 @@ impl Panels {
         }
         if name == "MerchantBuyBackItemItemButton" {
             return self.buyback.map(|(stack, _)| self.item_lines(stack));
+        }
+        if let Some(lines) = self.stat_lines(name) {
+            return Some(lines);
         }
         let j = name.strip_prefix(&format!("{BACKPACK}Item"))?.parse::<usize>().ok()?;
         let stack = self.inv.bag[self.bag_index(j)]?;
@@ -2132,6 +2263,10 @@ impl Panels {
         for (i, (text, color, age)) in self.messages.clone().into_iter().enumerate() {
             let alpha = if age < ERROR_SECONDS - ERROR_FADE { 1.0 } else { ((ERROR_SECONDS - age) / ERROR_FADE).max(0.0) };
             self.tree.draw_text_aligned(ui, gpu, &mount, screen, "ErrorFont", &text, (screen.0 as f32 / 2.0, (122.0 + 20.0 * i as f32) * s), 0.5, [color[0], color[1], color[2], alpha]);
+        }
+        if self.breath_shown {
+            // The label of the breath bar, at the top of `MirrorTimer1` (96 units below the top of the screen).
+            self.tree.draw_text_aligned(ui, gpu, &self.mount.clone(), screen, "GameFontHighlight", "Breath", (screen.0 as f32 / 2.0, 96.0 * s), 0.5, WHITE);
         }
         self.draw_tracker(ui, gpu, screen);
         self.draw_load(ui, gpu, screen);
@@ -2306,7 +2441,7 @@ impl Panels {
     /// Queue the open panels, the carried item and the tooltip for drawing.
     pub fn draw(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32)) {
         self.update_buffs();
-        if !self.any_open() && !self.target_shown() && !self.cast_bar_visible() && self.consumed.buffs.is_empty() && self.afflicted.is_empty() {
+        if !self.any_open() && !self.target_shown() && !self.cast_bar_visible() && !self.breath_shown && self.consumed.buffs.is_empty() && self.afflicted.is_empty() {
             return;
         }
         let mount = self.mount.clone();
