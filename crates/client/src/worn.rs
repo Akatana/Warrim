@@ -20,12 +20,15 @@ const LEFT_HAND: u32 = 2;
 const RIGHT_SHOULDER: u32 = 5;
 const LEFT_SHOULDER: u32 = 6;
 const HELM: u32 = 11;
-const BACK: u32 = 12;
-/// Where what is held rests while the hands are not free (a rider): the shield on the back, a one-hander on the hip, a two-hander on the back.
+/// Where what is held rests while the hands are not free, by the sheath type the original client reads from the item (`FUN_0047a070`: type 1 is a
+/// two-hander at 26 (main hand) / 27, type 2 a staff, polearm or ranged weapon at 30 (main hand, guns) / 31 (bows), type 3 a one-hander at 32 (main
+/// hand) / 33, type 4 the shield at 28).
 const SHEATH_SHIELD: u32 = 28;
-const HIP_LEFT: u32 = 32;
-const HIP_RIGHT: u32 = 33;
-const SHEATH_TWO_HAND: u32 = 31;
+const SHEATH_TWO_HAND: u32 = 26;
+const LARGE_LEFT: u32 = 30;
+const LARGE_RIGHT: u32 = 31;
+const HIP_MAIN: u32 = 32;
+const HIP_OFF: u32 = 33;
 
 /// What a part does while a bow is drawn: stays, goes to another attachment (the bow to the hand), or is put away (the sword).
 enum Drawn {
@@ -243,7 +246,15 @@ impl Worn {
         if let Some((model, skin)) = worn(items::MAIN_HAND).and_then(|i| i.held) {
             add(model, skin, RIGHT_HAND, Mat4::IDENTITY, false, &mut parts);
             if let Some(p) = parts.last_mut() {
-                p.sheath = Some(if worn(items::MAIN_HAND).is_some_and(|i| i.wear == Wear::TwoHand) { (SHEATH_TWO_HAND, Mat4::IDENTITY) } else { (HIP_RIGHT, Mat4::IDENTITY) });
+                let main = worn(items::MAIN_HAND);
+                p.sheath = Some((
+                    match main {
+                        Some(i) if i.wear == Wear::TwoHand && i.class == 2 && matches!(i.subclass, 6 | 10) => LARGE_LEFT,
+                        Some(i) if i.wear == Wear::TwoHand => SHEATH_TWO_HAND,
+                        _ => HIP_MAIN,
+                    },
+                    Mat4::IDENTITY,
+                ));
                 p.drawn = Drawn::Away;
                 p.enchant = worn(items::MAIN_HAND).map_or(0, |i| i.visual.enchant);
             }
@@ -253,19 +264,20 @@ impl Worn {
                 add(model, skin, if item.wear == Wear::Shield { SHIELD } else { LEFT_HAND }, Mat4::IDENTITY, false, &mut parts);
                 // The bow takes the left hand while it is drawn.
                 if let Some(p) = parts.last_mut() {
-                    p.sheath = Some(if item.wear == Wear::Shield { (SHEATH_SHIELD, Mat4::IDENTITY) } else { (HIP_LEFT, Mat4::IDENTITY) });
+                    p.sheath = Some(if item.wear == Wear::Shield { (SHEATH_SHIELD, Mat4::IDENTITY) } else { (HIP_OFF, Mat4::IDENTITY) });
                     p.drawn = Drawn::Away;
                     p.enchant = item.visual.enchant;
                 }
             }
         }
-        // A bow, a gun or a crossbow rests on the back.
+        // A bow, a gun or a crossbow rests on the back; a bow is drawn in the left hand, the others in the right (as the original does).
         if let Some(item) = worn(items::RANGED).filter(|i| i.class == 2 && matches!(i.subclass, 2 | 3 | 18)) {
             if let Some((model, skin)) = item.held {
                 let before = parts.len();
-                add(model, skin, BACK, Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2), false, &mut parts);
+                let (rest, hand) = if item.subclass == 2 { (LARGE_RIGHT, LEFT_HAND) } else { (LARGE_LEFT, RIGHT_HAND) };
+                add(model, skin, rest, Mat4::IDENTITY, false, &mut parts);
                 if parts.len() > before {
-                    parts[before].drawn = Drawn::To(LEFT_HAND, Mat4::IDENTITY);
+                    parts[before].drawn = Drawn::To(hand, Mat4::IDENTITY);
                     parts[before].enchant = item.visual.enchant;
                 }
             }
