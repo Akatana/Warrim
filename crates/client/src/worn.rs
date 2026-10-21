@@ -342,6 +342,13 @@ impl Worn {
         self.fx.update_facing(dt, forward, viewer, renderer, gpu);
     }
 
+    /// Make the body and what hangs on it see-through (`fade` 1 is solid); call after `animate`, which gives the parts their own looks.
+    pub fn fade(&self, renderer: &mut Renderer, gpu: &Gpu, fade: f32) {
+        for e in std::iter::once(self.body).chain(self.parts.iter().map(|p| p.entity)) {
+            renderer.set_entity_fade(gpu, e, fade);
+        }
+    }
+
     /// Every entity: the body and the models on it.
     pub fn entities(&self) -> Vec<usize> {
         std::iter::once(self.body).chain(self.parts.iter().map(|p| p.entity)).chain(self.fx.entities()).collect()

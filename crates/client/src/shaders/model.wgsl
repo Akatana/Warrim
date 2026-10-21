@@ -100,5 +100,5 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (params.v.w > 0.5) {
         return vec4<f32>(mix(lit, neutral, f), 1.0);
     }
-    return vec4<f32>(mix(lit, g.fog_color.rgb, f), c.a * params.tint.a);
+    return vec4<f32>(mix(lit, g.fog_color.rgb, f), select(c.a, 1.0, params.v.x < 0.0) * params.tint.a);
 }

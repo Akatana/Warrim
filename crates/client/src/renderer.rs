@@ -254,6 +254,8 @@ struct EntityGpu {
     pos: Vec3,
     orient: Mat4,
     visible: bool,
+    /// Opacity of the whole model: below 1 its opaque batches are drawn blended (a sneaking character).
+    fade: f32,
 }
 
 /// A placed building. `visible[g]` says whether group `g` is drawn this frame.
@@ -906,7 +908,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let entity = EntityGpu { light: None, model, instance, pos: Vec3::ZERO, orient: Mat4::IDENTITY, visible: false };
+        let entity = EntityGpu { light: None, model, instance, pos: Vec3::ZERO, orient: Mat4::IDENTITY, visible: false, fade: 1.0 };
         match self.free.pop() {
             Some(id) => {
                 self.entities[id] = entity;
@@ -934,6 +936,18 @@ impl Renderer {
     /// Give the batches of an entity the looks of this moment (see `anim::LookTracks`).
     pub fn set_entity_looks(&self, gpu: &Gpu, id: usize, looks: &[crate::anim::BatchLook]) {
         self.entities[id].model.set_looks(gpu, looks);
+    }
+
+    /// Make the entity see-through (`fade` 1 is solid). Replaces the looks of its batches, so call it after `set_entity_looks`.
+    pub fn set_entity_fade(&mut self, gpu: &Gpu, id: usize, fade: f32) {
+        let e = &mut self.entities[id];
+        e.fade = fade;
+        let look = crate::anim::BatchLook { opacity: fade, ..crate::anim::BatchLook::STILL };
+        for b in &e.model.batches {
+            // A negative alpha test tells the shader to ignore the texture's alpha (opaque batches have none to speak of).
+            let base = if fade < 1.0 && b.blend == Blend::Opaque { [-1.0, b.base[1], b.base[2], b.base[3]] } else { b.base };
+            gpu.queue.write_buffer(&b.params, 0, bytemuck::cast_slice(&batch_params(base, &look)));
+        }
     }
 
     /// Light the entity as a model in a room of a building (`None`: as in the open air).
@@ -1558,7 +1572,7 @@ fn draw_entities(
         pass.set_vertex_buffer(0, e.model.vertex_buf.slice(..));
         pass.set_vertex_buffer(1, e.instance.slice(..));
         pass.set_index_buffer(e.model.index_buf.slice(..), wgpu::IndexFormat::Uint16);
-        for b in e.model.batches.iter().filter(|b| blends.contains(&b.blend)) {
+        for b in e.model.batches.iter().filter(|b| blends.contains(&if e.fade < 1.0 && matches!(b.blend, Blend::Opaque | Blend::AlphaKey) { Blend::Alpha } else { b.blend })) {
             pass.set_bind_group(2, &b.bind_group, &[]);
             pass.draw_indexed(b.first..b.first + b.count, 0, 0..1);
         }

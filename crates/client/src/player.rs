@@ -56,6 +56,10 @@ const MIN_POWER: f32 = 0.15;
 pub const DUAL_WIELD_MISS: f32 = 19.0;
 /// How fast the body turns into the archer's stance (per second, as the rate of an exponential approach).
 const AIM_TURN_RATE: f32 = 20.0;
+/// How solid a sneaking character looks: the original's Stealth gives the unit an alpha of 0.3 (the procedural effect 14 of its kit 312,
+/// parameter 0.3), reached over one second (FUN_0060d180 sets it with a time of 1000 ms).
+const SNEAK_OPACITY: f32 = 0.3;
+const SNEAK_FADE_SECONDS: f32 = 1.0;
 
 /// The sound of the weapons going into the sheath or coming out (the original's `SHEATHING...SHEATHE` entries), when there is a weapon to make it.
 fn sheath_sound(kind: &'static str, on: bool) -> Option<Sfx> {
@@ -167,6 +171,8 @@ pub struct Player {
     sprinting: bool,
     /// Crouched and quiet: slower, softer footsteps, harder to notice, and the first blow on one who has not noticed is heavier.
     sneaking: bool,
+    /// How solid the body looks: it fades to `SNEAK_OPACITY` while sneaking and back after.
+    fade: f32,
     /// Out of stamina: no sprinting until it has recovered to `SPRINT_RESUME`.
     exhausted: bool,
     /// Seconds since stamina was last spent.
@@ -288,7 +294,7 @@ impl Player {
     pub fn load(mount: &Arc<Mount>, cache: &ModelCache, renderer: &mut Renderer, gpu: &Gpu, look: &crate::character::Appearance) -> Result<Player> {
         let character = Character::load(mount, cache, "player", look)?;
         let worn = Worn::new(&character, renderer, gpu);
-        Ok(Player { character, worn, mount: mount.clone(), cache: ModelCache::default(), view: View::First, body_turn: 0.0, attack: None, weapon_speed: 2.0, since_swing: 99.0, charge: None, refused: None, ranged: Ranged::default(), camera_distance: THIRD_PERSON_DISTANCE, follow: 1.0, last_eye: None, feet: Vec3::ZERO, facing: 0.0, mitigation: 0.0, damage: (12.0, 12.0), rng: 0x1234_5678, regen: (0.0, 0.0, 0.0), mana_idle: MANA_WAIT, blocking: false, block_cost: 1.0, swimming: false, swim_cost: 1.0, submerged: false, breath: 30.0, breath_max: 30.0, drowning: 0.0, size: crate::character::Size::of(mount, look).unwrap_or_else(|e| { log::warn!("no size for the player: {e:#}"); Default::default() }), sprinting: false, sneaking: false, exhausted: false, rested: 0.0, vitals: Vitals::full(), events: Vec::new(), steps: Stepper::default(), swings: 0, swing_pending: false, hit_pending: false, swing_hit: None, extra: 0, extra_now: false, off_damage: None, off_next: false, off_dagger: false, off_swing: false, off_hit: false, steed: None, dismount_wanted: false, sheathed: false, stowed: false, sheath_wait: 0.0, busy: 0.0, sheath_kind: "", retired: Vec::new(), look: *look, no_swing: false, no_shot: false })
+        Ok(Player { character, worn, mount: mount.clone(), cache: ModelCache::default(), view: View::First, body_turn: 0.0, attack: None, weapon_speed: 2.0, since_swing: 99.0, charge: None, refused: None, ranged: Ranged::default(), camera_distance: THIRD_PERSON_DISTANCE, follow: 1.0, last_eye: None, feet: Vec3::ZERO, facing: 0.0, mitigation: 0.0, damage: (12.0, 12.0), rng: 0x1234_5678, regen: (0.0, 0.0, 0.0), mana_idle: MANA_WAIT, blocking: false, block_cost: 1.0, swimming: false, swim_cost: 1.0, submerged: false, breath: 30.0, breath_max: 30.0, drowning: 0.0, size: crate::character::Size::of(mount, look).unwrap_or_else(|e| { log::warn!("no size for the player: {e:#}"); Default::default() }), sprinting: false, sneaking: false, fade: 1.0, exhausted: false, rested: 0.0, vitals: Vitals::full(), events: Vec::new(), steps: Stepper::default(), swings: 0, swing_pending: false, hit_pending: false, swing_hit: None, extra: 0, extra_now: false, off_damage: None, off_next: false, off_dagger: false, off_swing: false, off_hit: false, steed: None, dismount_wanted: false, sheathed: false, stowed: false, sheath_wait: 0.0, busy: 0.0, sheath_kind: "", retired: Vec::new(), look: *look, no_swing: false, no_shot: false })
     }
 
     pub fn toggle_view(&mut self) {
@@ -1007,6 +1013,14 @@ impl Player {
         self.worn.stowed = self.steed.is_some() || self.stowed;
         self.worn.place(renderer, &self.character, feet, body, !third, self.ranged.drawn.is_some());
         self.worn.animate(dt, eye.forward(), eye.pos, renderer, gpu, &self.character, feet, body, !third, self.ranged.drawn.is_some());
+        // The sneaking character is see-through (the original's stealth look); every frame while it is, since `animate` resets the parts' looks.
+        let was = self.fade;
+        let goal = if self.sneaking { SNEAK_OPACITY } else { 1.0 };
+        // shortcut: constant speed (the full range in a second) where the original takes a second for any distance; same for a whole change.
+        self.fade += (goal - self.fade).clamp(-1.0, 1.0).signum() * ((1.0 - SNEAK_OPACITY) / SNEAK_FADE_SECONDS * dt).min((goal - self.fade).abs());
+        if self.fade < 0.995 || was < 0.995 {
+            self.worn.fade(renderer, gpu, if self.fade < 0.995 { self.fade } else { 1.0 });
+        }
 
         // Camera.
         let mut cam = Camera { pos: eye.pos, ..*eye };
@@ -1218,6 +1232,7 @@ mod tests {
             drowning: 0.0,
             size: Default::default(),
             sneaking: false,
+            fade: 1.0,
             exhausted: false,
             rested: 0.0,
             vitals: Vitals::full(),
