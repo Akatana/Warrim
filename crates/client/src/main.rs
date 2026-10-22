@@ -106,7 +106,7 @@ USAGE: rsworld [options]
   --no-save          neither load nor write a save (and show no character list)
   --save <file>      play the character kept in this file, without the character list (the list keeps its characters in rsworld/characters/ in the application data folder)
   --no-audio         play no music, ambience or sound effects
-  --weather <kind[,strength]>  fix the weather: rain, snow, sand or none, with a strength of 0 to 1 (default 0.8); otherwise it comes and goes by the zone's climate
+  --weather <kind[,strength]>  fix the weather: rain, snow, sand or none, with a strength of 0 to 1 (default 0.8); otherwise it comes and goes as the server's weather of the zone does
   --no-weather       no weather at all
   --loading <0-1>    headless: draw the loading screen of --map with the bar that full
   --show <frames>    headless: draw these original interface frames (comma separated, the first is built, e.g. CharacterFrame,PaperDollFrame)
@@ -169,7 +169,7 @@ pub struct Args {
     pub floor_profile: bool,
     pub size: (u32, u32),
     pub time: Option<f32>,
-    /// `--weather`: fixed weather (kind, strength 0 to 1), `None` kind for clear; otherwise it comes and goes by the zone's climate.
+    /// `--weather`: fixed weather (kind, strength 0 to 1), `None` kind for clear; otherwise it comes and goes as the server's weather of the zone does.
     pub weather: Option<(Option<weather::Kind>, f32)>,
     pub no_weather: bool,
     pub audio: bool,

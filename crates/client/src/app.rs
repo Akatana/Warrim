@@ -232,7 +232,7 @@ struct State {
     weather: crate::weather::Weather,
     /// Whether the player is inside a building and what weather the zone has, looked up now and then.
     indoors: bool,
-    climate: Option<crate::weather::Kind>,
+    zone: Option<u32>,
     weather_look: f32,
     /// What is heard from places (streams, waterfalls, fountains), looked for four times a second, and whether the feet are in water.
     places: Vec<(u64, u32, Vec3)>,

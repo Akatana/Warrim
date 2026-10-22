@@ -217,7 +217,7 @@ impl State {
             fixed_time: args.time.is_some(),
             weather: weather_at_start(&args),
             indoors: false,
-            climate: None,
+            zone: None,
             weather_look: 0.0,
             places: Vec::new(),
             wading: false,

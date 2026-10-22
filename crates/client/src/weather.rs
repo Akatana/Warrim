@@ -1,5 +1,6 @@
 //! The weather of the original client (`WorldClient/MapWeather.cpp`): rain, snow and sandstorms. The server told the original which weather and
-//! how strong; offline, `Weather` chooses by the zone's climate now and then. What it makes is the original's: every particle is born with a
+//! how strong; offline, `Zone` is the server's own weather of a zone (CMaNGOS `Weather::ReGenerate` with the `game_weather` table: `CHANCES`),
+//! rolled every ten minutes for the zones the player has been in. What it makes is the original's: every particle is born with a
 //! place, a velocity and a birth and a death time, and the video card works out where it is (`weathergpu.rs`, `weather.wgsl`: the originals'
 //! vertex programs `rain.bls`, `snowpoint.bls`, `sand.bls` and `patter.bls`). The numbers below are WoW.exe's (FUN_00674c50 for rain,
 //! FUN_00677750 snow, FUN_006793f0 sand, FUN_0067a990 the mist, FUN_0067baf0 and FUN_0067bc70 the changes of strength).
@@ -131,6 +132,11 @@ impl Rng {
         (self.0 >> 40) as f32 / (1u64 << 24) as f32
     }
 
+    /// 0 to `n` - 1.
+    fn below(&mut self, n: u32) -> u32 {
+        ((self.unit() * n as f32) as u32).min(n - 1)
+    }
+
     /// -0.5 to 0.5.
     fn centred(&mut self) -> f32 {
         self.unit() - 0.5
@@ -144,6 +150,137 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 /// How long the weather takes to change by a whole unit of strength, in seconds (FUN_0067bc70).
 const RAMP_SECONDS: f32 = 10.0;
+
+/// Seconds between the server's rolls of a zone's weather (`ChangeWeatherInterval`, 10 minutes).
+const ROLL_SECONDS: f32 = 600.0;
+
+/// A third of a grade: the step by which the server makes weather better or worse.
+const THIRD: f32 = 0.33333334;
+
+/// The server's weather of one zone: what it is and how strong (its grade, 0 to 1), and the seconds to the next roll.
+#[derive(Clone, Copy, Debug)]
+struct Zone {
+    kind: Option<Kind>,
+    grade: f32,
+    timer: f32,
+}
+
+impl Zone {
+    /// Clear, as the server makes a zone's weather when the first player comes into it.
+    fn new() -> Self {
+        Zone { kind: None, grade: 0.0, timer: ROLL_SECONDS }
+    }
+
+    /// One roll (CMaNGOS `Weather::ReGenerate`): three in ten leave it as it is; the rest make it better, worse or something else, or, if it is clear,
+    /// choose by the season's chances. A new weather is light in 90 of 100 and medium or heavy in the others.
+    fn roll(&mut self, chances: &[[u8; 3]; 4], season: usize, rng: &mut Rng) {
+        let clamp = |g: f32| if g >= 1.0 { 0.9999 } else { g.max(0.0001) };
+        let u = rng.below(100);
+        if u < 30 {
+            return;
+        }
+        if u < 60 && self.grade < THIRD {
+            *self = Zone { kind: None, grade: 0.0, ..*self };
+        }
+        if self.kind.is_some() {
+            if u < 60 {
+                self.grade = clamp(self.grade - THIRD);
+                return;
+            }
+            if u < 90 {
+                self.grade = clamp(self.grade + THIRD);
+                return;
+            }
+            // The radical change: light goes heavy, heavy half the time goes light, anything else clears.
+            if self.grade < THIRD {
+                self.grade = 0.9999;
+                return;
+            }
+            if self.grade > 0.6666667 && rng.below(100) < 50 {
+                self.grade = clamp(self.grade - 0.6666667);
+                return;
+            }
+            *self = Zone { kind: None, grade: 0.0, ..*self };
+        }
+        let [rain, snow, storm] = chances[season].map(u32::from);
+        let roll = rng.below(100) + 1;
+        self.kind = if roll <= rain {
+            Some(Kind::Rain)
+        } else if roll <= rain + snow {
+            Some(Kind::Snow)
+        } else if roll <= rain + snow + storm {
+            Some(Kind::Sand)
+        } else {
+            None
+        };
+        self.grade = match self.kind {
+            None => 0.0,
+            Some(_) if u < 90 => clamp(rng.unit() * 0.3333),
+            Some(_) => clamp(rng.unit() * 0.3333 + if rng.below(100) < 50 { 0.3334 } else { 0.6667 }),
+        };
+    }
+}
+
+/// The server's `game_weather` (CMaNGOS classic): by zone, the chances in 100 of rain, snow and storm (sandstorm) at a roll that finds the sky
+/// clear, for spring, summer, fall and winter. Zones that are not here have no weather.
+const CHANCES: &[(u32, [[u8; 3]; 4])] = &[
+    (1, [[0, 25, 0], [0, 15, 0], [0, 25, 0], [0, 25, 0]]),
+    (3, [[0, 0, 20], [0, 0, 20], [0, 0, 20], [0, 0, 15]]),
+    (10, [[15, 0, 0], [15, 0, 0], [20, 0, 0], [15, 0, 0]]),
+    (11, [[25, 0, 0], [15, 0, 0], [25, 0, 0], [25, 0, 0]]),
+    (12, [[20, 0, 0], [15, 0, 0], [20, 0, 0], [20, 0, 0]]),
+    (15, [[25, 0, 0], [20, 0, 0], [25, 0, 0], [25, 0, 0]]),
+    (28, [[10, 0, 0], [15, 0, 0], [15, 0, 0], [10, 0, 0]]),
+    (33, [[20, 0, 0], [25, 0, 0], [25, 0, 0], [20, 0, 0]]),
+    (36, [[0, 20, 0], [0, 20, 0], [0, 25, 0], [0, 30, 0]]),
+    (38, [[15, 0, 0], [15, 0, 0], [15, 0, 0], [15, 0, 0]]),
+    (41, [[15, 0, 0], [5, 0, 0], [15, 0, 0], [15, 0, 0]]),
+    (44, [[15, 0, 0], [15, 0, 0], [15, 0, 0], [15, 0, 0]]),
+    (45, [[23, 0, 0], [15, 0, 0], [23, 0, 0], [23, 0, 0]]),
+    (47, [[10, 0, 0], [10, 0, 0], [15, 0, 0], [10, 0, 0]]),
+    (85, [[20, 0, 0], [15, 0, 0], [20, 0, 0], [20, 0, 0]]),
+    (139, [[10, 0, 0], [15, 0, 0], [15, 0, 0], [10, 0, 0]]),
+    (141, [[15, 0, 0], [5, 0, 0], [15, 0, 0], [15, 0, 0]]),
+    (148, [[15, 0, 0], [10, 0, 0], [20, 0, 0], [15, 0, 0]]),
+    (215, [[15, 0, 0], [10, 0, 0], [20, 0, 0], [15, 0, 0]]),
+    (267, [[15, 0, 0], [10, 0, 0], [15, 0, 0], [15, 0, 0]]),
+    (357, [[15, 0, 0], [15, 0, 0], [15, 0, 0], [15, 0, 0]]),
+    (405, [[10, 0, 0], [5, 0, 0], [5, 0, 0], [5, 0, 0]]),
+    (440, [[0, 0, 15], [0, 0, 15], [0, 0, 15], [0, 0, 15]]),
+    (490, [[15, 0, 0], [10, 0, 0], [20, 0, 0], [15, 0, 0]]),
+    (618, [[0, 25, 0], [0, 20, 0], [0, 20, 0], [0, 25, 0]]),
+    (796, [[5, 0, 0], [10, 0, 0], [25, 0, 0], [5, 0, 0]]),
+    (1377, [[0, 0, 20], [0, 0, 25], [0, 0, 20], [0, 0, 15]]),
+    (1977, [[15, 0, 0], [5, 0, 0], [15, 0, 0], [15, 0, 0]]),
+    (2017, [[5, 0, 0], [5, 0, 0], [5, 0, 0], [5, 0, 0]]),
+    (2597, [[0, 15, 0], [0, 15, 0], [0, 20, 0], [0, 25, 0]]),
+    (3358, [[10, 0, 0], [10, 0, 0], [10, 0, 0], [10, 0, 0]]),
+    (3428, [[0, 0, 20], [0, 0, 20], [0, 0, 20], [0, 0, 20]]),
+    (3429, [[0, 0, 20], [0, 0, 20], [0, 0, 20], [0, 0, 20]]),
+];
+
+fn chances_of(zone: u32) -> Option<&'static [[u8; 3]; 4]> {
+    CHANCES.iter().find(|(z, _)| *z == zone).map(|(_, c)| c)
+}
+
+/// The server's season of a day of the year (January 1st is 0): 0 spring, 1 summer, 2 fall, 3 winter, from March 20th on.
+fn season_of(day_of_year: u32) -> usize {
+    ((day_of_year + 365 - 78) / 91 % 4) as usize
+}
+
+/// The day of the year today by the system clock (UTC).
+fn today() -> u32 {
+    let mut days = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400) as u32;
+    let mut year = 1970;
+    loop {
+        let length = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+        if days < length {
+            return days;
+        }
+        days -= length;
+        year += 1;
+    }
+}
 
 pub struct Weather {
     /// The share of the weather that falls (the weather intensity of the video options).
@@ -165,8 +302,11 @@ pub struct Weather {
     roofs: Roofs,
     /// The weather comes and goes by itself while this is on (`--weather` fixes it).
     pub auto: bool,
-    /// Seconds until `auto` changes the weather.
-    timer: f32,
+    /// The weather of each zone the player has been in. shortcut: the server drops a zone's weather when nobody is in it; these stay (and keep
+    /// rolling), which only matters when coming back to a zone.
+    zones: HashMap<u32, Zone>,
+    /// What was last given to `set` from a zone, so that it is only set again when it changes.
+    shown: (Option<Kind>, f32),
 }
 
 impl Weather {
@@ -186,7 +326,8 @@ impl Weather {
             rng: Rng(seed | 1),
             roofs: Roofs { cells: HashMap::new(), top: 0.0 },
             auto: true,
-            timer: 60.0,
+            zones: HashMap::new(),
+            shown: (None, 0.0),
         }
     }
 
@@ -226,14 +367,15 @@ impl Weather {
         self.kind.is_some() || !self.particles.is_empty() || !self.puffs.is_empty() || !self.splashes.is_empty()
     }
 
-    /// The sound that goes with the weather now: its file and how loud, by the strength (thirds: light, medium, heavy).
+    /// The sound that goes with the weather now: its file and how loud, by the strength (the server's: light below 0.4, medium below 0.7, heavy;
+    /// rain makes no sound below 0.27, where it is hardly to be seen).
     pub fn sound(&self) -> Option<(&'static str, f32)> {
         let kind = self.kind?;
-        if self.intensity <= 0.05 {
+        if self.intensity <= 0.05 || (kind == Kind::Rain && self.intensity < 0.27) {
             return None;
         }
-        let heavy = (self.intensity * 3.0) as usize;
-        let file = match (kind, heavy.min(2)) {
+        let heavy = if self.intensity < 0.4 { 0 } else if self.intensity < 0.7 { 1 } else { 2 };
+        let file = match (kind, heavy) {
             (Kind::Rain, 0) => r"Sound\Ambience\Weather\RainLightLoop.wav",
             (Kind::Rain, 1) => r"Sound\Ambience\Weather\RainMediumLoop.wav",
             (Kind::Rain, _) => r"Sound\Ambience\Weather\RainHeavyLoop.wav",
@@ -248,14 +390,11 @@ impl Weather {
     }
 
     /// Moves the weather on by `dt` seconds: the change of strength, the choosing of new weather, the particles' making and passing.
-    /// `climate` is what the zone allows (`climate_of`).
-    pub fn update(&mut self, dt: f32, motion: &Motion, terrain: &dyn Terrain, climate: Option<Kind>) {
+    /// `zone` is the zone (`AreaNames::zone`) the player is in, if known.
+    pub fn update(&mut self, dt: f32, motion: &Motion, terrain: &dyn Terrain, zone: Option<u32>) {
         self.clock += dt;
         if self.auto {
-            self.timer -= dt;
-            if self.timer <= 0.0 {
-                self.choose(climate);
-            }
+            self.follow_zone(dt, zone);
         }
         // The strength moves towards the goal, a whole unit in ten seconds. Another kind waits until this one is gone.
         let goal = if self.next == self.kind { self.goal } else { 0.0 };
@@ -299,17 +438,27 @@ impl Weather {
         }
     }
 
-    /// New weather, by what the zone allows: it clears for a while, then something comes up.
-    fn choose(&mut self, climate: Option<Kind>) {
-        if self.next.is_some() {
-            self.set(None, 0.0, false);
-            self.timer = 240.0 + self.rng.unit() * 600.0;
-        } else if let Some(kind) = climate.filter(|_| self.rng.unit() < 0.7) {
-            let strength = 0.35 + self.rng.unit() * 0.65;
-            self.set(Some(kind), strength, false);
-            self.timer = 90.0 + self.rng.unit() * 240.0;
+    /// Rolls the weather of the zones that have some, and shows what the server would tell the player in `zone` (a zone not known yet keeps what shows).
+    fn follow_zone(&mut self, dt: f32, zone: Option<u32>) {
+        for (id, z) in self.zones.iter_mut() {
+            z.timer -= dt;
+            if z.timer <= 0.0 {
+                z.timer += ROLL_SECONDS;
+                if let Some(chances) = chances_of(*id) {
+                    z.roll(chances, season_of(today()), &mut self.rng);
+                }
+            }
+        }
+        let Some(zone) = zone else { return };
+        let now = if chances_of(zone).is_some() {
+            let z = self.zones.entry(zone).or_insert_with(Zone::new);
+            (z.kind, z.grade)
         } else {
-            self.timer = 120.0 + self.rng.unit() * 300.0;
+            (None, 0.0)
+        };
+        if now != self.shown {
+            self.shown = now;
+            self.set(now.0, now.1, false);
         }
     }
 
@@ -422,23 +571,6 @@ pub const TAIL: f32 = 0.1;
 
 /// The most particles made in one frame.
 const MOST_PER_FRAME: usize = 1200;
-
-/// What weather a zone has, by its name: rain nearly everywhere, snow in the cold ones, sandstorms in the deserts, none in the driest places.
-pub fn climate_of(zone: &str) -> Option<Kind> {
-    const SNOW: &[&str] = &["Dun Morogh", "Alterac Mountains", "Winterspring", "Coldridge", "Frostmane", "Ironforge", "Wintergrasp"];
-    const SAND: &[&str] = &["Tanaris", "Silithus", "Uldum", "Gadgetzan", "Thousand Needles", "Barrens"];
-    const NONE: &[&str] = &["Durotar", "Badlands", "Searing Gorge", "Burning Steppes", "Blasted Lands", "Orgrimmar", "Deadwind", "Stormwind City"];
-    let has = |names: &[&str]| names.iter().any(|n| zone.contains(n));
-    if has(NONE) {
-        None
-    } else if has(SNOW) {
-        Some(Kind::Snow)
-    } else if has(&SAND[..4]) {
-        Some(Kind::Sand)
-    } else {
-        Some(Kind::Rain)
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -562,17 +694,68 @@ mod tests {
         assert!(!w.active());
     }
 
+    /// The share of the rolls after which the weather shows (a grade of 0.27 or more) and the mean length of a spell in rolls, over a long run.
+    fn long_run(chances: [u8; 3], rolls: usize) -> (f32, f32) {
+        let (mut zone, mut rng) = (Zone::new(), Rng(99));
+        let (mut shown, mut spells, mut run) = (0, 0, 0);
+        for _ in 0..rolls {
+            zone.roll(&[chances; 4], 0, &mut rng);
+            if zone.kind.is_some() && zone.grade >= 0.27 {
+                shown += 1;
+                run += 1;
+            } else if run > 0 {
+                spells += 1;
+                run = 0;
+            }
+        }
+        (shown as f32 / rolls as f32, shown as f32 / spells.max(1) as f32)
+    }
+
     #[test]
-    fn zones_have_their_climate() {
-        assert_eq!(climate_of("Elwynn Forest - Northshire Valley"), Some(Kind::Rain));
-        assert_eq!(climate_of("Dun Morogh - Coldridge Valley"), Some(Kind::Snow));
-        assert_eq!(climate_of("Tanaris"), Some(Kind::Sand));
-        assert_eq!(climate_of("Durotar"), None);
+    fn the_chances_are_for_a_clear_sky_at_a_roll_not_a_share_of_the_time() {
+        // Elwynn in spring (20 in 100): the weather lingers, so it shows about two rolls in five (CMaNGOS's own rules, simulated), in spells of an hour.
+        let (share, spell) = long_run([20, 0, 0], 300_000);
+        assert!((0.36..0.50).contains(&share), "{share}");
+        assert!((5.0..8.0).contains(&spell), "{spell}");
+        let (share, _) = long_run([5, 0, 0], 300_000);
+        assert!((0.10..0.22).contains(&share), "{share}");
+        assert_eq!(long_run([0, 0, 0], 10_000).0, 0.0);
+    }
+
+    #[test]
+    fn a_zone_starts_clear_and_rolls_every_ten_minutes_by_the_chances_of_its_season() {
+        let mut w = Weather::new(5);
+        let m = standing();
+        // Elwynn Forest (12): nothing before the first roll.
+        for _ in 0..(590.0 * 30.0) as usize {
+            w.update(1.0 / 30.0, &m, &Flat, Some(12));
+        }
+        assert_eq!(w.zones[&12].kind, None);
+        // A zone without a row never has weather, and one with only sandstorms (Tanaris, 440) never has rain or snow.
+        let (mut rolled, mut other) = (0, 0);
+        for seed in 0..100 {
+            let mut w = Weather::new(seed);
+            for _ in 0..30 * 600 / 5 {
+                w.update(5.0, &m, &Flat, Some(440));
+                w.update(5.0, &m, &Flat, Some(14));
+                rolled += w.zones[&440].kind.is_some() as u32;
+                other += matches!(w.zones[&440].kind, Some(Kind::Rain | Kind::Snow)) as u32 + w.zones.contains_key(&14) as u32;
+            }
+        }
+        assert!(rolled > 0);
+        assert_eq!(other, 0);
+    }
+
+    #[test]
+    fn the_seasons_turn_on_the_equinoxes_and_solstices() {
+        // Winter at the new year, spring from day 77 (March 20th), then every 91 days.
+        assert_eq!([0, 76, 77, 167, 168, 258, 259, 349, 350, 364].map(season_of), [3, 3, 0, 0, 1, 1, 2, 2, 3, 3]);
     }
 
     #[test]
     fn the_sound_follows_the_kind_and_the_strength() {
-        let w = weather(Kind::Rain, 0.2);
+        assert!(weather(Kind::Rain, 0.2).sound().is_none());
+        let w = weather(Kind::Rain, 0.3);
         assert!(w.sound().unwrap().0.ends_with("RainLightLoop.wav"));
         let w = weather(Kind::Rain, 0.9);
         assert!(w.sound().unwrap().0.ends_with("RainHeavyLoop.wav"));

@@ -10,13 +10,13 @@ impl State {
         if self.weather_look <= 0.0 {
             self.weather_look = 0.25;
             self.indoors = self.world.indoors(eye);
-            self.climate = self.world.area_at(eye).and_then(|a| crate::weather::climate_of(&self.world.areas.display(a)));
+            self.zone = self.world.area_at(eye).map(|a| self.world.areas.zone(a));
         }
         let (sy, cy) = self.camera.yaw.sin_cos();
         // A jump of the camera (the first frames, a teleport) is not a speed.
         let velocity = ((eye - self.last_eye) / dt.max(1e-3)).clamp_length_max(25.0);
         let motion = crate::weather::Motion { eye, velocity, forward: Vec3::new(sy, 0.0, -cy), indoors: self.indoors };
-        self.weather.update(dt, &motion, &self.world, self.climate);
+        self.weather.update(dt, &motion, &self.world, self.zone);
     }
 
     /// Looks for what is heard from places round the ears: the liquid within nine yards (the nearest of each kind, at most two kinds, as the original

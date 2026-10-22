@@ -140,7 +140,7 @@ pub(super) struct CinemaWindow {
     /// The hour of the game's day (it begins as a new game does and runs a minute a second), and what the weather looks up four times a second.
     hour: f32,
     indoors: bool,
-    climate: Option<crate::weather::Kind>,
+    zone: Option<u32>,
     weather_look: f32,
     last_eye: Vec3,
     flyby: crate::cinematic::Flyby,
@@ -169,7 +169,7 @@ impl CinemaWindow {
         renderer.set_water_textures(&gpu, &world.water_textures());
         window.set_cursor_visible(false);
         log::info!("introduction of the {}: {} ({:.0} s)", race.name(), flyby.model, flyby.duration / 1000.0);
-        Ok(CinemaWindow { window, surface, config, gpu, renderer, sky, world, weather: weather_at_start(args), hour: args.time.unwrap_or(12.0), indoors: false, climate: None, weather_look: 0.0, last_eye: flyby.camera_at(0.0, 1.0).pos, flyby, audio, far: view_distance * 1.2, clock: 0.0, ready: false, last: Instant::now() })
+        Ok(CinemaWindow { window, surface, config, gpu, renderer, sky, world, weather: weather_at_start(args), hour: args.time.unwrap_or(12.0), indoors: false, zone: None, weather_look: 0.0, last_eye: flyby.camera_at(0.0, 1.0).pos, flyby, audio, far: view_distance * 1.2, clock: 0.0, ready: false, last: Instant::now() })
     }
 
     /// Whether it is over: the fly-by ended, or a key or the mouse said to skip it.
@@ -213,11 +213,11 @@ impl CinemaWindow {
         if self.weather_look <= 0.0 {
             self.weather_look = 0.25;
             self.indoors = self.world.indoors(eye);
-            self.climate = self.world.area_at(eye).and_then(|a| crate::weather::climate_of(&self.world.areas.display(a)));
+            self.zone = self.world.area_at(eye).map(|a| self.world.areas.zone(a));
         }
         let (sy, cy) = camera.yaw.sin_cos();
         let velocity = ((eye - self.last_eye) / dt.max(1e-3)).clamp_length_max(25.0);
-        self.weather.update(dt, &crate::weather::Motion { eye, velocity, forward: Vec3::new(sy, 0.0, -cy), indoors: self.indoors }, &self.world, self.climate);
+        self.weather.update(dt, &crate::weather::Motion { eye, velocity, forward: Vec3::new(sy, 0.0, -cy), indoors: self.indoors }, &self.world, self.zone);
         self.last_eye = eye;
         if let Some(a) = self.sky.as_ref().and_then(|s| s.atmosphere(camera.pos, self.hour, self.weather.storm())) {
             self.renderer.atmosphere = a;
@@ -266,7 +266,7 @@ pub(super) fn present_loading(surface: &wgpu::Surface, gpu: &Gpu, renderer: &mut
     frame.present();
 }
 
-/// The weather at the start: fixed by `--weather`, none with `--no-weather`, otherwise it comes and goes by the zone's climate.
+/// The weather at the start: fixed by `--weather`, none with `--no-weather`, otherwise it comes and goes as the server's weather of the zone does.
 pub(super) fn weather_at_start(args: &Args) -> crate::weather::Weather {
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
     let mut weather = crate::weather::Weather::new(seed);

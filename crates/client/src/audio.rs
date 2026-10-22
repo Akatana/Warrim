@@ -1193,7 +1193,7 @@ mod tests {
     fn every_weather_loop_decodes() {
         let Some((mount, _)) = bank() else { return eprintln!("skipped: no game data") };
         for kind in [crate::weather::Kind::Rain, crate::weather::Kind::Snow, crate::weather::Kind::Sand] {
-            for strength in [0.2, 0.5, 0.9] {
+            for strength in [0.3, 0.5, 0.9] {
                 let mut weather = crate::weather::Weather::new(1);
                 weather.set(Some(kind), strength, true);
                 let (file, _) = weather.sound().unwrap();

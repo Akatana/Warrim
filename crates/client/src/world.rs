@@ -71,6 +71,11 @@ impl AreaNames {
         Some(Room { area: if a.area != 0 { a.area } else { b.area }, ambience: if a.ambience != 0 { a.ambience } else { b.ambience }, music: if a.music != 0 { a.music } else { b.music } })
     }
 
+    /// The zone an area belongs to (the area itself when it is a zone).
+    pub fn zone(&self, id: u32) -> u32 {
+        self.by_id.get(&id).map_or(id, |&(parent, _)| if parent != 0 { parent } else { id })
+    }
+
     /// "Zone - Subzone", or just the zone when the area is a zone itself.
     pub fn display(&self, id: u32) -> String {
         let Some((parent, name)) = self.by_id.get(&id) else { return format!("area {id}") };
