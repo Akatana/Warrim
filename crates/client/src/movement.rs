@@ -184,6 +184,14 @@ impl Unit {
         self.fall_v0 = v0;
     }
 
+    /// Move the unit, standing on something that moves, along with it (`by`: x north, y west, z up).
+    pub fn carry(&mut self, by: [f64; 3]) {
+        for i in 0..3 {
+            self.pos[i] += by[i];
+        }
+        self.last_ground_z += by[2] as f32;
+    }
+
     /// Jump with the given initial upward speed, keeping `horizontal` (x north / y west) in the air.
     pub fn jump(&mut self, speed: f32, horizontal: Vec2) {
         if !self.is_falling() {

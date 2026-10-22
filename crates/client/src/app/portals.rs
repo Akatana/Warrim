@@ -43,6 +43,18 @@ impl State {
         self.in_portal = content::get().portals.iter().find(|p| p.map.eq_ignore_ascii_case(map) && p.contains([north, west, height])).map(|p| p.id);
     }
 
+    /// The ship he stands on has sailed into another map: take him there, on its deck where he stood.
+    pub(super) fn cross_with_ship(&mut self, cross: crate::lifts::Cross) {
+        if let Err(e) = self.switch_map(&cross.map) {
+            log::warn!("cannot sail on to {}: {e:#}", cross.map);
+            return;
+        }
+        let Some((feet, yaw)) = self.lifts.as_ref().and_then(|l| l.arrive(&cross, self.camera.yaw)) else { return };
+        self.camera.yaw = yaw.rem_euclid(std::f32::consts::TAU);
+        let [north, west, height] = render_to_wow(feet);
+        self.teleport(north, west, Some(height));
+    }
+
     /// Back where the game starts: dead, or home by the hearthstone.
     pub(super) fn go_home(&mut self) {
         if self.map.eq_ignore_ascii_case(&self.home) {

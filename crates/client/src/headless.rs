@@ -73,6 +73,14 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
         let ground = world.height_at(camera.pos.x, camera.pos.z).context("no terrain at the requested position")?;
         camera.pos.y = ground + args.alt.max(EYE_HEIGHT.min(args.alt));
     }
+    if let Some(clock) = args.lifts {
+        let mut effects = crate::effects::Effects::new(player_mount.clone());
+        let mut lifts = crate::lifts::Lifts::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &mut effects, &args.map, clock)?;
+        lifts.advance(0.0, glam::Vec3::splat(1e9), false, |_, _| true, &mut renderer, &mut effects);
+        for _ in 0..30 {
+            effects.update(1.0 / 30.0, &camera, &mut renderer, &gpu);
+        }
+    }
     // The weather, if one was asked for: a few seconds of it, so that the rain is in the air.
     let mut weather = crate::weather::Weather::new(1);
     weather.auto = false;

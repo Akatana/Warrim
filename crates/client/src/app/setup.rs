@@ -97,13 +97,14 @@ impl State {
         }
         let pickup_props = pickup_props();
         let pickups = Pickups::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &map).map_err(|e| log::warn!("no pickups: {e:#}")).ok();
+        let mut effects = crate::effects::Effects::new(player_mount.clone());
+        let lifts = crate::lifts::Lifts::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &mut effects, &map, 0.0).map_err(|e| log::warn!("no lifts: {e:#}")).ok();
         let bodies = Bodies::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &map).map_err(|e| log::warn!("no physics props: {e:#}")).ok();
         let lock_art = crate::lockpick::LockArt::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no lockpicking pictures: {e:#}")).ok();
         // The pointer of the original replaces the system's, which is shown only if its pictures are missing.
         let cursors = Cursors::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no mouse pointer: {e:#}")).ok();
         window.set_cursor_visible(cursors.is_none());
         show(&mut renderer, &[(Stage::Objects, 2.0 / 3.0), (Stage::Interface, 0.7)]);
-        let effects = crate::effects::Effects::new(player_mount.clone());
         let ripple_draw = crate::ripples::RippleDraw::new(&player_mount, &ModelCache::default(), &mut renderer, &gpu);
         let editor = player_mount
             .read(r"Fonts\ARIALN.TTF")
@@ -164,6 +165,7 @@ impl State {
             wolves,
             chests,
             pickups,
+            lifts,
             bodies,
             pending_loot: None,
             pickup_props,

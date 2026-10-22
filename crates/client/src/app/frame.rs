@@ -70,7 +70,11 @@ impl State {
         }
         if let Some(audio) = &mut self.audio {
             audio.set_listener(self.camera.pos, self.camera.yaw);
-            audio.set_places(&self.places);
+            // The lifts that go sound from where they are, which changes with every frame.
+            match &self.lifts {
+                Some(lifts) => audio.set_places(&[&self.places[..], &lifts.hums()].concat()),
+                None => audio.set_places(&self.places),
+            }
             audio.set_wading(self.wading);
         }
         self.animate_player(dt, &mut render_camera);
@@ -165,7 +169,7 @@ impl State {
             let (x, z) = (self.camera.pos.x, self.camera.pos.z);
             let ground = match self.saved_feet {
                 Some(_) if self.world.pending_count() > 0 => None,
-                Some(feet) => crate::collision::Collider::floor(&self.world, x, z, feet + 1.0).or_else(|| self.world.height_at(x, z)),
+                Some(feet) => crate::collision::Collider::floor(&Solid(&self.world, self.lifts.as_ref()), x, z, feet + 1.0).or_else(|| self.world.height_at(x, z)),
                 None => self.world.height_at(x, z),
             };
             if let Some(ground) = ground {
@@ -235,11 +239,30 @@ impl State {
                     p.set_sneaking(false);
                 }
             }
+            // The lifts go on; one that the player stands on takes him along.
+            if let Some(lifts) = &mut self.lifts {
+                let (feet, world) = (self.camera.pos - Vec3::Y * EYE_HEIGHT, &self.world);
+                let airborne = self.controller.airborne();
+                let ride = lifts.advance(dt, feet, airborne, |x, z| crate::movement::TriangleSource::is_loaded(world, [-z as f64, -x as f64, 0.0]), &mut self.renderer, &mut self.effects);
+                if let Some(audio) = &mut self.audio {
+                    ride.bangs.iter().for_each(|&(entry, at)| audio.play_3d(crate::audio::Sfx::Entry(entry), 0, at));
+                }
+                self.controller.carry(ride.by);
+                // Being carried is not moving: the animation, the footsteps and the wind go by what he does on the lift.
+                if self.controller.mode == Mode::Walk {
+                    self.last_eye += ride.by;
+                }
+                // What a ship turns with him turns the view the other way.
+                self.camera.yaw = (self.camera.yaw - ride.turn).rem_euclid(std::f32::consts::TAU);
+                if let Some(cross) = ride.cross {
+                    self.cross_with_ship(cross);
+                }
+            }
             // No walking, turning or jumping while a lock is being picked.
             if let Some(free) = &mut self.free {
                 free.controller.update(&mut free.camera, &mut self.input, &self.world, dt);
             } else if self.lock.is_none() {
-                self.controller.update(&mut self.camera, &mut self.input, &self.world, dt);
+                self.controller.update(&mut self.camera, &mut self.input, &Solid(&self.world, self.lifts.as_ref()), dt);
             }
         }
     }

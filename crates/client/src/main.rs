@@ -30,6 +30,7 @@ mod loading;
 mod headless;
 mod models;
 mod particles;
+mod lifts;
 mod physics;
 mod ragdoll;
 mod pickups;
@@ -92,6 +93,7 @@ USAGE: rsworld [options]
   --floor-scale <yd> headless: yards per character for --floor-map (default 1)
   --find-holes       headless: find gaps in the walkable surface (no floor at --pos height but floor on both sides)
   --walk <seconds>   headless: walk forward (heading = --yaw) with real collision before the shot
+  --lifts <seconds>  headless: the lifts, ships and zeppelins of the map as they are this many seconds into the game
   --time <hours>     fix the time of day (0-24); otherwise it starts at 12 and runs 1 game minute per second
   --view <first|third>  headless: draw the player (character, weapon and shield) in this view
   --pose <name>      headless, with --view: stand (default), walk, run, jump, attack, block or sheath
@@ -156,6 +158,7 @@ pub struct Args {
     pub headless: Option<PathBuf>,
     pub alt: f32,
     pub walk: f32,
+    pub lifts: Option<f32>,
     pub floor_map: bool,
     pub floor_scale: f32,
     pub probe_walk: bool,
@@ -231,6 +234,7 @@ fn parse_args() -> Result<Args> {
         headless: None,
         alt: 3.0,
         walk: 0.0,
+        lifts: None,
         floor_map: false,
         floor_scale: 1.0,
         probe_walk: false,
@@ -324,6 +328,7 @@ fn parse_args() -> Result<Args> {
             "--floor-scale" => a.floor_scale = value("--floor-scale")?.parse()?,
             "--floor-map" => a.floor_map = true,
             "--walk" => a.walk = value("--walk")?.parse()?,
+            "--lifts" => a.lifts = Some(value("--lifts")?.parse()?),
             "--no-audio" => a.audio = false,
             "--no-weather" => a.no_weather = true,
             "--weather" => {

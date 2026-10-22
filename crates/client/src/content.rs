@@ -1061,7 +1061,7 @@ pub fn content_dir() -> Option<std::path::PathBuf> {
 }
 
 /// The text of the content file `name`: from the folder if there is one (not while testing), else the one built in.
-fn source(name: &str, embedded: &'static str) -> String {
+pub(crate) fn source(name: &str, embedded: &'static str) -> String {
     if cfg!(test) {
         return embedded.to_string();
     }

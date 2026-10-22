@@ -153,6 +153,13 @@ impl Controller {
         }
     }
 
+    /// Move the walking character along with the lift he stands on (`by` in render space).
+    pub fn carry(&mut self, by: Vec3) {
+        if let (Some(unit), Mode::Walk) = (&mut self.unit, self.mode) {
+            unit.carry([-by.z as f64, -by.x as f64, by.y as f64]);
+        }
+    }
+
     pub fn look(&self, cam: &mut Camera, dx: f32, dy: f32) {
         let sens = 0.0025 * self.look_scale;
         let dy = if self.invert_y { -dy } else { dy };

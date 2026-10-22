@@ -3,6 +3,7 @@
 use crate::chest::{Chests, OPEN_RANGE};
 use crate::cursor::{Cursors, Hover, Kind};
 use crate::physics::Bodies;
+use crate::lifts::Solid;
 use crate::pickups::Pickups;
 use crate::loading::{Loading, Stage};
 use crate::lockpick::{Event, Lockpick};
@@ -147,6 +148,8 @@ struct State {
     chests: Option<Chests>,
     /// The props that quests send the player to pick up, and the map they are in.
     pickups: Option<Pickups>,
+    /// The lifts of the map, which carry the player.
+    lifts: Option<crate::lifts::Lifts>,
     /// The loose props with physics, pushed and carried by the player.
     bodies: Option<Bodies>,
     /// The props that are picked up or have physics (the world's props change in the editor), and whether `pickups` and `bodies` are to be made again from them.

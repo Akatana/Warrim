@@ -106,6 +106,9 @@ impl State {
         if let Some(old) = self.bodies.take() {
             old.retire(&mut self.renderer);
         }
+        // The lifts of the next map go on from the time of these.
+        let clock = self.lifts.take().map_or(0.0, |old| old.retire(&mut self.renderer, &mut self.effects));
+        self.lifts = crate::lifts::Lifts::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu, &mut self.effects, &self.map, clock).map_err(|e| log::warn!("no lifts: {e:#}")).ok();
         self.bodies = Bodies::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu, &self.pickup_props, &self.map).map_err(|e| log::warn!("no physics props: {e:#}")).ok();
         self.pickups = Pickups::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu, &self.pickup_props, &self.map).map_err(|e| log::warn!("no pickups: {e:#}")).ok();
     }
