@@ -721,6 +721,12 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             if args.panel.iter().any(|p| p == "sleep") {
                 panels.ask_sleep();
             }
+            if args.panel.iter().any(|p| p == "levelup" || p == "levelhint") {
+                panels.gain_xp(1000);
+            }
+            if args.panel.iter().any(|p| p == "levelup") {
+                panels.toggle_level();
+            }
             if args.panel.iter().any(|p| p == "lockpick") {
                 // A lock half turned with the pick off the sweet spot: the pick strains.
                 let mut lock = crate::lockpick::Lockpick::new(crate::lockpick::Level::Adept, 20.0);
@@ -739,9 +745,11 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             }
             panels.layout(&mut renderer.ui, &gpu, (w, h));
             for &pos in &args.clicks {
+                // A negative x is a right click at that distance from the left.
+                let (pos, left) = ((pos.0.abs(), pos.1), pos.0 >= 0.0);
                 panels.hover(Some(pos), (w, h));
                 panels.mouse_down(pos, (w, h));
-                panels.mouse_up(pos, (w, h), true);
+                panels.mouse_up(pos, (w, h), left);
             }
             panels.take_equipment_change();
             player.set_equipment(&mut renderer, &gpu, &panels.inv.equipment, &panels.stats);
@@ -759,13 +767,14 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             }
             panels.draw(&mut renderer.ui, &gpu, (w, h));
             panels.draw_overlay(&mut renderer.ui, &gpu, (w, h), 0.0, args.panel.iter().any(|p| p == "hint").then_some("Press E to loot"));
-            panels.draw_map(&mut renderer.ui, &gpu, (w, h), render_camera.pos, render_camera.yaw);
-            if args.sneak {
-                panels.draw_sneak(&mut renderer.ui, &gpu, (w, h));
-            }
             if args.compass {
                 panels.found.iter_mut().take(args.discover).for_each(|f| *f = true);
                 panels.draw_compass(&mut renderer.ui, &gpu, (w, h), render_camera.pos, render_camera.yaw);
+            }
+            panels.draw_map(&mut renderer.ui, &gpu, (w, h), render_camera.pos, render_camera.yaw);
+            panels.draw_level(&mut renderer.ui, &gpu, (w, h));
+            if args.sneak {
+                panels.draw_sneak(&mut renderer.ui, &gpu, (w, h));
             }
         }
         // The player previews show the interface too.

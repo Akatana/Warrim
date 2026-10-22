@@ -9,6 +9,11 @@ impl State {
         let (Some(panels), Some(pos)) = (&mut self.panels, self.cursor) else { return false };
         let size = (self.config.width, self.config.height);
         if !panels.any_open() {
+            // The hint over the bars is a button while the mouse is free.
+            if down && panels.level_hint_at(pos, size) {
+                panels.toggle_level();
+                return true;
+            }
             return false;
         }
         if down {

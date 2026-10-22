@@ -26,6 +26,7 @@ impl State {
         saved.sneaking = player.is_sneaking();
         saved.look = self.look;
         saved.map = Some(self.map.clone());
+        saved.spent = panels.level_spent();
         Some(saved)
     }
 

@@ -677,7 +677,11 @@ impl State {
             panels.draw(&mut self.renderer.ui, &self.gpu, size);
             panels.draw_overlay(&mut self.renderer.ui, &self.gpu, size, dt, self.hint);
             panels.set_quest_targets(self.wolves.as_ref(), self.chests.as_ref(), self.pickups.as_ref());
+            if self.lock.is_none() {
+                panels.draw_compass(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw);
+            }
             panels.draw_map(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw);
+            panels.draw_level(&mut self.renderer.ui, &self.gpu, size);
             if let Some(bar) = &self.actionbar {
                 bar.draw_drag(&mut self.renderer.ui, size);
             }
@@ -690,7 +694,6 @@ impl State {
             if self.lock.is_none() {
                 discovered = panels.discover(self.camera.pos - Vec3::Y * EYE_HEIGHT);
                 discovered |= panels.explore(self.world.area_at(self.camera.pos));
-                panels.draw_compass(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw);
             }
             if self.grabbed && self.lock.is_none() {
                 let alert = self.player.as_ref().is_some_and(|p| p.is_sneaking()).then(|| self.wolves.as_ref().map_or(0.0, |w| w.alert(self.camera.pos - Vec3::Y * EYE_HEIGHT, panels.progress.level)));

@@ -118,6 +118,9 @@ pub struct Save {
     /// The map the character is on (a dungeon, say); none in older saves: the map the game starts on.
     #[serde(default)]
     pub map: Option<String>,
+    /// The level-up points spent on health, mana and stamina (what is unspent follows from the level).
+    #[serde(default)]
+    pub spent: [u32; 3],
 }
 
 fn entries(slots: &[Option<Stack>]) -> Vec<Entry> {
@@ -177,6 +180,7 @@ impl Save {
             sneaking: false,
             look: Appearance::default(),
             map: None,
+            spent: [0; 3],
         }
     }
 

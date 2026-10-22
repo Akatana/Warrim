@@ -61,7 +61,9 @@ fn vs_main(in: VsIn) -> VsOut {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let uv = vec2<f32>(dot(params.uv0.xyz, vec3<f32>(in.uv, 1.0)), dot(params.uv1.xyz, vec3<f32>(in.uv, 1.0)));
     let c = textureSample(tex, samp, uv);
-    if (c.a < params.v.x) {
+    // A batch whose transparency track says 0 is not there (the spell-focus models, forge and anvil enablers, are such planes); the opaque
+    // and alpha-key passes do not blend, so the opacity has to be honoured here.
+    if (c.a < params.v.x || params.tint.a <= 0.0) {
         discard;
     }
 

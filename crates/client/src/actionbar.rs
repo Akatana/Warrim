@@ -50,9 +50,9 @@ const VITAL_GAP: f32 = 8.0;
 const VITAL_BOTTOM: f32 = 57.0;
 // The original's player frame bars: health green (`HealthBar_OnValueChanged`), mana blue (`ManaBarColor[0]`), and the
 // third bar in the energy yellow (`ManaBarColor[3]`).
-const HEALTH_COLOR: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
-const MANA_COLOR: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
-const STAMINA_COLOR: [f32; 4] = [1.0, 1.0, 0.0, 1.0];
+pub const HEALTH_COLOR: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+pub const MANA_COLOR: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+pub const STAMINA_COLOR: [f32; 4] = [1.0, 1.0, 0.0, 1.0];
 /// The text on a bar is `TextStatusBarText`: ARIALN at height 14 with an outline.
 const BAR_TEXT_HEIGHT: f32 = 14.0;
 /// The count on an item's button is a little smaller than the text on the bars.

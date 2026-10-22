@@ -21,6 +21,7 @@ use std::f32::consts::PI;
 use std::rc::Rc;
 
 mod magic;
+mod levelup;
 mod map;
 mod menu;
 mod sleep;
@@ -142,6 +143,13 @@ pub struct Panels {
     sleep: Option<f32>,
     slept: Option<f32>,
     sleep_dragging: bool,
+    /// The points a level gives to spend on health, mana or stamina, those spent on each, whether the panel for them is open, the button of it that is
+    /// pressed, and its pictures (`levelup.rs`).
+    points: u32,
+    spent: [u32; 3],
+    level_open: bool,
+    level_press: Option<usize>,
+    level_art: Option<levelup::Art>,
     /// The portrait of the target frame (offscreen picture), and which creature the frame shows.
     target_portrait: (usize, usize),
     target: Option<usize>,
@@ -364,7 +372,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, target_portrait, target: None, menu: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default() };
         panels.refresh();
         Ok(panels)
     }
@@ -412,6 +420,11 @@ impl Panels {
     }
 
     pub fn any_open(&self) -> bool {
+        self.level_open || self.windows_open()
+    }
+
+    /// Whether a window of the original's interface is open (the level-up panel is not one: it gives way to them).
+    fn windows_open(&self) -> bool {
         self.popup_open() || self.character_open() || self.backpack_open() || self.loot_open() || self.gossip_open() || self.merchant_open() || self.quest_open() || self.quest_log_open() || self.spellbook_open() || self.map_open || self.menu_open() || self.options_open()
     }
 
@@ -438,7 +451,9 @@ impl Panels {
 
     /// `Esc`: the question goes first, then everything else.
     pub fn escape(&mut self) {
-        if self.popup_open() {
+        if self.level_open {
+            self.toggle_level();
+        } else if self.popup_open() {
             self.close_popup();
         } else if !self.escape_menu() {
             self.close_all();
@@ -1064,6 +1079,8 @@ impl Panels {
         for note in saved.apply(&mut self.inv, &mut self.progress, &mut self.quests) {
             log::warn!("saved game: {note}");
         }
+        self.spent = saved.spent;
+        self.sync_points();
         self.found = content::get().pois.iter().map(|p| saved.discovered.contains(&p.id)).collect();
         self.explored = saved.explored.clone();
         if !saved.skills.is_empty() {
@@ -1129,6 +1146,7 @@ impl Panels {
     pub fn set_level(&mut self, level: u32) {
         let rose = level > self.progress.level;
         self.progress = Progress { level, xp: 0 };
+        self.sync_points();
         self.refresh();
         self.equipment_changed = true;
         if rose {
@@ -1147,6 +1165,7 @@ impl Panels {
         self.refresh();
         // The player takes on the new stats (health) when the equipment is applied again.
         self.equipment_changed = true;
+        self.sync_points();
         for level in reached {
             self.notice(&self.string("LEVEL_UP").replacen("%d", &level.to_string(), 1));
             self.events.push(Sfx::Named("LEVELUPSOUND"));
@@ -1219,6 +1238,7 @@ impl Panels {
 
     pub fn close_all(&mut self) {
         self.map_open = false;
+        self.level_open = false;
         self.tree.show("GameMenuFrame", false);
         self.tree.show("SoundOptionsFrame", false);
         self.tree.show("OptionsFrame", false);
@@ -1761,6 +1781,8 @@ impl Panels {
     pub fn refresh(&mut self) {
         self.stats = Stats::of(&self.inv.equipment, self.progress.level, &self.consumed.boosts(), &self.consumed.timed_effects());
         self.stats.armor += self.skills.armor_bonus(&self.inv.equipment);
+        let [health, mana, stamina] = self.spent_bonus();
+        (self.stats.max_health, self.stats.max_mana, self.stats.max_stamina) = (self.stats.max_health + health, self.stats.max_mana + mana, self.stats.max_stamina + stamina);
         let s = self.stats;
         let t = &mut self.tree;
         // The head of the frame.
@@ -1857,12 +1879,16 @@ impl Panels {
 
     /// Whether the position is over a frame of the panels (the game should leave the click to them).
     pub fn is_over(&mut self, pos: (f32, f32), screen: (u32, u32)) -> bool {
-        self.map_open || (self.any_open() && self.tree.hit_test(pos, screen).is_some())
+        self.map_open || self.level_open || (self.any_open() && self.tree.hit_test(pos, screen).is_some())
     }
 
     pub fn mouse_down(&mut self, pos: (f32, f32), screen: (u32, u32)) -> bool {
+        if self.level_open {
+            self.level_press(pos, screen);
+            return true;
+        }
         if self.map_open {
-            self.map_press(pos);
+            self.map_press(pos, screen);
             return true;
         }
         let hit = self.tree.hit_test(pos, screen);
@@ -1880,9 +1906,17 @@ impl Panels {
 
     /// A mouse button went up over the same button it went down on: do what the click means. `left` or right.
     pub fn mouse_up(&mut self, pos: (f32, f32), screen: (u32, u32), left: bool) {
+        if self.level_open {
+            if left {
+                self.level_release(pos, screen);
+            }
+            return;
+        }
         if self.map_open {
             if left {
                 self.map_release(pos, screen);
+            } else {
+                self.map_zoom_out();
             }
             return;
         }

@@ -141,6 +141,13 @@ impl State {
                     self.set_grab(!open);
                 }
             }
+            KeyCode::KeyU if pressed => {
+                if let Some(panels) = &mut self.panels {
+                    panels.toggle_level();
+                    let open = panels.any_open();
+                    self.set_grab(!open);
+                }
+            }
             KeyCode::KeyM if pressed => {
                 if let Some(panels) = &mut self.panels {
                     panels.toggle_map();
