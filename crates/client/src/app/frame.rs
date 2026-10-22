@@ -60,7 +60,7 @@ impl State {
         let view = frame.texture.create_view(&Default::default());
         let mut render_camera = Camera { pos: self.camera.pos, ..self.camera };
         if let Some(audio) = &mut self.audio {
-            audio.update(dt, self.world.area_at(self.camera.pos.x, self.camera.pos.z), self.hour);
+            audio.update(dt, self.world.area_at(self.camera.pos), self.world.room_at(self.camera.pos), self.hour);
             audio.set_weather(self.weather.sound(), self.indoors, dt);
         }
         self.sound_look -= dt;
@@ -263,6 +263,11 @@ impl State {
                 free.controller.update(&mut free.camera, &mut self.input, &self.world, dt);
             } else if self.lock.is_none() {
                 self.controller.update(&mut self.camera, &mut self.input, &Solid(&self.world, self.lifts.as_ref()), dt);
+            }
+            if let Some(height) = self.controller.take_landing() {
+                if let (Some(taken), Some(text)) = (self.player.as_mut().and_then(|p| p.take_fall(height)), &mut self.combat_text) {
+                    text.damage_taken(taken);
+                }
             }
         }
     }
@@ -684,7 +689,7 @@ impl State {
             }
             if self.lock.is_none() {
                 discovered = panels.discover(self.camera.pos - Vec3::Y * EYE_HEIGHT);
-                discovered |= panels.explore(self.world.area_at(self.camera.pos.x, self.camera.pos.z));
+                discovered |= panels.explore(self.world.area_at(self.camera.pos));
                 panels.draw_compass(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw);
             }
             if self.grabbed && self.lock.is_none() {
@@ -791,7 +796,7 @@ impl State {
             let [wx, wy, wz] = render_to_wow(self.camera.pos);
             let area = self
                 .world
-                .area_at(self.camera.pos.x, self.camera.pos.z)
+                .area_at(self.camera.pos)
                 .map(|a| self.world.areas.display(a))
                 .unwrap_or_else(|| "...".into());
             let loading = if self.world.pending_count() > 0 {

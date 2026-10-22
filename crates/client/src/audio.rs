@@ -572,7 +572,8 @@ impl Audio {
     }
 
     /// Advance the music and ambience for the player being in `area` at `hour` (0..24).
-    pub fn update(&mut self, dt: f32, area: Option<u32>, hour: f32) {
+    /// A room of a building with music or ambience of its own overrides the area's.
+    pub fn update(&mut self, dt: f32, area: Option<u32>, room: Option<crate::world::Room>, hour: f32) {
         self.clock += dt as f64;
         let night = is_night(hour) as usize;
 
@@ -589,7 +590,12 @@ impl Audio {
         }
 
         // Zone music: a new set fades the old one out and starts right away; after a track comes a silence.
-        let set = if self.underwater { None } else { area.and_then(|a| self.bank.music_for(a)) };
+        let room = room.unwrap_or_default();
+        let set = if self.underwater {
+            None
+        } else {
+            Some(room.music).filter(|m| self.bank.zone_music.contains_key(m)).or_else(|| area.and_then(|a| self.bank.music_for(a)))
+        };
         if set != self.music_set {
             self.music_set = set;
             self.restart_music();
@@ -629,7 +635,8 @@ impl Audio {
                 self.music_next = f64::MAX;
             }
         }
-        self.update_ambience(if self.underwater { None } else { area }, night, dt);
+        let own = self.bank.ambience.get(&room.ambience).copied();
+        self.update_ambience(if self.underwater { None } else { own.or_else(|| area.and_then(|a| self.bank.ambience_for(a))) }, night, dt);
         self.update_underwater(dt);
     }
 
@@ -695,8 +702,8 @@ impl Audio {
     }
 
     /// Ambience: the zone's day or night loop, crossfading when either changes.
-    fn update_ambience(&mut self, area: Option<u32>, night: usize, dt: f32) {
-        let want = area.and_then(|a| self.bank.ambience_for(a)).map(|e| e[night]).filter(|&e| e != 0);
+    fn update_ambience(&mut self, sounds: Option<[u32; 2]>, night: usize, dt: f32) {
+        let want = sounds.map(|e| e[night]).filter(|&e| e != 0);
         if want != self.ambience_entry {
             self.ambience_entry = want;
             self.ambience.fade_out();
@@ -1068,7 +1075,7 @@ mod tests {
     /// Run the engine for `seconds` of game time in `area`, giving the background reads real time to finish.
     fn run(audio: &mut Audio, area: Option<u32>, hour: f32, seconds: f32) {
         for _ in 0..(seconds * 20.0) as usize {
-            audio.update(0.05, area, hour);
+            audio.update(0.05, area, None, hour);
             std::thread::sleep(std::time::Duration::from_millis(4));
         }
     }

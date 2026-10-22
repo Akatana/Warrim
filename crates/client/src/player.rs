@@ -784,6 +784,13 @@ impl Player {
         taken as u32
     }
 
+    /// A fall of `height` yards ends on the ground: the original's `Player::HandleFall`. Nothing under 14.57 yards; beyond that
+    /// 1.8 percent of the health per yard less 24.26 percent, at most all of it. No armor or shield stops it.
+    pub fn take_fall(&mut self, height: f32) -> Option<u32> {
+        let share = 0.018 * height - 0.2426;
+        (height >= 14.57 && share > 0.0 && self.vitals.health.current > 0.0).then(|| self.take_magic((share.min(1.0) * self.vitals.health.max).floor()))
+    }
+
     /// Spells hold the character back from swinging the weapon in the hand and from shooting (set by the game each frame).
     pub fn set_held_back(&mut self, swing: bool, shot: bool) {
         (self.no_swing, self.no_shot) = (swing, shot);
@@ -1410,6 +1417,21 @@ mod tests {
         p.take_events();
         p.take_hit(200.0);
         assert_eq!(p.take_events(), [Sfx::Death]);
+    }
+
+    #[test]
+    fn a_long_fall_hurts_by_the_originals_formula() {
+        if mpq::find_wow_dir().is_none() {
+            return eprintln!("skipped: no game data");
+        }
+        let mut p = player_for_tests();
+        assert_eq!(p.take_fall(14.5), None);
+        // 30 yards: 0.018 * 30 - 0.2426 = 29.74 percent of 100.
+        assert_eq!(p.take_fall(30.0), Some(29));
+        // Far beyond: the whole maximum health, and the dead take no more.
+        assert_eq!(p.take_fall(500.0), Some(100));
+        assert_eq!(p.vitals.health.current, 0.0);
+        assert_eq!(p.take_fall(500.0), None);
     }
 
     #[test]

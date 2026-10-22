@@ -166,6 +166,11 @@ fn behind(wmo: &WmoCpu, r: &PortalRef, cam: Vec3) -> bool {
     (if r.side < 0 { -side } else { side }) < 0.0
 }
 
+/// The `WMOAreaTable` numbers (building, group) of the room a point (model space) is in.
+pub fn room_at(wmo: &WmoCpu, point: Vec3) -> Option<(u32, u32)> {
+    camera_group(wmo, point).map(|g| (wmo.id, wmo.groups[g].id))
+}
+
 /// Whether a point (model space) is inside the building, in one of its groups that is not an outdoor one (a street or a courtyard).
 pub fn indoors(wmo: &WmoCpu, point: Vec3) -> bool {
     camera_group(wmo, point).is_some_and(|g| wmo.groups[g].flags & OUTDOOR == 0)
@@ -293,7 +298,7 @@ mod tests {
             portal_verts.push(v);
         }
         let bbox = ([-50.0, -50.0, -50.0], [50.0, 50.0, 50.0]);
-        let group = |flags, portals| WmoGroupCpu { flags, bbox, portals, model: None };
+        let group = |flags, portals| WmoGroupCpu { id: 0, flags, bbox, portals, model: None };
         WmoCpu {
             groups: vec![group(OUTDOOR, (0, 2)), group(0x2000, (2, 0)), group(0x2000, (2, 0)), group(0x2000, (2, 0))],
             portal_verts,

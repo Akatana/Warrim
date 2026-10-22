@@ -110,6 +110,8 @@ pub struct Living {
 /// geometry or that failed to load.
 #[derive(Default)]
 pub struct WmoGroupCpu {
+    /// The group's number in `WMOAreaTable`.
+    pub id: u32,
     pub flags: u32,
     /// Model-space bounds.
     pub bbox: ([f32; 3], [f32; 3]),
@@ -127,6 +129,8 @@ pub struct WmoInstance {
 /// A loaded building: its groups, portals and the furniture lists of its doodad sets.
 #[derive(Default)]
 pub struct WmoCpu {
+    /// The building's number in `WMOAreaTable`.
+    pub id: u32,
     pub groups: Vec<WmoGroupCpu>,
     pub portal_verts: Vec<[f32; 3]>,
     pub portals: Vec<WmoPortal>,
@@ -370,6 +374,7 @@ impl ModelCache {
             }
             let slot = groups.len();
             groups.push(WmoGroupCpu {
+                id: group.id,
                 flags: group.flags,
                 bbox: group.bbox,
                 portals: (group.portal_start, group.portal_count),
@@ -441,6 +446,7 @@ impl ModelCache {
         }
         anyhow::ensure!(groups.iter().any(|g| g.model.is_some()), "no renderable groups");
         Ok(WmoCpu {
+            id: root.id,
             groups,
             portal_verts: root.portal_verts,
             portals: root.portals,

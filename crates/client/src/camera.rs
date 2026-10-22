@@ -108,6 +108,10 @@ pub struct Controller {
     swimming: bool,
     /// Leapt out of the water and has not yet left it behind: no swimming again till then.
     leapt: bool,
+    /// Height the current fall began at (the original's `m_lastFallZ`); none on the ground and in the water.
+    fall_from: Option<f32>,
+    /// How far the last fall went, until the game takes it (`take_landing`).
+    landed: Option<f32>,
 }
 
 /// Render space (X east, Y up, Z south) -> WoW (x north, y west, z up).
@@ -117,7 +121,12 @@ fn render_to_wow64(p: Vec3) -> [f64; 3] {
 
 impl Controller {
     pub fn new(mode: Mode) -> Self {
-        Self { mode, fly_speed: 60.0, look_scale: 1.0, invert_y: false, unit: None, height: DEFAULT_HEIGHT, swimming: false, leapt: false }
+        Self { mode, fly_speed: 60.0, look_scale: 1.0, invert_y: false, unit: None, height: DEFAULT_HEIGHT, swimming: false, leapt: false, fall_from: None, landed: None }
+    }
+
+    /// The distance of the fall that ended since the last call, if any (the game turns it into damage).
+    pub fn take_landing(&mut self) -> Option<f32> {
+        self.landed.take()
     }
 
     /// How tall the character is (from its model).
@@ -138,12 +147,14 @@ impl Controller {
     pub fn reset(&mut self) {
         self.unit = None;
         self.swimming = false;
+        (self.fall_from, self.landed) = (None, None);
     }
 
     pub fn toggle_mode(&mut self) {
         self.mode = if self.mode == Mode::Walk { Mode::Fly } else { Mode::Walk };
         // Walking restarts from wherever the camera is, falling to the ground.
         self.unit = None;
+        (self.fall_from, self.landed) = (None, None);
     }
 
     /// A blow throws the walking character along `away` (a direction in render space, level) at `speed` yards a second, and up at `up`.
@@ -218,6 +229,12 @@ impl Controller {
                             unit.jump(JUMP_VELOCITY, velocity);
                         }
                         unit.update(world, dt, velocity);
+                    }
+                    // A fall counts from where it began to where it ends on the ground; the water breaks it.
+                    if unit.is_falling() && !self.swimming {
+                        self.fall_from = Some(unit.fall_start());
+                    } else if let Some(from) = self.fall_from.take().filter(|_| !self.swimming) {
+                        self.landed = Some(from - unit.pos[2] as f32);
                     }
                 }
                 cam.pos = Vec3::new(-unit.pos[1] as f32, unit.pos[2] as f32 + EYE_HEIGHT, -unit.pos[0] as f32);
@@ -325,6 +342,19 @@ mod tests {
         run(&mut c, &mut cam, &mut input, &world, 2.0);
         let dist = (cam.pos - start).length();
         assert!((dist - 14.0 * 1.6 * SPRINT_FACTOR).abs() < 0.8, "galloped {dist} yards in 2s");
+    }
+
+    #[test]
+    fn a_fall_reports_its_height_once_and_a_jump_reports_none() {
+        let world = Floor(2.0);
+        let (mut cam, mut c, mut input) = walker(2.0 + 40.0 + EYE_HEIGHT);
+        run(&mut c, &mut cam, &mut input, &world, 4.0);
+        let fell = c.take_landing().expect("landed");
+        assert!((fell - 40.0).abs() < 0.1, "fell {fell}");
+        assert_eq!(c.take_landing(), None);
+        input.jump_pressed = true;
+        run(&mut c, &mut cam, &mut input, &world, 2.0);
+        assert!(c.take_landing().is_some_and(|h| h.abs() < 0.05));
     }
 
     #[test]

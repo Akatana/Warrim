@@ -185,6 +185,15 @@ impl TileGpu {
             crate::wmovis::indoors(&w.wmo, Vec3::new(r.x, -r.z, r.y))
         })
     }
+
+    /// The `WMOAreaTable` numbers (building, group) of the room of one of the tile's buildings a point (render space) is in.
+    pub fn room_at(&self, at: Vec3) -> Option<(u32, u32)> {
+        let local = Vec3::new((at.x as f64 - self.origin.0) as f32, at.y, (at.z as f64 - self.origin.1) as f32);
+        self.wmos.iter().find_map(|w| {
+            let r = w.matrix.inverse().transform_point3(local);
+            crate::wmovis::room_at(&w.wmo, Vec3::new(r.x, -r.z, r.y))
+        })
+    }
 }
 
 struct BatchGpu {

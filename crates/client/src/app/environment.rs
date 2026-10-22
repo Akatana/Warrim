@@ -10,7 +10,7 @@ impl State {
         if self.weather_look <= 0.0 {
             self.weather_look = 0.25;
             self.indoors = self.world.indoors(eye);
-            self.climate = self.world.area_at(eye.x, eye.z).and_then(|a| crate::weather::climate_of(&self.world.areas.display(a)));
+            self.climate = self.world.area_at(eye).and_then(|a| crate::weather::climate_of(&self.world.areas.display(a)));
         }
         let (sy, cy) = self.camera.yaw.sin_cos();
         // A jump of the camera (the first frames, a teleport) is not a speed.

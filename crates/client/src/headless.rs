@@ -97,10 +97,13 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
     if let Some(a) = sky.as_ref().and_then(|s| s.atmosphere(camera.pos, args.time.unwrap_or(12.0), weather.storm())) {
         renderer.atmosphere = a;
     }
-    if let Some(a) = world.area_at(camera.pos.x, camera.pos.z) {
+    if let Some(a) = world.area_at(camera.pos) {
         log::info!("standing in: {}", world.areas.display(a));
+        if let Ok(bank) = crate::audio::SoundBank::load(&player_mount) {
+            log::info!("music of the area: {:?}", bank.music_for(a));
+        }
     }
-    log::info!("indoors: {}", world.indoors(camera.pos));
+    log::info!("indoors: {}; room music {:?}, ambience {:?}", world.indoors(camera.pos), world.room_at(camera.pos).map(|r| r.music), world.room_at(camera.pos).map(|r| r.ambience));
     let waters = world.nearby_liquids(camera.pos, 9.0);
     let sounds = world.nearby_sounds(camera.pos, 130.0);
     for p in world.sample_building_liquids() {
@@ -382,7 +385,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             feet.y
         );
         log::info!("{} collision triangles loaded", world.collision_triangles());
-        if let Some(a) = world.area_at(camera.pos.x, camera.pos.z) {
+        if let Some(a) = world.area_at(camera.pos) {
             log::info!("now in: {}", world.areas.display(a));
         }
     }
@@ -641,7 +644,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             }
             if args.panel.iter().any(|p| p == "map" || p == "map-zoom") {
                 panels.found.iter_mut().take(args.discover).for_each(|f| *f = true);
-                panels.explore(world.area_at(render_camera.pos.x, render_camera.pos.z));
+                panels.explore(world.area_at(render_camera.pos));
                 panels.toggle_map();
                 if args.panel.iter().any(|p| p == "map-zoom") {
                     panels.map_zoom(args.cursor.unwrap_or((640.0, 360.0)), (w, h), 6.0);

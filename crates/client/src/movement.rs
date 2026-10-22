@@ -176,6 +176,11 @@ impl Unit {
         self.flags & FALLING != 0
     }
 
+    /// The height at which the current fall began.
+    pub fn fall_start(&self) -> f32 {
+        self.fall_start_z
+    }
+
     /// `FUN_007c61f0`: enter the falling state with initial downward speed `v0` (negative = up).
     fn start_fall(&mut self, v0: f32) {
         self.flags = (self.flags & !0x0420_0000) | FALLING;

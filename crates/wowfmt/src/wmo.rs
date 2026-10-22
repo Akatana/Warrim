@@ -60,6 +60,8 @@ pub struct PortalRef {
 }
 
 pub struct WmoRoot {
+    /// The building's number in `WMOAreaTable` (`MOHD`).
+    pub id: u32,
     pub group_count: usize,
     pub materials: Vec<WmoMaterial>,
     pub doodads: Vec<WmoDoodad>,
@@ -95,6 +97,8 @@ pub struct WmoLiquid {
 pub const LIQUID_CELL: f32 = 533.333_3 / 128.0;
 
 pub struct WmoGroup {
+    /// The group's number in `WMOAreaTable`.
+    pub id: u32,
     pub flags: u32,
     /// Model-space bounds from the MOGP header.
     pub bbox: ([f32; 3], [f32; 3]),
@@ -125,6 +129,7 @@ fn le32(b: &[u8]) -> u32 {
 impl WmoRoot {
     pub fn parse(data: &[u8]) -> Result<WmoRoot> {
         let mut group_count = None;
+        let mut id = 0;
         let mut texture_blob: &[u8] = &[];
         let mut raw_materials: Vec<(u32, u32, u32)> = Vec::new();
         let mut doodad_blob: &[u8] = &[];
@@ -147,6 +152,11 @@ impl WmoRoot {
                     let mut r = Reader::new(c.data);
                     let _materials = r.u32()?;
                     group_count = Some(r.u32()? as usize);
+                    // Portals, lights, models, doodads, sets and the ambient colour come before the building's number.
+                    for _ in 0..6 {
+                        r.u32()?;
+                    }
+                    id = r.u32()?;
                 }
                 b"MOTX" => texture_blob = c.data,
                 b"MOMT" => {
@@ -211,7 +221,7 @@ impl WmoRoot {
                 }
             })
             .collect();
-        Ok(WmoRoot { group_count, materials, doodads, doodad_sets, lights, portal_verts, portals, portal_refs })
+        Ok(WmoRoot { id, group_count, materials, doodads, doodad_sets, lights, portal_verts, portals, portal_refs })
     }
 }
 
@@ -256,6 +266,7 @@ impl WmoGroup {
             return Err(Error::Invalid("MOGP header too small".into()));
         }
         let flags = le32(&mogp.data[8..]);
+        let id = le32(&mogp.data[56..]);
         let bbox = (vec3(&mogp.data[12..]), vec3(&mogp.data[24..]));
         let portal_start = u16::from_le_bytes([mogp.data[36], mogp.data[37]]);
         let portal_count = u16::from_le_bytes([mogp.data[38], mogp.data[39]]);
@@ -311,7 +322,7 @@ impl WmoGroup {
         if !colors.is_empty() {
             colors.resize(vertices.len(), [255; 4]);
         }
-        Ok(WmoGroup { flags, bbox, portal_start, portal_count, vertices, normals, uvs, indices, tri_info, batches, colors, indoor: flags & 0x2000 != 0, doodad_refs, light_refs, liquid })
+        Ok(WmoGroup { id, flags, bbox, portal_start, portal_count, vertices, normals, uvs, indices, tri_info, batches, colors, indoor: flags & 0x2000 != 0, doodad_refs, light_refs, liquid })
     }
 }
 

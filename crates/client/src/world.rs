@@ -38,6 +38,16 @@ struct LoadedTile {
 /// `AreaTable.dbc`: area id -> (parent zone id, name).
 pub struct AreaNames {
     by_id: HashMap<u32, (u32, String)>,
+    /// `WMOAreaTable.dbc`: (building, group) -> what the room is; group `u32::MAX` is the building's own row.
+    rooms: HashMap<(u32, u32), Room>,
+}
+
+/// What a room of a building has of its own in `WMOAreaTable.dbc` (0: nothing, the area's or the building's applies).
+#[derive(Clone, Copy, Default)]
+pub struct Room {
+    pub area: u32,
+    pub ambience: u32,
+    pub music: u32,
 }
 
 impl AreaNames {
@@ -45,7 +55,20 @@ impl AreaNames {
         let dbc = Dbc::parse(&mount.read("DBFilesClient\\AreaTable.dbc")?)?;
         // Fields: 0 id, 1 map, 2 parent zone, 11 name (enUS).
         let by_id = dbc.iter().map(|r| (r.u32(0), (r.u32(2), r.string(11).to_string()))).collect();
-        Ok(Self { by_id })
+        // WMOAreaTable: 0 id, 1 building, 2 name set, 3 group (-1: the building), 6 ambience, 7 zone music, 10 area id.
+        // The first name set of a room is the one it has.
+        let mut rooms = HashMap::new();
+        for r in Dbc::parse(&mount.read(r"DBFilesClient\WMOAreaTable.dbc")?)?.iter() {
+            rooms.entry((r.u32(1), r.u32(3))).or_insert(Room { area: r.u32(10), ambience: r.u32(6), music: r.u32(7) });
+        }
+        Ok(Self { by_id, rooms })
+    }
+
+    /// The room of building `wmo` that is group `group`: what it has of its own, and the building's for what it has not.
+    fn room(&self, (wmo, group): (u32, u32)) -> Option<Room> {
+        let (own, whole) = (self.rooms.get(&(wmo, group)), self.rooms.get(&(wmo, u32::MAX)));
+        let (a, b) = (own.or(whole)?, whole?);
+        Some(Room { area: if a.area != 0 { a.area } else { b.area }, ambience: if a.ambience != 0 { a.ambience } else { b.ambience }, music: if a.music != 0 { a.music } else { b.music } })
     }
 
     /// "Zone - Subzone", or just the zone when the area is a zone itself.
@@ -264,9 +287,20 @@ impl World {
         self.tiles.values().any(|tile| tile.gpu.indoors(at))
     }
 
-    pub fn area_at(&self, x: f32, z: f32) -> Option<u32> {
+    /// The room of a building a point (render space) is in.
+    pub fn room_at(&self, at: glam::Vec3) -> Option<Room> {
+        let tile = self.tiles.get(&tile_of(at.x, at.z))?;
+        self.areas.room(tile.gpu.room_at(at)?)
+    }
+
+    /// The area at a point (render space): the room of a building when it is an area of its own, else the terrain's.
+    pub fn area_at(&self, at: glam::Vec3) -> Option<u32> {
+        let (x, z) = (at.x, at.z);
         let coord = tile_of(x, z);
         let tile = self.tiles.get(&coord)?;
+        if let Some(room) = self.room_at(at).filter(|r| r.area != 0) {
+            return Some(room.area);
+        }
         let (ox, oz) = tile_origin(coord);
         let (lx, lz) = ((x as f64 - ox) as f32, (z as f64 - oz) as f32);
         let (cx, cz) = (((lx / CHUNK_SIZE) as usize).min(15), ((lz / CHUNK_SIZE) as usize).min(15));

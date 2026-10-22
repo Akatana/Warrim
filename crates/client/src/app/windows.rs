@@ -213,7 +213,7 @@ impl CinemaWindow {
         if self.weather_look <= 0.0 {
             self.weather_look = 0.25;
             self.indoors = self.world.indoors(eye);
-            self.climate = self.world.area_at(eye.x, eye.z).and_then(|a| crate::weather::climate_of(&self.world.areas.display(a)));
+            self.climate = self.world.area_at(eye).and_then(|a| crate::weather::climate_of(&self.world.areas.display(a)));
         }
         let (sy, cy) = camera.yaw.sin_cos();
         let velocity = ((eye - self.last_eye) / dt.max(1e-3)).clamp_length_max(25.0);
@@ -223,7 +223,7 @@ impl CinemaWindow {
             self.renderer.atmosphere = a;
         }
         if let Some(audio) = &mut self.audio {
-            audio.update(dt, self.world.area_at(camera.pos.x, camera.pos.z), self.hour);
+            audio.update(dt, self.world.area_at(camera.pos), self.world.room_at(camera.pos), self.hour);
             audio.set_weather(self.weather.sound(), self.indoors, dt);
         }
         let Ok(frame) = self.surface.get_current_texture() else { return false };
