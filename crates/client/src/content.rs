@@ -398,6 +398,51 @@ pub struct Poi {
     pub height: Option<f32>,
 }
 
+/// A door of the original game that carries the character to another place or map (`content/classic_portals.ron`, made by `tools/import_portals.py`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Portal {
+    pub id: u32,
+    pub name: String,
+    /// The map it is on, and the centre of its trigger in WoW coordinates (north, west, height).
+    pub map: String,
+    pub at: (f32, f32, f32),
+    /// A ball of this many yards; without one (0), a box (length, width, height) turned `turn` radians.
+    pub radius: f32,
+    pub size: (f32, f32, f32),
+    pub turn: f32,
+    /// The level it asks for, and what is said to a character that is too low.
+    pub level: u32,
+    #[serde(default)]
+    pub refusal: Option<String>,
+    /// "Horde" or "Alliance" for a door that only that side may use.
+    #[serde(default)]
+    pub side: Option<String>,
+    /// Where it leads: the map, the place (north, west, height) and the original's orientation (radians, counter-clockwise from north).
+    pub to_map: String,
+    pub to: (f32, f32, f32),
+    pub facing: f32,
+}
+
+impl Portal {
+    /// Whether a point (WoW coordinates, feet) is inside the trigger, as the original's server decides it.
+    pub fn contains(&self, [north, west, height]: [f32; 3]) -> bool {
+        let (dn, dw, dh) = (north - self.at.0, west - self.at.1, height - self.at.2);
+        if self.radius > 0.0 {
+            return (dn * dn + dw * dw + dh * dh).sqrt() <= self.radius;
+        }
+        let (sin, cos) = (std::f32::consts::TAU - self.turn).sin_cos();
+        let (along, across) = (dn * cos - dw * sin, dn * sin + dw * cos);
+        along.abs() <= self.size.0 / 2.0 && across.abs() <= self.size.1 / 2.0 && dh.abs() <= self.size.2 / 2.0
+    }
+
+    /// What is said when the character is below the level asked for; none when he may go through.
+    pub fn refuse(&self, level: u32, horde: bool) -> Option<String> {
+        let wrong_side = self.side.as_deref().is_some_and(|s| (s == "Horde") != horde);
+        (level < self.level || wrong_side).then(|| self.refusal.clone().unwrap_or_else(|| format!("You must be at least level {} to enter.", self.level)))
+    }
+}
+
 fn building() -> usize {
     4
 }
@@ -550,6 +595,8 @@ pub struct Content {
     /// The place in `classic_spells` of each spell (its row in `Spell.dbc`).
     pub classic_index: std::collections::HashMap<u32, usize>,
     pub pois: Vec<Poi>,
+    /// The doors to other maps (not editable).
+    pub portals: Vec<Portal>,
     pub chests: Vec<ChestDef>,
     pub quests: Vec<Quest>,
     pub loot: BTreeMap<String, DropTable>,
@@ -1447,12 +1494,39 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
             ensure!(items.iter().any(|i| i.id == k.item.as_str()) && k.respawn > 0.0 && model.ends_with(".m2"), "prop {}: its pickup needs an item of the game, a time and a model file", p.model);
         }
     }
-    Ok(Content { spells, classic_spells, classic_index, items, pois, chests, quests, loot, creatures, spawns, props, start: Start { spells: known, money: raw_start.money, equipment, bag } })
+    let portals: Vec<Portal> = ron::from_str(&source("classic_portals.ron", include_str!("../../../content/classic_portals.ron"))).context("classic_portals.ron")?;
+    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, chests, quests, loot, creatures, spawns, props, start: Start { spells: known, money: raw_start.money, equipment, bag } })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portals_open_where_the_original_has_them_and_ask_for_the_level() {
+        let portals = &get().portals;
+        let find = |name: &str| portals.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no portal {name}"));
+        // A ball (the Deadmines door, level 10): in at its edge, out beyond it.
+        let deadmines = find("Deadmines - Entering");
+        assert!(deadmines.contains([-11208.5, 1685.3 + 6.5, 25.7]) && !deadmines.contains([-11208.5, 1685.3 + 7.5, 25.7]));
+        assert_eq!((deadmines.map.as_str(), deadmines.to_map.as_str()), ("Azeroth", "DeadminesInstance"));
+        assert_eq!(deadmines.refuse(9, false).as_deref(), Some("You must be at least level 10 to enter."));
+        assert_eq!(deadmines.refuse(10, false), None);
+        // A battleground exit for one side only.
+        let horde_exit = find("Alterac Valley - Horde Exit");
+        assert_eq!(horde_exit.refuse(1, false).as_deref(), Some("Only the Horde may use this portal."));
+        assert_eq!(horde_exit.refuse(1, true), None);
+        // A box turned 0.6632 rad (the Stockade): its width (9.7 yd) lies across the axis turned that way.
+        let stockade = find("Stormwind Stockades - Entering");
+        let (sin, cos) = stockade.turn.sin_cos();
+        let across = |d: f32| [stockade.at.0 - d * sin, stockade.at.1 + d * cos, stockade.at.2];
+        assert!(stockade.contains(across(4.5)) && !stockade.contains(across(5.5)) && !stockade.contains([stockade.at.0, stockade.at.1, stockade.at.2 + 4.0]));
+        // Every door leads to a place of its own map that is not inside a door there that leads on from it (no loops on arrival).
+        assert!(portals.len() > 90);
+        for p in portals {
+            assert!(!portals.iter().any(|o| o.map == p.to_map && o.contains([p.to.0, p.to.1, p.to.2])), "{} arrives inside a door", p.name);
+        }
+    }
 
     #[test]
     fn the_spells_of_the_original_are_all_there() {

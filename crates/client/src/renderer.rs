@@ -1465,7 +1465,7 @@ impl Renderer {
             let near: Vec<&TileGpu> = tiles.iter().copied().filter(|t| (t.coord.0 - cam_tile.0).abs() <= DOODAD_TILE_RADIUS && (t.coord.1 - cam_tile.1).abs() <= DOODAD_TILE_RADIUS).collect();
             pass.set_pipeline(&self.shadow_terrain);
             pass.set_bind_group(0, &self.shadow_bg, &[]);
-            for t in near.iter().filter(|t| lit.sees(t.origin, t.bounds)) {
+            for t in near.iter().filter(|t| t.index_count > 0 && lit.sees(t.origin, t.bounds)) {
                 pass.set_bind_group(1, &t.bind_group, &[]);
                 pass.set_vertex_buffer(0, t.vertex_buf.slice(..));
                 pass.set_index_buffer(t.index_buf.slice(..), wgpu::IndexFormat::Uint32);
@@ -1502,7 +1502,7 @@ impl Renderer {
 
             pass.set_pipeline(&self.terrain_pipeline);
             pass.set_bind_group(0, &self.globals_bg, &[]);
-            for t in tiles.iter().filter(|t| seen.sees(t.origin, t.bounds)) {
+            for t in tiles.iter().filter(|t| t.index_count > 0 && seen.sees(t.origin, t.bounds)) {
                 pass.set_bind_group(1, &t.bind_group, &[]);
                 pass.set_vertex_buffer(0, t.vertex_buf.slice(..));
                 pass.set_index_buffer(t.index_buf.slice(..), wgpu::IndexFormat::Uint32);

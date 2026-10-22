@@ -6,11 +6,24 @@ impl State {
     pub(super) fn new(window: Arc<Window>, args: &Args, mount: Arc<Mount>) -> Result<State> {
         let (surface, gpu, config) = open_gpu(&window)?;
         let format = config.format;
+        // The saved game, if there is one: a broken file is left alone, and then nothing is saved this time.
+        let mut save_path = args.save.then(|| args.save_path.clone().unwrap_or_else(|| save::character_path(args.character.as_deref().unwrap_or(DEFAULT_NAME))));
+        let loaded = match save_path.as_ref().filter(|_| !args.new_game).map(|p| save::read(p)) {
+            Some(Ok(saved)) => saved,
+            Some(Err(e)) => {
+                log::warn!("{e:#}; starting a new game and not saving it");
+                save_path = None;
+                None
+            }
+            None => None,
+        };
+        // A character saved in a dungeon comes back in it.
+        let map = loaded.as_ref().and_then(|s| s.map.clone()).unwrap_or_else(|| args.map.clone());
 
         let view_distance = args.radius as f32 * wowfmt::adt::TILE_SIZE * 0.95;
         let mut renderer = Renderer::new(&gpu, format, Atmosphere::daytime(view_distance));
         // The loading screen is up while the rest is made ready (and after, until the terrain around the spawn has streamed in).
-        let mut loading = Loading::load(&mount, &args.map, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no loading screen: {e:#}")).ok();
+        let mut loading = Loading::load(&mount, &map, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no loading screen: {e:#}")).ok();
         let mut show = |renderer: &mut Renderer, reached: &[(Stage, f32)]| {
             if let Some(loading) = &mut loading {
                 reached.iter().for_each(|&(stage, value)| loading.report(stage, value));
@@ -18,7 +31,7 @@ impl State {
             }
         };
         show(&mut renderer, &[]);
-        let sky = Sky::load(&mount, &args.map, view_distance).map_err(|e| log::warn!("no light data: {e:#}")).ok();
+        let sky = Sky::load(&mount, &map, view_distance).map_err(|e| log::warn!("no light data: {e:#}")).ok();
         match crate::skygpu::SkyAssets::load(&mount) {
             Ok(assets) => renderer.set_sky(&gpu, &assets),
             Err(e) => log::warn!("no sky pictures: {e:#}"),
@@ -33,20 +46,9 @@ impl State {
             a.apply(&crate::audio::SoundSettings::load());
             a
         });
-        let world = World::open(mount, &args.map, args.radius)?;
+        let world = World::open(mount, &map, args.radius)?;
         renderer.set_water_textures(&gpu, &world.water_textures());
         show(&mut renderer, &[]);
-        // The saved game, if there is one: a broken file is left alone, and then nothing is saved this time.
-        let mut save_path = args.save.then(|| args.save_path.clone().unwrap_or_else(|| save::character_path(args.character.as_deref().unwrap_or(DEFAULT_NAME))));
-        let loaded = match save_path.as_ref().filter(|_| !args.new_game).map(|p| save::read(p)) {
-            Some(Ok(saved)) => saved,
-            Some(Err(e)) => {
-                log::warn!("{e:#}; starting a new game and not saving it");
-                save_path = None;
-                None
-            }
-            None => None,
-        };
         let look = loaded.as_ref().map_or(args.look, |s| s.look);
         let name = args.character.clone().unwrap_or_else(|| DEFAULT_NAME.to_string());
         let mut player = Player::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &look).map_err(|e| log::warn!("no player: {e:#}")).ok();
@@ -94,8 +96,8 @@ impl State {
             chests.restore(&saved.chests);
         }
         let pickup_props = pickup_props();
-        let pickups = Pickups::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &args.map).map_err(|e| log::warn!("no pickups: {e:#}")).ok();
-        let bodies = Bodies::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &args.map).map_err(|e| log::warn!("no physics props: {e:#}")).ok();
+        let pickups = Pickups::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &map).map_err(|e| log::warn!("no pickups: {e:#}")).ok();
+        let bodies = Bodies::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &map).map_err(|e| log::warn!("no physics props: {e:#}")).ok();
         let lock_art = crate::lockpick::LockArt::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no lockpicking pictures: {e:#}")).ok();
         // The pointer of the original replaces the system's, which is shown only if its pictures are missing.
         let cursors = Cursors::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no mouse pointer: {e:#}")).ok();
@@ -166,8 +168,11 @@ impl State {
             pending_loot: None,
             pickup_props,
             pickups_stale: false,
-            beds: bed_spots(&content::get().props, &args.map),
-            map: args.map.clone(),
+            beds: bed_spots(&content::get().props, &map),
+            map,
+            home: args.map.clone(),
+            in_portal: None,
+            screens: Default::default(),
             lock: None,
             lock_turn: false,
             lock_time: 0.0,

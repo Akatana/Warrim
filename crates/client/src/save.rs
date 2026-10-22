@@ -115,6 +115,9 @@ pub struct Save {
     /// Who the character is: its race, sex and looks (a save from before the character list is a human man).
     #[serde(default)]
     pub look: Appearance,
+    /// The map the character is on (a dungeon, say); none in older saves: the map the game starts on.
+    #[serde(default)]
+    pub map: Option<String>,
 }
 
 fn entries(slots: &[Option<Stack>]) -> Vec<Entry> {
@@ -173,6 +176,7 @@ impl Save {
             hearth: None,
             sneaking: false,
             look: Appearance::default(),
+            map: None,
         }
     }
 

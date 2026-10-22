@@ -160,7 +160,7 @@ impl State {
     /// Drop onto the terrain at the first frame, then turn the keys and the spells that hold the character into where he moves.
     fn steer(&mut self, dt: f32) {
         // First-frame spawn: drop onto the terrain as soon as it is available.
-        if let Some(_) = self.snap_to_ground {
+        if let Some(waited) = self.snap_to_ground {
             // With a saved height, wait for the surrounding tiles too: their buildings hold the floor.
             let (x, z) = (self.camera.pos.x, self.camera.pos.z);
             let ground = match self.saved_feet {
@@ -174,6 +174,12 @@ impl State {
                 log::info!("spawned at height {ground:.2} (saved {:?}, terrain {:?})", self.saved_feet, self.world.height_at(x, z));
                 self.snap_to_ground = None;
                 self.saved_feet = None;
+            } else if let Some(feet) = self.saved_feet.filter(|_| waited > 3.0 && self.world.pending_count() == 0) {
+                // Nothing to stand on at the height given, with all the tiles in (a door that opens over a void): he drops in from there.
+                self.camera.pos.y = feet + EYE_HEIGHT;
+                (self.snap_to_ground, self.saved_feet) = (None, None);
+            } else {
+                self.snap_to_ground = Some(waited + dt);
             }
         } else {
             // Shift sprints (on foot or in the saddle) for as long as there is stamina.
@@ -538,8 +544,7 @@ impl State {
                     panels.consumed.clear();
                     panels.refresh();
                 }
-                (self.camera.pos.x, self.camera.pos.z) = self.spawn;
-                self.snap_to_ground = Some(0.0);
+                self.go_home();
                 self.controller.reset();
             }
         }
@@ -547,6 +552,7 @@ impl State {
 
     /// The things that go on whatever the frame shows: level up, sleep, travel, items in use, the steed, a changed set of equipment.
     fn upkeep(&mut self, dt: f32) {
+        self.walk_into_portals();
         if let Some(panels) = &mut self.panels {
             let feet = Mat4::from_translation(self.camera.pos - Vec3::Y * EYE_HEIGHT);
             if panels.take_level_up() {
@@ -579,6 +585,7 @@ impl State {
             self.set_grab(true);
         }
         // What using items began goes on: food and drink restore, elixirs run out, the way home counts down.
+        let mut home_now = false;
         if let (Some(panels), Some(player)) = (&mut self.panels, &mut self.player) {
             panels.set_calm(!self.moving && !self.in_combat && !player.is_striking());
             panels.set_mounted(player.is_mounted());
@@ -613,10 +620,10 @@ impl State {
             player.heal(heal);
             let mana_bar = &mut player.vitals.mana;
             mana_bar.current = (mana_bar.current + mana).min(mana_bar.max);
-            if way_home == Some(crate::consume::WayHome::Arrived) {
-                (self.camera.pos.x, self.camera.pos.z) = self.spawn;
-                self.snap_to_ground = Some(0.0);
-            }
+            home_now = way_home == Some(crate::consume::WayHome::Arrived);
+        }
+        if home_now {
+            self.go_home();
         }
         if let (Some(panels), Some(player)) = (&mut self.panels, &mut self.player) {
             if panels.take_equipment_change() {

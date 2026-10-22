@@ -37,25 +37,41 @@ pub struct Loading {
 }
 
 impl Loading {
-    /// The screen of `map` ("Azeroth", "Kalimdor").
-    pub fn load(mount: &Mount, map: &str, ui: &mut Ui, gpu: &Gpu) -> Result<Loading> {
+    /// The picture of the screen of `map` ("Azeroth", "Kalimdor"), as a texture of the interface.
+    pub fn screen_of(mount: &Mount, map: &str, ui: &mut Ui, gpu: &Gpu) -> Result<usize> {
         let table = |name: &str| -> Result<Dbc> { Ok(Dbc::parse(&mount.read(&format!(r"DBFilesClient\{name}.dbc"))?)?) };
         let maps = table("Map")?;
         let id = maps.iter().find(|r| r.string(1).eq_ignore_ascii_case(map)).map(|r| r.u32(38)).with_context(|| format!("no map {map}"))?;
         let screens = table("LoadingScreens")?;
         let file = screens.find_by_id(id).map(|r| r.string(2).to_string()).filter(|f| mount.read(f).is_ok()).unwrap_or_else(|| r"Interface\Glues\loading.blp".into());
+        let blp = Blp::parse(&mount.read(&file)?)?;
+        Ok(ui.add_texture(gpu, blp.width, blp.height, &blp.mips[0]))
+    }
+
+    /// The screen of `map` ("Azeroth", "Kalimdor").
+    pub fn load(mount: &Mount, map: &str, ui: &mut Ui, gpu: &Gpu) -> Result<Loading> {
+        let screen = Self::screen_of(mount, map, ui, gpu)?;
         let mut texture = |path: &str| -> Result<usize> {
             let blp = Blp::parse(&mount.read(path)?)?;
             Ok(ui.add_texture(gpu, blp.width, blp.height, &blp.mips[0]))
         };
         Ok(Loading {
-            screen: texture(&file)?,
+            screen,
             fill: texture(r"Interface\Glues\LoadingBar\Loading-BarFill.blp")?,
             border: texture(r"Interface\Glues\LoadingBar\Loading-BarBorder.blp")?,
             stages: [0.0; 3],
             peak: 0,
             hold: 0.0,
         })
+    }
+
+    /// The texture of the picture, and the same bar with another picture (the textures of the bar are shared, not made again).
+    pub fn screen(&self) -> usize {
+        self.screen
+    }
+
+    pub fn with_screen(&self, screen: usize) -> Loading {
+        Loading { screen, fill: self.fill, border: self.border, stages: [0.0; 3], peak: 0, hold: 0.0 }
     }
 
     /// Put the screen up again for a trip: the interface and the objects are there already, the terrain is not.

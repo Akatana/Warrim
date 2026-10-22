@@ -22,6 +22,8 @@ pub struct Adt {
     pub wmos: Vec<WmoPlacement>,
     /// 256 entries, `index = chunk_y * 16 + chunk_x`.
     pub chunks: Vec<MapChunk>,
+    /// Unique ids of placements that stand in another tile than this one lists them in, and that tile's own file does not list: this tile keeps them.
+    pub foreign: Vec<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -180,7 +182,7 @@ impl Adt {
             })
             .collect();
 
-        Ok(Adt { textures, m2_names, wmo_names, doodads, wmos, chunks })
+        Ok(Adt { textures, m2_names, wmo_names, doodads, wmos, chunks, foreign: Vec::new() })
     }
 }
 

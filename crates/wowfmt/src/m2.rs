@@ -123,6 +123,8 @@ pub struct M2Particle {
     pub sizes: [f32; 3],
     pub scales: [f32; 3],
     pub slowdown: f32,
+    /// How fast the quad of a particle turns about the view direction, radians a second (FUN_007b2a50: the angle is this times its age).
+    pub spin: f32,
     /// The cells of the texture a particle shows over its life, in the two halves of it (before and after `mid`): the first and the last cell, and
     /// the power of the share of the life by which it steps from one to the other (0 for the last cell throughout).
     pub head_cells: [(u16, u16, u16); 2],
@@ -555,6 +557,7 @@ impl M2 {
                             sizes: f32s::<3>(&e[348..360]),
                             scales: f32s::<3>(&e[392..404]),
                             slowdown: f32::from_bits(le32(&e[404..])),
+                            spin: f32::from_bits(le32(&e[0x198..])),
                             head_cells: {
                                 let u = |o: usize| u16::from_le_bytes([e[o], e[o + 1]]);
                                 [(u(0x168), u(0x16a), u(0x16c)), (u(0x16e), u(0x170), u(0x172))]

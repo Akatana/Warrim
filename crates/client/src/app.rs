@@ -43,6 +43,7 @@ mod events;
 mod frame;
 mod input;
 mod interact;
+mod portals;
 mod session;
 mod setup;
 mod windows;
@@ -156,6 +157,11 @@ struct State {
     /// A lootable corpse that can also be dragged, and when the interact key went down on it: a tap loots it, holding drags it.
     pending_loot: Option<(usize, Instant)>,
     map: String,
+    /// The map the game starts on and the dead come back to, and the portal the character stands in (it takes him on the way in, not while he stays).
+    home: String,
+    in_portal: Option<u32>,
+    /// The loading picture (a texture of the interface) of each map gone to, by lower-case name, so that a trip back does not make it again.
+    screens: std::collections::HashMap<String, usize>,
     /// The chest being picked and the lock, while the lockpicking is on; whether the lock is being turned; seconds into it.
     lock: Option<(usize, Lockpick)>,
     lock_turn: bool,

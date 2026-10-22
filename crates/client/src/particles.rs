@@ -31,6 +31,10 @@ struct Particle {
     vel: Vec3,
     age: f32,
     life: f32,
+    /// Where it is and how it moves in render space now: `pos` and `vel` themselves, or for an emitter whose particles stay in its own
+    /// space (flag 0x10 of the file, 0x100 of the engine) those carried by the emitter's bone and model of the moment.
+    shown: Vec3,
+    shown_vel: Vec3,
 }
 
 pub struct Emitter {
@@ -122,13 +126,24 @@ impl Emitter {
         let value = |t: &M2Track<f32>, default: f32| anim::sample(t, seq, time, &m2.global_sequences, global, |a, b, k| a + (b - a) * k).unwrap_or(default);
         let gravity = value(&self.def.gravity, 0.0);
         let drag = (dt * self.def.slowdown).min(1.0);
+        // An emitter that keeps its particles in its own space (flag 0x10) throws them in the bone's axes, and they turn and move with it.
+        let local = self.def.flags & 0x10 != 0;
+        let place = |p: Vec3| world.transform_point3(to_render(bone.transform_point3(p)));
+        let turn = |v: Vec3| world.transform_vector3(to_render(bone.transform_vector3(v)));
         for p in &mut self.parts {
             p.age += dt;
             // The way the original moves one: the place by the speed, the fall by half the pull over the step, then the pull and the drag on the speed.
             p.pos += p.vel * dt;
-            p.pos.y -= 0.5 * gravity * dt * dt;
-            p.vel.y -= gravity * dt;
+            if local {
+                // shortcut: the pull is taken along the model's up, not the world's; upgrade when a model of this kind has gravity.
+                p.pos.z -= 0.5 * gravity * dt * dt;
+                p.vel.z -= gravity * dt;
+            } else {
+                p.pos.y -= 0.5 * gravity * dt * dt;
+                p.vel.y -= gravity * dt;
+            }
             p.vel -= p.vel * drag;
+            (p.shown, p.shown_vel) = if local { (place(p.pos), turn(p.vel)) } else { (p.pos, p.vel) };
         }
         self.parts.retain(|p| p.age < p.life);
         let on = anim::sample(&self.def.enabled, seq, time, &m2.global_sequences, global, |a, _, _| a).is_none_or(|v| v != 0);
@@ -153,6 +168,9 @@ impl Emitter {
                 let r = len + self.random() * (wid - len);
                 let (lat, lon) = (self.signed() * vert, self.signed() * horiz);
                 let dir = Vec3::new(lon.cos() * lat.cos(), lon.sin() * lat.cos(), lat.sin());
+                // The emitter's axes are turned a quarter about the vertical from the model's: the ring of an instance portal (angles 180 and 0)
+                // then lies across the doorway, in the plane of its disc, not along it. Found by eye on the doors; the engine's matrices were not followed to the cause.
+                let dir = Vec3::new(-dir.y, dir.x, dir.z);
                 (dir * r, dir)
             } else {
                 // A plane: a place in the rectangle, and thrown within the cone of the angles (or away from a point below).
@@ -162,11 +180,16 @@ impl Emitter {
                 let dir = if z_source != 0.0 { (offset - Vec3::Z * z_source).normalize_or_zero() } else { Vec3::new(lon.cos() * lat.sin(), lon.sin() * lat.sin(), lat.cos()) };
                 (offset, dir)
             };
-            let pos = world.transform_point3(to_render(bone.transform_point3(Vec3::from(self.def.position) + offset)));
-            let heading = world.transform_vector3(to_render(bone.transform_vector3(dir))).normalize_or_zero();
             // The ones thrown in this step have already lived a part of it.
             let age = self.random() * dt;
-            self.parts.push(Particle { pos, vel: heading * speed * scale, age, life });
+            if local {
+                let (pos, vel) = (Vec3::from(self.def.position) + offset, dir * speed);
+                self.parts.push(Particle { pos, vel, age, life, shown: place(pos), shown_vel: turn(vel) });
+            } else {
+                let pos = place(Vec3::from(self.def.position) + offset);
+                let heading = turn(dir).normalize_or_zero();
+                self.parts.push(Particle { pos, vel: heading * speed * scale, age, life, shown: pos, shown_vel: heading * speed * scale });
+            }
         }
     }
 
@@ -182,7 +205,7 @@ impl Emitter {
         let (head, tail) = self.shapes();
         let mut order: Vec<&Particle> = self.parts.iter().collect();
         if self.def.flags & 2 != 0 {
-            let depth = |p: &Particle| (p.pos - origin).dot(forward);
+            let depth = |p: &Particle| (p.shown - origin).dot(forward);
             order.sort_by(|a, b| depth(b).total_cmp(&depth(a)));
         }
         for p in order {
@@ -192,12 +215,15 @@ impl Emitter {
             let c: [f32; 4] = std::array::from_fn(|i| ramp([colors[0][i], colors[1][i], colors[2][i]], self.def.mid, t));
             let color = [(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8, (c[3] * 255.0) as u8];
             let cell_uv = |cell: u32| ((cell % cols) as f32 / cols as f32, (cell / cols) as f32 / rows as f32, 1.0 / cols as f32, 1.0 / rows as f32);
-            let centre = p.pos - origin;
+            let centre = p.shown - origin;
             if head {
                 let (u0, v0, du, dv) = cell_uv(cell_at(self.def.head_cells[half], local));
-                for (sx, sy) in [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+                // The quad turns about the view direction by the spin times the particle's age.
+                let (sin, cos) = (self.def.spin * p.age).sin_cos();
+                for (sx, sy) in [(-1.0f32, 1.0f32), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
                     let uv = [u0 + du * (sx * 0.5 + 0.5), v0 + dv * (0.5 - sy * 0.5)];
-                    let pos = centre + right * (sx * size) + up * (sy * size);
+                    let (tx, ty) = (sx * cos - sy * sin, sy * cos + sx * sin);
+                    let pos = centre + right * (tx * size) + up * (ty * size);
                     out.push(ModelVertex { pos: pos.into(), normal: [0.0, 1.0, 0.0], uv, color });
                 }
             }
@@ -205,7 +231,7 @@ impl Emitter {
                 // The tail trails behind the particle by its speed across the view times the tail length (held to the particle's age if the emitter says
                 // so); a particle that hardly moves across the view has a square one.
                 let length = if self.def.flags & 0x400 != 0 { self.def.tail_length.min(p.age) } else { self.def.tail_length };
-                let across = Vec2::new(p.vel.dot(right), p.vel.dot(up)) * length;
+                let across = Vec2::new(p.shown_vel.dot(right), p.shown_vel.dot(up)) * length;
                 let (first, last) = self.def.tail_cells[half];
                 let (u0, v0, du, dv) = cell_uv(cell_at((first, last, 1), local));
                 let corners = if across.length_squared() >= 0.000_773 {

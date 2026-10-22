@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wowfmt::adt::{Adt, ALPHA_DIM, CHUNK_SIZE, HEIGHTS_PER_CHUNK, TILE_SIZE, UNIT_SIZE};
 use wowfmt::blp::Blp;
+use wowfmt::wdt::Wdt;
 
 pub const GROUND_TEX_SIZE: u32 = 256;
 pub const GROUND_TEX_MIPS: u32 = 9;
@@ -324,10 +325,55 @@ fn grid_xz(i: usize) -> (f32, f32) {
 
 pub fn load_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, map: &str, coord: TileCoord, props: &[Prop]) -> Result<TileCpu> {
     let path = format!("World\\Maps\\{map}\\{map}_{}_{}.adt", coord.0, coord.1);
-    let bytes = mount.read(&path).with_context(|| format!("reading {path}"))?;
-    let mut adt = Adt::parse(&bytes).with_context(|| format!("parsing {path}"))?;
+    let mut adt = match mount.read(&path) {
+        Ok(bytes) => Adt::parse(&bytes).with_context(|| format!("parsing {path}"))?,
+        // A dungeon that is one building has no tiles: its one tile holds the building of the WDT.
+        Err(e) => global_adt(mount, map).ok_or(e).with_context(|| format!("reading {path}"))?,
+    };
+    if adt.foreign.is_empty() {
+        adt.foreign = unlisted_elsewhere(mount, map, coord, &adt);
+    }
     add_props(&mut adt, props, coord, map);
     Ok(build_tile(mount, cache, models, &adt, coord))
+}
+
+/// The tile (as the map files number them) that holds a placement.
+fn owner_of(position: [f32; 3]) -> TileCoord {
+    ((position[0] / TILE_SIZE).floor() as i32, (position[2] / TILE_SIZE).floor() as i32)
+}
+
+/// The unique ids of the placements of this tile's file that stand in another tile, whose own file does not list them. A model on the border of
+/// two tiles is listed by both and spawned by the one it stands in; the dungeons list some in a single file, of a tile next to the one they stand in
+/// (the graveyard of the Scarlet Monastery), and nobody would spawn those.
+fn unlisted_elsewhere(mount: &Mount, map: &str, coord: TileCoord, adt: &Adt) -> Vec<u32> {
+    let mut others: HashMap<TileCoord, Option<Adt>> = HashMap::new();
+    let mut keep = Vec::new();
+    let placements = adt.doodads.iter().map(|d| (d.position, d.unique_id, false)).chain(adt.wmos.iter().map(|w| (w.position, w.unique_id, true)));
+    for (position, id, wmo) in placements {
+        let owner = owner_of(position);
+        if owner == coord {
+            continue;
+        }
+        let other = others.entry(owner).or_insert_with(|| {
+            let path = format!(r"World\Maps\{map}\{map}_{}_{}.adt", owner.0, owner.1);
+            mount.read(&path).ok().and_then(|bytes| Adt::parse(&bytes).ok())
+        });
+        let listed = other.as_ref().is_some_and(|o| if wmo { o.wmos.iter().any(|w| w.unique_id == id) } else { o.doodads.iter().any(|d| d.unique_id == id) });
+        if !listed {
+            keep.push(id);
+        }
+    }
+    keep
+}
+
+/// The tile of a map with no terrain: no ground, the one building of its WDT.
+fn global_adt(mount: &Mount, map: &str) -> Option<Adt> {
+    let global = Wdt::parse(&mount.read(&format!("World\\Maps\\{map}\\{map}.wdt")).ok()?).ok()?.global?;
+    // The map files measure from the north-west corner of the map; the WDT, from its origin.
+    let [x, y, z] = global.position;
+    let corner = 32.0 * TILE_SIZE;
+    let wmo = wowfmt::adt::WmoPlacement { name_index: 0, unique_id: u32::MAX, position: [x + corner, y, z + corner], rotation: global.rotation, flags: 0, doodad_set: global.doodad_set };
+    Some(Adt { textures: Vec::new(), m2_names: Vec::new(), wmo_names: vec![global.name], doodads: Vec::new(), wmos: vec![wmo], chunks: Vec::new(), foreign: vec![u32::MAX] })
 }
 
 /// Whether a model (by its file name) is something to sleep in: a bed or a hammock, not a wardrobe.
@@ -501,7 +547,8 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
         areas[slot] = chunk.area_id;
     }
     heights.resize(256, [0.0; HEIGHTS_PER_CHUNK]);
-    holes.resize(256, 0);
+    // No ground at all where the map has none (a dungeon): every cell is a hole.
+    holes.resize(256, if adt.chunks.is_empty() { 0xFFFF } else { 0 });
     areas.resize(256, 0);
 
     // Placements: file coordinates are (east, height, south) measured from the map's
@@ -512,7 +559,7 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
     let mut beds = Vec::new();
     for d in &adt.doodads {
         let owner = ((d.position[0] / TILE_SIZE).floor() as i32, (d.position[2] / TILE_SIZE).floor() as i32);
-        if owner != coord {
+        if owner != coord && !adt.foreign.contains(&d.unique_id) {
             continue;
         }
         let Some(name) = adt.m2_names.get(d.name_index) else { continue };
@@ -537,7 +584,7 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
     let mut wmos = Vec::new();
     for w in &adt.wmos {
         let owner = ((w.position[0] / TILE_SIZE).floor() as i32, (w.position[2] / TILE_SIZE).floor() as i32);
-        if owner != coord {
+        if owner != coord && !adt.foreign.contains(&w.unique_id) {
             continue;
         }
         let Some(name) = adt.wmo_names.get(w.name_index) else { continue };
@@ -653,6 +700,47 @@ mod tests {
         assert!(count(SURFACE_GRASS) > total / 10, "grass {}", count(SURFACE_GRASS));
         assert!(count(SURFACE_DIRT) > total / 20, "dirt {}", count(SURFACE_DIRT));
         assert!(count(SURFACE_STONE) > 0, "no stone at all");
+    }
+
+    /// Every portal of the original leads to ground: the tile of its destination loads (a dungeon that is one building too) and has a floor within a few yards of the height given.
+    #[test]
+    fn every_portal_arrives_on_a_floor() {
+        let Some(mount) = mpq::find_wow_dir().and_then(|d| Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
+        let (cache, models) = (TextureCache::default(), ModelCache::default());
+        let mut places: Vec<(&str, (f32, f32, f32))> = crate::content::get().portals.iter().map(|p| (p.to_map.as_str(), p.to)).collect();
+        // The Shadowfang "falling out" door puts the character in the air above the ground on purpose.
+        places.retain(|&(map, to)| !(map == "Azeroth" && to.2 == 77.5589));
+        places.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        places.dedup();
+        let mut lost = Vec::new();
+        for (map, (north, west, height)) in places {
+            let at = crate::coords::wow_to_render([north, west, height]);
+            let global = wowfmt::wdt::Wdt::parse(&mount.read(&format!(r"World\Maps\{map}\{map}.wdt")).unwrap()).unwrap().global.is_some();
+            // A dungeon that is one building keeps all of it in one tile; a building of the open map may belong to a neighbour of the tile it stands in.
+            let centre = if global { (32, 32) } else { crate::coords::tile_of(at.x, at.z) };
+            let rings: &[i32] = if global { &[0] } else { &[0, 1] };
+            let mut seen = Vec::new();
+            for &ring in rings {
+                for coord in (-ring..=ring).flat_map(|dz| (-ring..=ring).map(move |dx| (centre.0 + dx, centre.1 + dz))).filter(|&c| ring == 0 || c != centre) {
+                    match load_tile(&mount, &cache, &models, map, coord, &[]) {
+                        Ok(tile) => {
+                            let (ox, oz) = crate::coords::tile_origin(coord);
+                            let local = (at.x - ox as f32, at.z - oz as f32);
+                            seen.extend([tile.collision.floor(local.0, local.1, height + 3.0), tile.heights.height_at(local.0, local.1)].into_iter().flatten());
+                        }
+                        Err(e) if coord == centre => lost.push(format!("{map} ({north}, {west}): {e:#}")),
+                        Err(_) => {}
+                    }
+                }
+                if seen.iter().any(|f| (f - height).abs() < 4.0) {
+                    break;
+                }
+            }
+            if !seen.iter().any(|f| (f - height).abs() < 4.0) {
+                lost.push(format!("{map} ({north}, {west}, {height}): floors {seen:?}"));
+            }
+        }
+        assert!(lost.is_empty(), "{} destinations without a floor:\n{}", lost.len(), lost.join("\n"));
     }
 
     #[test]

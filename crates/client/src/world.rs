@@ -62,6 +62,9 @@ pub struct World {
     pub areas: AreaNames,
     pub radius: i32,
     wdt: Wdt,
+    /// The map is one building (a dungeon without terrain): it is kept as one copy, in the tile the camera is in, and moved to the next tile when the camera goes there
+    /// (the building can be thousands of yards long, far more than the tiles kept round the camera).
+    global: bool,
     mount: Arc<Mount>,
     cache: Arc<TextureCache>,
     tiles: HashMap<TileCoord, LoadedTile>,
@@ -107,6 +110,7 @@ impl World {
         Ok(World {
             areas,
             radius,
+            global: wdt.global.is_some(),
             wdt,
             mount,
             cache,
@@ -130,7 +134,7 @@ impl World {
         for dz in -r..=r {
             for dx in -r..=r {
                 let t = (cx + dx, cz + dz);
-                let exists = t.0 >= 0 && t.1 >= 0 && self.wdt.has_tile(t.0 as usize, t.1 as usize);
+                let exists = if self.global { t == (cx, cz) } else { t.0 >= 0 && t.1 >= 0 && self.wdt.has_tile(t.0 as usize, t.1 as usize) };
                 if exists && !self.tiles.contains_key(&t) && !self.pending.contains(&t) && !self.failed.contains(&t) {
                     wanted.push(t);
                 }
@@ -155,6 +159,10 @@ impl World {
             self.refresh.remove(&coord);
             match res {
                 Ok(cpu) => {
+                    // The one copy of a building moves here; the one it replaces goes.
+                    if self.global {
+                        self.tiles.retain(|c, _| *c == coord);
+                    }
                     let gpu_tile = renderer.upload_tile(gpu, &cpu);
                     self.tiles.insert(coord, LoadedTile { gpu: gpu_tile, heights: cpu.heights, areas: cpu.areas, surfaces: cpu.surfaces, collision: cpu.collision, fires: cpu.fires, liquids: cpu.liquids, wmo_liquids: cpu.wmo_liquids, sounds: cpu.sounds, beds: cpu.beds });
                 }

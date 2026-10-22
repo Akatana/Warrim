@@ -25,6 +25,7 @@ impl State {
         (saved.buffs, saved.item_cooldowns, saved.hearth) = panels.consumed.snapshot();
         saved.sneaking = player.is_sneaking();
         saved.look = self.look;
+        saved.map = Some(self.map.clone());
         Some(saved)
     }
 
