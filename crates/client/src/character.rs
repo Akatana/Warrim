@@ -504,6 +504,9 @@ impl Character {
                 wrap: false,
                 blend: b.blend,
                 unlit: b.unlit,
+                baked: Default::default(),
+                window: false,
+                glow: [0; 3],
                 refs: Default::default(),
                 particle: false,
             });

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wowfmt::blp::Blp;
 use wowfmt::m2::{Blend, M2};
-use wowfmt::wmo::{group_path, PortalRef, WmoDoodad, WmoGroup, WmoLiquid, WmoPortal, WmoRoot, LIQUID_CELL};
+use wowfmt::wmo::{group_path, BatchKind, PortalRef, WmoDoodad, WmoGroup, WmoLiquid, WmoPortal, WmoRoot, LIQUID_CELL};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -17,9 +17,37 @@ pub struct ModelVertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
-    /// Baked lighting: rgb is the light, a = 255 when it replaces sun lighting (interior WMO groups).
+    /// Baked lighting of a building group (`MOCV`, after the fade at the doors): rgb is the light, and a what the batch's `Baked` does with
+    /// it. White with a = 0 for everything without baked lighting.
     pub color: [u8; 4],
 }
+
+/// How a batch of a building group is lit, which is a matter of the batch (see `model.wgsl`).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum Baked {
+    /// A model of the world: by the sun and the ambient light, the surface turned toward the viewer.
+    #[default]
+    Sun = 0,
+    /// By the baked colours alone, brighter by their alpha.
+    Interior = 1,
+    /// By the baked colours and the sun, the sun by the alpha.
+    Transition = 2,
+    /// By the sun and the ambient light, as a fixed-function light does it: with the surface as the file has it, not turned toward the
+    /// viewer, so that the inside of a window the sun shines on from outside is dark. The baked colours, if the group has them, are the
+    /// colour of the surface.
+    Exterior = 3,
+}
+
+impl Baked {
+    pub fn code(self) -> f32 {
+        self as u8 as f32
+    }
+}
+
+/// WoW.exe's `mapObjOverbright` with pixel shaders on, which they are on current hardware: the interior batches of buildings are lit by
+/// `MapObjOverbright.bls` (`model.wgsl`). Off, the original draws them with fixed-function blending, which this does not have a shader for;
+/// the colours differ only by `WmoGroup::faded_colors`.
+const MAP_OBJECT_OVERBRIGHT: bool = true;
 
 /// Decoded texture of arbitrary size with its stored mip chain (RGBA8).
 pub struct RawTexture {
@@ -37,6 +65,11 @@ pub struct BatchCpu {
     pub wrap: bool,
     pub blend: Blend,
     pub unlit: bool,
+    pub baked: Baked,
+    /// A window of a building (`MOMT` flag 0x20): what the sun lights it with is a little weaker.
+    pub window: bool,
+    /// The colour it glows with at night (see `sky::window_glow`).
+    pub glow: [u8; 3],
     /// Which tracks of the model animate how it looks.
     pub refs: crate::anim::BatchRefs,
     /// Billboards of a particle emitter: the vertex colour tints and fades them (see `model.wgsl`).
@@ -358,6 +391,8 @@ impl ModelCache {
                     .ok()
             })
             .collect();
+        // The groups the outside belongs to (WoW.exe: `flags & 0x48`); the baked colours of rooms fade toward the light of the sun at their portals.
+        let exterior: Vec<bool> = parsed.iter().map(|g| g.as_ref().is_some_and(|g| g.flags & 0x48 != 0)).collect();
         for group in parsed {
             let Some(group) = group else {
                 groups.push(WmoGroupCpu::default());
@@ -383,6 +418,7 @@ impl ModelCache {
             if group.indices.is_empty() || group.batches.is_empty() {
                 continue;
             }
+            let baked = if group.indoor { group.faded_colors(&root, &exterior, MAP_OBJECT_OVERBRIGHT) } else { Vec::new() };
             let vertices = group
                 .vertices
                 .iter()
@@ -393,14 +429,11 @@ impl ModelCache {
                     pos: [p[0], p[2], -p[1]],
                     normal: [n[0], n[2], -n[1]],
                     uv: *uv,
-                    color: match group.colors.get(i) {
-                        Some(&[r, g, b, _]) if group.indoor => [r, g, b, 255],
-                        _ => [255, 255, 255, 0],
-                    },
+                    color: baked.get(i).copied().unwrap_or([255, 255, 255, 0]),
                 })
                 .collect();
             let mut batches = Vec::new();
-            for b in &group.batches {
+            for (bi, b) in group.batches.iter().enumerate() {
                 if (b.start_index + b.index_count) as usize > group.indices.len() {
                     continue;
                 }
@@ -417,7 +450,16 @@ impl ModelCache {
                         3 => Blend::Additive,
                         _ => Blend::Alpha,
                     },
-                    unlit: mat.is_some_and(|m| m.flags & 1 != 0),
+                    // The original draws the buildings with or without light by the kind of the batch alone; the material's flag 1 (unlit) is not read.
+                    unlit: false,
+                    baked: match group.batch_kind(bi) {
+                        _ if baked.is_empty() => Baked::Exterior,
+                        BatchKind::Interior => Baked::Interior,
+                        BatchKind::Transition => Baked::Transition,
+                        BatchKind::Exterior => Baked::Exterior,
+                    },
+                    window: mat.is_some_and(|m| m.flags & 0x20 != 0),
+                    glow: mat.map_or([0; 3], |m| m.glow),
                     refs: Default::default(),
                     particle: false,
                 });
@@ -522,6 +564,9 @@ impl ModelCache {
                     wrap: tex.is_some_and(|t| t.flags & 3 != 0),
                     blend: b.blend,
                     unlit: b.unlit,
+                    baked: Default::default(),
+                    window: false,
+                    glow: [0; 3],
                     refs: crate::anim::BatchRefs { color: b.color, transparency: b.transparency, uv: b.uv_anim },
                     particle: false,
                 }
@@ -635,6 +680,33 @@ mod tests {
         }
         // Cached: same allocation the second time.
         assert!(Arc::ptr_eq(&wmo, &cache.get_wmo(&mount, r"World\wmo\Dungeon\MD_Goldmine\MD_Goldmine.wmo")));
+    }
+
+    #[test]
+    fn the_room_behind_the_door_of_the_goldshire_inn_fades_toward_the_outdoor_light() {
+        let Some(mount) = mount() else { return eprintln!("skipped: no game data") };
+        let path = r"World\wmo\Azeroth\Buildings\GoldshireInn\GoldshireInn.wmo";
+        let root = WmoRoot::parse(&mount.read(path).unwrap()).unwrap();
+        let groups: Vec<WmoGroup> = (0..root.group_count).map(|g| WmoGroup::parse(&mount.read(&group_path(path, g)).unwrap()).unwrap()).collect();
+        let exterior: Vec<bool> = groups.iter().map(|g| g.flags & 0x48 != 0).collect();
+        // Group 0 is the room behind the door: three transition batches, no interior ones.
+        let hall = &groups[0];
+        assert_eq!((hall.transition_batches, hall.interior_batches), (3, 0));
+        let faded = hall.faded_colors(&root, &exterior, true);
+        assert!(faded.iter().zip(&hall.colors).all(|(f, c)| f[..3].iter().zip(c).all(|(f, c)| f >= c)), "colours only move toward white");
+        assert!(faded.iter().zip(&hall.colors).any(|(f, c)| f != c), "something fades");
+        // What the renderer is given: the room behind the door is all transition batches, the main hall interior ones and one exterior one.
+        let wmo = ModelCache::default().get_wmo(&mount, path);
+        let modes = |g: usize| wmo.groups[g].model.as_ref().unwrap().batches.iter().map(|b| b.baked).collect::<Vec<_>>();
+        assert!(modes(0).iter().all(|&m| m == Baked::Transition));
+        assert_eq!(modes(5).iter().filter(|&&m| m == Baked::Interior).count(), 13);
+        assert_eq!(modes(5).iter().filter(|&&m| m == Baked::Exterior).count(), 1);
+        // The panes seen from inside are exterior batches of the rooms (lit by the sun as it is outside, from where it cannot shine on them), the
+        // outer panes are the ones that glow at night, and nothing of a building is drawn "unlit".
+        let batches: Vec<&BatchCpu> = wmo.groups.iter().flat_map(|g| g.model.iter()).flat_map(|m| &m.batches).collect();
+        assert!(batches.iter().any(|b| b.window && b.baked == Baked::Exterior));
+        assert!(batches.iter().any(|b| b.glow == [0xcb; 3] && b.baked == Baked::Exterior));
+        assert!(batches.iter().all(|b| !b.unlit));
     }
 
     #[test]

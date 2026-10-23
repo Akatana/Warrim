@@ -11,6 +11,8 @@ struct Params {
     tint: vec4<f32>,
     uv0: vec4<f32>,
     uv1: vec4<f32>,
+    // The colour a building's batch glows with at night (rgb).
+    glow: vec4<f32>,
 };
 
 @group(1) @binding(0) var<uniform> tile: TileUniform;
@@ -67,26 +69,48 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Light the side facing the camera so thin double-sided geometry (leaves) is lit both ways.
+    // How a batch is lit (params.uv0.w), as in WoW.exe for the batches of a building group (the vertex colour is the baked colour, after its
+    // fade at the doors):
+    // 0 a model of the world, by the sun, the side facing the camera so that thin double-sided geometry (leaves) is lit both ways;
+    // 1 by the baked colour alone, brighter by its alpha (the interior batches, MapObjOverbright.bls);
+    // 2 by both, the sun by the alpha and the baked colour by what is left of it (the batches at a door, MapObjTransDiffuse.bls drawn twice);
+    // 3 by the sun as a fixed-function light does it, the surface as the file has it, with the baked colour as the colour of the surface.
+    let baked = params.uv0.w;
+    let building = baked > 1.5;
     var n = normalize(in.normal);
-    if (dot(n, in.rel) > 0.0) {
+    if (!building && dot(n, in.rel) > 0.0) {
         n = -n;
     }
     let ndl = max(dot(n, -g.sun_dir.xyz), 0.0);
     // Only what the sun lights outdoors takes shadows (rooms and unlit batches are lit by other means).
     var shade = 1.0;
-    if (in.room_ambient.a < 0.5 && in.color.a < 0.5 && params.v.y < 0.5) {
+    if (in.room_ambient.a < 0.5 && (baked < 0.5 || building) && params.v.y < 0.5) {
         // The normal that faces the sun, not the camera: the lookup must not change with the view.
         let ns = normalize(in.normal);
         shade = shadow_at(in.rel, select(-ns, ns, dot(ns, -g.sun_dir.xyz) > 0.0));
     }
-    // Interior WMO groups carry baked lighting instead of sun lighting.
-    let sun = min(g.ambient.rgb + g.sun_color.rgb * ndl * shade, vec3<f32>(1.3));
+    // The windows of a building (params.uv1.w) get a little less of the sun's light, 16 of 255. What glows at night (params.glow) is added
+    // to the light, and the light of a building stops at 1 as a vertex colour does.
+    let sun_color = max(g.sun_color.rgb - params.uv1.w * (16.0 / 255.0), vec3<f32>(0.0));
+    let sun = select(
+        min(g.ambient.rgb + sun_color * ndl * shade * in.color.rgb, vec3<f32>(1.3)),
+        min(g.ambient.rgb + sun_color * ndl * shade * in.color.rgb + params.glow.rgb * g.sun_color.w, vec3<f32>(1.0)),
+        building,
+    );
     // A model in a room of a building is lit by the colour of its place instead of the sun's: ambient, and the light from the sun's direction.
     // The vertex colours of a model near the lamps of the building carry their light (room_sun.a = 1).
     let room = min(in.room_ambient.rgb + in.room_sun.rgb * ndl + select(vec3<f32>(0.0), in.color.rgb, in.room_sun.a > 0.5), vec3<f32>(1.3));
-    let light = select(select(sun, in.color.rgb, in.color.a > 0.5), room, in.room_ambient.a > 0.5);
-    let lit = select(c.rgb * light, c.rgb, params.v.y > 0.5) * params.tint.rgb;
+    // The pixel shader's steps, each clamped to 0..1 as ps_1_x does: v * a, then 4 * t * that, then t * v + that.
+    let overbright = clamp(c.rgb * in.color.rgb + clamp(4.0 * c.rgb * (in.color.rgb * in.color.a), vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(0.0), vec3<f32>(1.0));
+    var surface = c.rgb * sun;
+    if (in.room_ambient.a > 0.5) {
+        surface = c.rgb * room;
+    } else if (baked > 1.5 && baked < 2.5) {
+        surface = c.rgb * mix(in.color.rgb, sun, in.color.a);
+    } else if (baked > 0.5 && baked < 1.5) {
+        surface = overbright;
+    }
+    let lit = select(surface, c.rgb, params.v.y > 0.5) * params.tint.rgb;
 
     let dist = length(in.rel);
     let f = clamp((dist - g.fog_params.x) / (g.fog_params.y - g.fog_params.x), 0.0, 1.0);

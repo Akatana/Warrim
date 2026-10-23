@@ -204,6 +204,8 @@ struct BatchGpu {
     /// The batch's uniform (`Params` of the model shader), and its fixed first four numbers: written again when the batch's look animates.
     params: wgpu::Buffer,
     base: [f32; 4],
+    /// How a building's batch is lit: `Baked::code`, 1 for a window (the spare numbers of the texture matrix rows), and the colour it glows with.
+    lit: [f32; 5],
 }
 
 /// An uploaded model, shared by every tile that places it.
@@ -223,16 +225,16 @@ impl ModelGpu {
     /// Give the batches the looks (colour, opacity, moved texture) of this moment.
     fn set_looks(&self, gpu: &Gpu, looks: &[crate::anim::BatchLook]) {
         for (b, look) in self.batches.iter().zip(looks) {
-            gpu.queue.write_buffer(&b.params, 0, bytemuck::cast_slice(&batch_params(b.base, look)));
+            gpu.queue.write_buffer(&b.params, 0, bytemuck::cast_slice(&batch_params(b.base, b.lit, look)));
         }
     }
 }
 
-/// The batch uniform: the fixed numbers, the colour and opacity, and two rows of the texture matrix.
-fn batch_params(base: [f32; 4], look: &crate::anim::BatchLook) -> [f32; 16] {
+/// The batch uniform: the fixed numbers, the colour and opacity, and two rows of the texture matrix (with how the batch is lit behind each).
+fn batch_params(base: [f32; 4], lit: [f32; 5], look: &crate::anim::BatchLook) -> [f32; 20] {
     let [r, g, b] = look.tint;
     [
-        base[0], base[1], base[2], base[3], r, g, b, look.opacity, look.uv[0][0], look.uv[0][1], look.uv[0][2], 0.0, look.uv[1][0], look.uv[1][1], look.uv[1][2], 0.0,
+        base[0], base[1], base[2], base[3], r, g, b, look.opacity, look.uv[0][0], look.uv[0][1], look.uv[0][2], lit[0], look.uv[1][0], look.uv[1][1], look.uv[1][2], lit[1], lit[2], lit[3], lit[4], 0.0,
     ]
 }
 
@@ -955,7 +957,7 @@ impl Renderer {
         for b in &e.model.batches {
             // A negative alpha test tells the shader to ignore the texture's alpha (opaque batches have none to speak of).
             let base = if fade < 1.0 && b.blend == Blend::Opaque { [-1.0, b.base[1], b.base[2], b.base[3]] } else { b.base };
-            gpu.queue.write_buffer(&b.params, 0, bytemuck::cast_slice(&batch_params(base, &look)));
+            gpu.queue.write_buffer(&b.params, 0, bytemuck::cast_slice(&batch_params(base, b.lit, &look)));
         }
     }
 
@@ -1218,9 +1220,10 @@ impl Renderer {
                 let base = [alpha_test, if b.unlit { 1.0f32 } else { 0.0 }, if b.particle { 1.0 } else { 0.0 }, match b.blend { Blend::Modulate => 1.0, Blend::Modulate2x => 2.0, _ => 0.0 }];
                 // What a batch looks like at the start of its tracks is what it looks like all through if they do not move.
                 let first = model.tracks.as_ref().map_or(crate::anim::BatchLook::STILL, |t| t.look(b.refs, 0.0));
+                let lit = [b.baked.code(), if b.window { 1.0 } else { 0.0 }, b.glow[0] as f32 / 255.0, b.glow[1] as f32 / 255.0, b.glow[2] as f32 / 255.0];
                 let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("batch params"),
-                    contents: bytemuck::cast_slice(&batch_params(base, &first)),
+                    contents: bytemuck::cast_slice(&batch_params(base, lit, &first)),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 });
                 let sampler = &self.model_samplers[usize::from(b.wrap)];
@@ -1233,7 +1236,7 @@ impl Renderer {
                         wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
                     ],
                 });
-                BatchGpu { first: b.index_start, count: b.index_count, bind_group, blend: b.blend, params, base }
+                BatchGpu { first: b.index_start, count: b.index_count, bind_group, blend: b.blend, params, base, lit }
             })
             .collect();
         let mut bounds = NO_BOUNDS;
@@ -1389,7 +1392,8 @@ impl Renderer {
         let globals = Globals {
             view_proj: view_proj.to_cols_array_2d(),
             sun_dir: a.sun_dir.extend(0.0).to_array(),
-            sun_color: a.sun_color.extend(0.0).to_array(),
+            // The fourth number of the sun's colour is how much the windows of buildings glow now.
+            sun_color: a.sun_color.extend(crate::sky::window_glow(a.hour)).to_array(),
             ambient: a.ambient.extend(0.0).to_array(),
             fog_color: a.fog_color.extend(1.0).to_array(),
             fog_params: [a.fog_start, a.fog_end, time, 0.0],

@@ -13,6 +13,8 @@ pub struct WmoMaterial {
     /// 0 opaque, 1 alpha key, otherwise blended.
     pub blend: u32,
     pub texture: String,
+    /// The colour the material glows with at night (`MOMT` flag 0x10, the SIDN colour), red, green, blue; black for the others.
+    pub glow: [u8; 3],
 }
 
 /// A model placed inside the building (`MODD`), in WMO model space.
@@ -77,7 +79,20 @@ pub struct WmoRoot {
 pub struct WmoBatch {
     pub start_index: u32,
     pub index_count: u32,
+    /// Highest vertex the batch uses.
+    pub last_vertex: u16,
     pub material: u8,
+}
+
+/// What a batch is lit by (the batch counts of the `MOGP` header).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchKind {
+    /// The baked colours, made brighter by their alpha (the overbright pixel shader).
+    Interior,
+    /// The sun, with the baked colours as the colour of the surface.
+    Exterior,
+    /// The baked colours and the sun, mixed by the alpha of the baked colour.
+    Transition,
 }
 
 /// A liquid surface of a group (`MLIQ`): a grid of heights over the model-space xy plane.
@@ -104,6 +119,9 @@ pub struct WmoGroup {
     pub bbox: ([f32; 3], [f32; 3]),
     pub portal_start: u16,
     pub portal_count: u16,
+    /// How many of the first batches are transition batches, and how many interior ones follow; the rest are exterior.
+    pub transition_batches: u16,
+    pub interior_batches: u16,
     pub vertices: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
@@ -131,7 +149,7 @@ impl WmoRoot {
         let mut group_count = None;
         let mut id = 0;
         let mut texture_blob: &[u8] = &[];
-        let mut raw_materials: Vec<(u32, u32, u32)> = Vec::new();
+        let mut raw_materials: Vec<(u32, u32, u32, [u8; 3])> = Vec::new();
         let mut doodad_blob: &[u8] = &[];
         let mut raw_doodads: &[u8] = &[];
         let mut doodad_sets = Vec::new();
@@ -161,7 +179,9 @@ impl WmoRoot {
                 b"MOTX" => texture_blob = c.data,
                 b"MOMT" => {
                     for m in c.data.chunks_exact(64) {
-                        raw_materials.push((le32(&m[0..]), le32(&m[8..]), le32(&m[12..])));
+                        // Flags, blend mode, texture name offset, and the SIDN colour (blue, green, red, alpha).
+                        let glow = if le32(&m[0..]) & 0x10 != 0 { [m[18], m[17], m[16]] } else { [0; 3] };
+                        raw_materials.push((le32(&m[0..]), le32(&m[8..]), le32(&m[12..]), glow));
                     }
                 }
                 b"MOPV" => portal_verts = c.data.chunks_exact(12).map(vec3).collect(),
@@ -206,7 +226,7 @@ impl WmoRoot {
         let group_count = group_count.ok_or_else(|| Error::Invalid("WMO has no MOHD".into()))?;
         let materials = raw_materials
             .into_iter()
-            .map(|(flags, blend, ofs)| WmoMaterial { flags, blend, texture: cstr(texture_blob, ofs) })
+            .map(|(flags, blend, ofs, glow)| WmoMaterial { flags, blend, texture: cstr(texture_blob, ofs), glow })
             .collect();
         let doodads = raw_doodads
             .chunks_exact(40)
@@ -270,6 +290,8 @@ impl WmoGroup {
         let bbox = (vec3(&mogp.data[12..]), vec3(&mogp.data[24..]));
         let portal_start = u16::from_le_bytes([mogp.data[36], mogp.data[37]]);
         let portal_count = u16::from_le_bytes([mogp.data[38], mogp.data[39]]);
+        let transition_batches = u16::from_le_bytes([mogp.data[40], mogp.data[41]]);
+        let interior_batches = u16::from_le_bytes([mogp.data[42], mogp.data[43]]);
 
         let (mut vertices, mut normals, mut uvs, mut indices, mut batches) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -305,6 +327,7 @@ impl WmoGroup {
                         .map(|b| WmoBatch {
                             start_index: le32(&b[12..]),
                             index_count: u16::from_le_bytes([b[16], b[17]]) as u32,
+                            last_vertex: u16::from_le_bytes([b[20], b[21]]),
                             material: b[23],
                         })
                         .collect()
@@ -322,8 +345,99 @@ impl WmoGroup {
         if !colors.is_empty() {
             colors.resize(vertices.len(), [255; 4]);
         }
-        Ok(WmoGroup { id, flags, bbox, portal_start, portal_count, vertices, normals, uvs, indices, tri_info, batches, colors, indoor: flags & 0x2000 != 0, doodad_refs, light_refs, liquid })
+        Ok(WmoGroup { id, flags, bbox, portal_start, portal_count, transition_batches, interior_batches, vertices, normals, uvs, indices, tri_info, batches, colors, indoor: flags & 0x2000 != 0, doodad_refs, light_refs, liquid })
     }
+
+    /// What lights batch number `batch`: the batches are in the order transition, interior, exterior.
+    pub fn batch_kind(&self, batch: usize) -> BatchKind {
+        let transition = self.transition_batches as usize;
+        if batch < transition {
+            BatchKind::Transition
+        } else if batch < transition + self.interior_batches as usize {
+            BatchKind::Interior
+        } else {
+            BatchKind::Exterior
+        }
+    }
+
+    /// The baked colours as WoW.exe leaves them for drawing. `exterior` tells per group of the building whether it is one that the
+    /// outside belongs to (`flags & 0x48`); `overbright` is whether the pixel shader that reads the alpha of the colours is in use.
+    ///
+    /// Without it (`FUN_006c41e0`), the vertices of the triangles that lack MOPY flag 1 get alpha 255 first, which keeps them from
+    /// fading below. Then (`FUN_006c43d0`) a vertex of the transition batches that lies on a portal to the outside becomes white and
+    /// fully outdoor lit; one within `FADE_RANGE` of such a portal moves toward that, the more the closer, unless it has an alpha.
+    pub fn faded_colors(&self, root: &WmoRoot, exterior: &[bool], overbright: bool) -> Vec<[u8; 4]> {
+        let mut colors = self.colors.clone();
+        if !overbright {
+            for (tri, &(flags, _)) in self.indices.chunks_exact(3).zip(&self.tri_info) {
+                if flags & 1 == 0 {
+                    tri.iter().for_each(|&i| colors[i as usize][3] = 255);
+                }
+            }
+        }
+        let Some(last) = (self.transition_batches as usize).checked_sub(1).and_then(|b| self.batches.get(b)) else { return colors };
+        let (first, count) = (self.portal_start as usize, self.portal_count as usize);
+        let portals: Vec<&WmoPortal> = root
+            .portal_refs
+            .get(first..first + count)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|r| exterior.get(r.group as usize) == Some(&true))
+            .filter_map(|r| root.portals.get(r.portal as usize))
+            .collect();
+        for (c, &p) in colors.iter_mut().zip(&self.vertices).take(last.last_vertex as usize + 1) {
+            let d = portals.iter().map(|portal| root.portal_distance(portal, p)).fold(f32::MAX, f32::min);
+            if d == 0.0 {
+                *c = [255; 4];
+            } else if d < FADE_RANGE && c[3] == 0 {
+                let f = 1.0 - d * 0.15;
+                let toward_white = |c: u8| (c as f32 + (255.0 - c as f32) * f) as u8;
+                *c = [toward_white(c[0]), toward_white(c[1]), toward_white(c[2]), (f * 255.0) as u8];
+            }
+        }
+        colors
+    }
+}
+
+/// How far from a portal to the outside the baked colours start to fade toward the outdoor light, in yards.
+pub const FADE_RANGE: f32 = 6.666_667;
+
+impl WmoRoot {
+    /// How far `p` is from the polygon of a portal, as `FUN_006c4240` measures it: 0 on the polygon (within a sixth of a yard of
+    /// its plane and inside its outline), else the distance to the nearest edge.
+    pub fn portal_distance(&self, portal: &WmoPortal, p: [f32; 3]) -> f32 {
+        let (start, count) = (portal.start as usize, portal.count as usize);
+        let Some(poly) = self.portal_verts.get(start..start + count).filter(|v| !v.is_empty()) else { return f32::MAX };
+        let n = [portal.plane[0], portal.plane[1], portal.plane[2]];
+        let off = n[0] * p[0] + n[1] * p[1] + n[2] * p[2] + portal.plane[3];
+        if off * off < 1.0 / 36.0 && inside_polygon(poly, n, p) {
+            return 0.0;
+        }
+        (0..count).map(|i| segment_distance(poly[(i + count - 1) % count], poly[i], p)).fold(f32::MAX, f32::min)
+    }
+}
+
+/// Whether `p` projects inside the polygon along its normal's strongest axis (crossing test).
+fn inside_polygon(poly: &[[f32; 3]], n: [f32; 3], p: [f32; 3]) -> bool {
+    let (ax, ay, az) = (n[0].abs(), n[1].abs(), n[2].abs());
+    let drop = if ax <= ay { if az < ay { 1 } else { 2 } } else if az < ax { 0 } else { 2 };
+    let (u, v) = match drop { 0 => (1, 2), 1 => (0, 2), _ => (0, 1) };
+    let mut inside = false;
+    let mut prev = poly[poly.len() - 1];
+    for &cur in poly {
+        if (prev[v] <= p[v]) != (cur[v] <= p[v]) && p[u] < prev[u] + (p[v] - prev[v]) / (cur[v] - prev[v]) * (cur[u] - prev[u]) {
+            inside = !inside;
+        }
+        prev = cur;
+    }
+    inside
+}
+
+fn segment_distance(a: [f32; 3], b: [f32; 3], p: [f32; 3]) -> f32 {
+    let (ab, ap) = ([0, 1, 2].map(|i| b[i] - a[i]), [0, 1, 2].map(|i| p[i] - a[i]));
+    let len2: f32 = ab.iter().map(|c| c * c).sum();
+    let t = if len2 > 0.0 { (ab.iter().zip(&ap).map(|(x, y)| x * y).sum::<f32>() / len2).clamp(0.0, 1.0) } else { 0.0 };
+    (0..3).map(|i| (ap[i] - ab[i] * t).powi(2)).sum::<f32>().sqrt()
 }
 
 impl WmoLiquid {
@@ -368,5 +482,83 @@ mod tests {
         // Hints and nothing at all do not collide.
         assert!(!is_solid(TRI_HINT));
         assert!(!is_solid(0));
+    }
+
+    /// A door of 2 x 2 yards in the plane x = 0, and a group with one transition batch of four vertices.
+    fn door() -> (WmoRoot, WmoGroup) {
+        let root = WmoRoot {
+            id: 0,
+            group_count: 2,
+            materials: Vec::new(),
+            doodads: Vec::new(),
+            doodad_sets: Vec::new(),
+            lights: Vec::new(),
+            portal_verts: vec![[0.0, -1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0, 2.0], [0.0, -1.0, 2.0]],
+            portals: vec![WmoPortal { start: 0, count: 4, plane: [1.0, 0.0, 0.0, 0.0] }],
+            portal_refs: vec![PortalRef { portal: 0, group: 1, side: 1 }],
+        };
+        let group = WmoGroup {
+            id: 0,
+            flags: 0x2005,
+            bbox: ([0.0; 3], [0.0; 3]),
+            portal_start: 0,
+            portal_count: 1,
+            transition_batches: 1,
+            interior_batches: 0,
+            // On the door, 1 yard above its edge, 3 yards beside its edge, and beyond the fade.
+            vertices: vec![[0.0, 0.0, 1.0], [0.0, 0.0, 3.0], [0.0, 4.0, 1.0], [10.0, 0.0, 1.0]],
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            indices: vec![0, 1, 2, 1, 2, 3],
+            tri_info: Vec::new(),
+            batches: vec![WmoBatch { start_index: 0, index_count: 6, last_vertex: 3, material: 0 }],
+            colors: vec![[40, 30, 20, 0]; 4],
+            indoor: true,
+            doodad_refs: Vec::new(),
+            light_refs: Vec::new(),
+            liquid: None,
+        };
+        (root, group)
+    }
+
+    #[test]
+    fn baked_colours_fade_toward_white_at_a_portal_to_the_outside() {
+        let (root, group) = door();
+        let colors = group.faded_colors(&root, &[false, true], true);
+        // On the door: white, fully outdoor lit.
+        assert_eq!(colors[0], [255; 4]);
+        // 1 yard from the door's edge: f = 0.85.
+        assert_eq!(colors[1],[40 + ((215.0 * 0.85) as u8), 30 + ((225.0 * 0.85) as u8), 20 + ((235.0 * 0.85) as u8), (0.85 * 255.0) as u8]);
+        // 3 yards from the door's edge: f = 0.55.
+        assert_eq!(colors[2][3], (0.55f32 * 255.0) as u8);
+        // Past the range, and with a group that is not the outside: unchanged.
+        assert_eq!(colors[3], [40, 30, 20, 0]);
+        assert_eq!(group.faded_colors(&root, &[false, false], true), group.colors);
+    }
+
+    #[test]
+    fn an_alpha_the_file_gave_is_kept() {
+        let (root, mut group) = door();
+        group.colors[1][3] = 90;
+        assert_eq!(group.faded_colors(&root, &[false, true], true)[1], [40, 30, 20, 90]);
+    }
+
+    #[test]
+    fn without_the_overbright_shader_triangles_without_flag_1_are_opaque_and_do_not_fade() {
+        let (root, mut group) = door();
+        // Triangle 0 (vertices 0, 1, 2) has flag 1, triangle 1 (1, 2, 3) does not: vertices 1, 2 and 3 get alpha 255.
+        group.tri_info = vec![(1, 0), (0, 0)];
+        let colors = group.faded_colors(&root, &[false, true], false);
+        assert_eq!(colors[0], [255; 4], "on the door, still white");
+        assert_eq!([colors[1], colors[2], colors[3]], [[40, 30, 20, 255]; 3]);
+    }
+
+    #[test]
+    fn batches_come_in_the_order_transition_interior_exterior() {
+        let (_, mut group) = door();
+        group.transition_batches = 2;
+        group.interior_batches = 1;
+        let kinds: Vec<_> = (0..5).map(|b| group.batch_kind(b)).collect();
+        assert_eq!(kinds, [BatchKind::Transition, BatchKind::Transition, BatchKind::Interior, BatchKind::Exterior, BatchKind::Exterior]);
     }
 }

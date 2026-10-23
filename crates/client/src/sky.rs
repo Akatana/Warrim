@@ -207,9 +207,45 @@ pub fn light_source(hour: f32) -> Vec3 {
     Vec3::new(from.x, from.y.max(0.15), from.z).normalize()
 }
 
+/// How strongly the windows of buildings that glow at night (`MOMT` flag 0x10) glow at `hour`, 0 to 1: WoW.exe's curve (the keys at
+/// `0xce9a34`, set by `FUN_006ce670`, read by `FUN_006cf6c0`), and the factor `FUN_006b4090` multiplies their colour with, `k / 256` for
+/// `k` = the curve times 255 less a half, rounded. Full from half past nine in the evening until six, gone at seven, back at half past eight.
+pub fn window_glow(hour: f32) -> f32 {
+    const KEYS: [(f32, f32); 4] = [(0.25, 1.0), (0.291_666_67, 0.0), (0.854_166_7, 0.0), (0.895_833_3, 1.0)];
+    let t = (hour / 24.0).rem_euclid(1.0);
+    let next = KEYS.iter().position(|k| k.0 >= t).unwrap_or(KEYS.len());
+    let (to, from) = match next {
+        n if n == KEYS.len() => (0, KEYS.len() - 1),
+        0 => (0, KEYS.len() - 1),
+        n => (n, n - 1),
+    };
+    let (a, b) = (KEYS[from], KEYS[to]);
+    let mut span = b.0 - a.0;
+    let curve = if span.abs() < 0.001 {
+        a.1
+    } else {
+        span += if span < 0.0 { 1.0 } else { 0.0 };
+        let mut at = t - a.0;
+        at += if at < 0.0 { 1.0 } else { 0.0 };
+        a.1 + (b.1 - a.1) * at / span
+    };
+    (curve * 255.0 - 0.5).round_ties_even().max(0.0) / 256.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_windows_glow_from_the_evening_to_the_morning() {
+        let full = 254.0 / 256.0;
+        assert!([22.0, 0.0, 3.0, 5.9].iter().all(|&h| (window_glow(h) - full).abs() < 1e-6), "night");
+        assert!([7.5, 12.0, 17.0, 20.0].iter().all(|&h| window_glow(h) == 0.0), "day");
+        // Seven in the morning is gone, and the glow comes up in the hour before half past nine and is half there at nine.
+        assert_eq!(window_glow(7.0), 0.0);
+        assert!((window_glow(6.5) - 127.0 / 256.0).abs() < 1.5 / 256.0);
+        assert!((window_glow(21.0) - 127.0 / 256.0).abs() < 1.5 / 256.0);
+    }
 
     #[test]
     fn the_light_comes_from_the_sun_by_day_and_the_moon_by_night() {

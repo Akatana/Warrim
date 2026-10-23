@@ -174,7 +174,7 @@ impl Effects {
                         key,
                         vertices: vec![ModelVertex { pos: [0.0; 3], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], color: [0; 4] }; capacity * 4],
                         indices: quad_indices(capacity),
-                        batches: vec![BatchCpu { index_start: 0, index_count: (capacity * 6) as u32, texture: m.textures[k].clone(), wrap: false, blend, unlit: true, refs: Default::default(), particle: true }],
+                        batches: vec![BatchCpu { index_start: 0, index_count: (capacity * 6) as u32, texture: m.textures[k].clone(), wrap: false, blend, unlit: true, baked: Default::default(), window: false, glow: [0; 3], refs: Default::default(), particle: true }],
                         col_vertices: Vec::new(),
                         col_indices: Vec::new(),
                         tracks: None,
