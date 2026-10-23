@@ -130,6 +130,20 @@ fn camera_group(wmo: &WmoCpu, cam: Vec3) -> Option<usize> {
     }
     // A camera far above its floor may be in a group above it (a gallery over the hall): when it is behind a
     // portal into a group whose bounds hold it, it is in that group.
+    // No floor under the camera in an indoor group (above a stairwell: the stairs' group ends below the eyes, the room's
+    // floor has the hole): the tightest indoor group whose bounds hold it, as the client's list of groups around the camera.
+    if best.map_or(true, |(g, _)| wmo.groups[g].flags & OUTDOOR != 0) {
+        let volume = |g: &crate::models::WmoGroupCpu| {
+            let d = Vec3::from(g.bbox.1) - Vec3::from(g.bbox.0);
+            d.x * d.y * d.z
+        };
+        let inside = wmo.groups.iter().enumerate().filter(|(_, g)| {
+            g.model.is_some() && g.flags & OUTDOOR == 0 && !cam.cmplt(Vec3::from(g.bbox.0)).any() && !cam.cmpgt(Vec3::from(g.bbox.1)).any()
+        });
+        if let Some((g, _)) = inside.min_by(|a, b| volume(a.1).total_cmp(&volume(b.1))) {
+            return Some(g);
+        }
+    }
     let (mut g, floor) = best?;
     for _ in 0..if c.y - floor > FLOOR_REACH { MAX_DEPTH } else { 0 } {
         let (first, count) = wmo.groups[g].portals;
