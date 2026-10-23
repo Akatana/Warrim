@@ -32,6 +32,9 @@ struct VsIn {
     // The light of the room the model stands in: ambient (w = 1 inside a room) and the light from the sun's direction.
     @location(8) room_ambient: vec4<f32>,
     @location(9) room_sun: vec4<f32>,
+    // The lamps that light it, two words each (see `instance_floats`).
+    @location(10) lamps01: vec4<u32>,
+    @location(11) lamps23: vec4<u32>,
 };
 
 struct VsOut {
@@ -42,6 +45,8 @@ struct VsOut {
     @location(3) color: vec4<f32>,
     @location(4) room_ambient: vec4<f32>,
     @location(5) room_sun: vec4<f32>,
+    @location(6) @interpolate(flat) lamps01: vec4<u32>,
+    @location(7) @interpolate(flat) lamps23: vec4<u32>,
 };
 
 @vertex
@@ -56,6 +61,8 @@ fn vs_main(in: VsIn) -> VsOut {
     out.color = in.color;
     out.room_ambient = in.room_ambient;
     out.room_sun = in.room_sun;
+    out.lamps01 = in.lamps01;
+    out.lamps23 = in.lamps23;
     return out;
 }
 
@@ -99,10 +106,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     );
     // A model in a room of a building is lit by the colour of its place instead of the sun's: ambient, and a light from a fixed direction, not the
     // sun's (WoW.exe DAT_00ca816c, set by FUN_006a72b0): (-0.308, -0.308, -0.9) in world space, nearly straight down, here the way to the light in
-    // render space. The surface as the file has it, as a fixed-function light does. The vertex colours of a model near the lamps of the building
-    // carry their light (room_sun.a = 1).
-    let room_ndl = max(dot(normalize(in.normal), vec3<f32>(-0.30784, 0.9, -0.30784)), 0.0);
-    let room = min(in.room_ambient.rgb + in.room_sun.rgb * room_ndl + select(vec3<f32>(0.0), in.color.rgb, in.room_sun.a > 0.5), vec3<f32>(1.3));
+    // render space. It turns to the sun's (room_sun.w) as the model leaves the room. The surface as the file has it, as a fixed-function light does.
+    // The lamps of the building near it add their light (colour, direction toward the lamp), a fixed-function light each.
+    let normal = normalize(in.normal);
+    let to_light = normalize(mix(vec3<f32>(-0.30784, 0.9, -0.30784), -g.sun_dir.xyz, in.room_sun.w));
+    var room_light = in.room_ambient.rgb + in.room_sun.rgb * max(dot(normal, to_light), 0.0);
+    if (in.room_ambient.a > 0.5) {
+        for (var i = 0u; i < 4u; i = i + 1u) {
+            let w = select(in.lamps23, in.lamps01, i < 2u);
+            let c = select(w.z, w.x, i % 2u == 0u);
+            let d = select(w.w, w.y, i % 2u == 0u);
+            let color = vec3<f32>(f32(c & 1023u), f32((c >> 10u) & 1023u), f32((c >> 20u) & 1023u)) * (2.0 / 1023.0);
+            let dir = vec3<f32>(f32(bitcast<i32>(d << 22u) >> 22), f32(bitcast<i32>((d >> 10u) << 22u) >> 22), f32(bitcast<i32>((d >> 20u) << 22u) >> 22)) * (1.0 / 511.0);
+            room_light = room_light + color * max(dot(normal, dir), 0.0);
+        }
+    }
+    let room = min(room_light, vec3<f32>(1.3));
     // The pixel shader's steps, each clamped to 0..1 as ps_1_x does: v * a, then 4 * t * that, then t * v + that.
     let overbright = clamp(c.rgb * in.color.rgb + clamp(4.0 * c.rgb * (in.color.rgb * in.color.a), vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(0.0), vec3<f32>(1.0));
     var surface = c.rgb * sun;

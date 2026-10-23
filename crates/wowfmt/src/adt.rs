@@ -84,6 +84,8 @@ pub struct MapChunk {
     pub heights: [f32; HEIGHTS_PER_CHUNK],
     pub layers: Vec<Layer>,
     pub liquid: Option<Liquid>,
+    /// The shadows baked into the ground (`MCSH`): 64 rows of 64 bits, row (north to south) by row, the first cell of a row in its lowest bit. A set bit is shade.
+    pub shadow: Option<Box<[u8; 512]>>,
 }
 
 impl MapChunk {
@@ -226,7 +228,7 @@ fn parse_mcnk(c: &Chunk) -> Result<MapChunk> {
     let _ofs_refs = r.u32()?;
     let ofs_alpha = r.u32()?;
     let size_alpha = r.u32()? as usize;
-    let _ofs_shadow = r.u32()?;
+    let ofs_shadow = r.u32()?;
     let _size_shadow = r.u32()?;
     let area_id = r.u32()?;
     let _n_map_obj_refs = r.u32()?;
@@ -277,7 +279,10 @@ fn parse_mcnk(c: &Chunk) -> Result<MapChunk> {
         l.kind = (flags >> 2) & 0xF;
     }
 
-    Ok(MapChunk { index_x, index_y, flags, area_id, holes, position, heights, layers, liquid })
+    // MCNK flag 0x1: the chunk has shadows.
+    let shadow = if flags & 1 != 0 { subchunk(c, ofs_shadow, b"MCSH")?.and_then(|d| d.get(..512)).and_then(|d| <Box<[u8; 512]>>::try_from(d.to_vec().into_boxed_slice()).ok()) } else { None };
+
+    Ok(MapChunk { index_x, index_y, flags, area_id, holes, position, heights, layers, liquid, shadow })
 }
 
 /// 4-bit alpha, low nibble first, 64x64.
@@ -364,6 +369,7 @@ mod tests {
             heights: [0.0; HEIGHTS_PER_CHUNK],
             layers: vec![],
             liquid: None,
+            shadow: None,
         };
         assert!(c.is_hole(4, 2) && c.is_hole(5, 3));
         assert!(!c.is_hole(3, 2) && !c.is_hole(4, 4));

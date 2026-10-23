@@ -170,6 +170,8 @@ pub struct TileGpu {
     /// The models of the tile whose batches change their look as time goes: the model, its tracks and what each batch follows.
     animated: Vec<(Arc<ModelGpu>, Arc<crate::anim::LookTracks>, Vec<crate::anim::BatchRefs>)>,
     wmos: Vec<WmoGpu>,
+    /// The shadows baked into the ground (`TileCpu::shadow`).
+    shadow: Vec<u8>,
     coord: TileCoord,
     origin: (f64, f64),
     /// The terrain and water of the tile.
@@ -238,9 +240,10 @@ fn batch_params(base: [f32; 4], lit: [f32; 5], look: &crate::anim::BatchLook) ->
     ]
 }
 
-/// What one placed model gives the model shader: its matrix (16 floats), then the ambient and the sun-direction light of the room it stands in (rgb and
-/// 1, or zeros for the open air).
-const INSTANCE_FLOATS: usize = 24;
+/// What one placed model gives the model shader: its matrix (16 floats), then the ambient light of the room it stands in (rgb and 1, or zeros for the open
+/// air), the light from above (rgb, and how much of its direction is the sun's), and the four lamps that light it, each two words: the colour (rgb, ten bits
+/// each, 0 to 2) and the direction toward the lamp (xyz, ten bits each, signed).
+const INSTANCE_FLOATS: usize = 24 + 4 * 2;
 const INSTANCE_BYTES: u64 = (INSTANCE_FLOATS * 4) as u64;
 
 fn instance_floats(matrix: &Mat4, light: Option<crate::models::InteriorLight>) -> [f32; INSTANCE_FLOATS] {
@@ -250,7 +253,15 @@ fn instance_floats(matrix: &Mat4, light: Option<crate::models::InteriorLight>) -
         out[16..19].copy_from_slice(&light.ambient);
         out[19] = 1.0;
         out[20..23].copy_from_slice(&light.diffuse);
-        out[23] = if light.baked { 1.0 } else { 0.0 };
+        out[23] = light.sun_mix;
+        for (i, lamp) in light.lamps.iter().enumerate() {
+            let unorm = |c: f32| (c / 2.0 * 1023.0).round().clamp(0.0, 1023.0) as u32;
+            let snorm = |c: f32| ((c * 511.0).round().clamp(-511.0, 511.0) as i32 as u32) & 1023;
+            let [r, g, b] = lamp.color;
+            let [x, y, z] = lamp.dir;
+            out[24 + i * 2] = f32::from_bits(unorm(r) | unorm(g) << 10 | unorm(b) << 20);
+            out[25 + i * 2] = f32::from_bits(snorm(x) | snorm(y) << 10 | snorm(z) << 20);
+        }
     }
     out
 }
@@ -277,6 +288,8 @@ struct EntityGpu {
 struct WmoGpu {
     wmo: Arc<WmoCpu>,
     matrix: Mat4,
+    /// Its lamps, where they are in the tile.
+    lamps: Vec<crate::models::Lamp>,
     groups: Vec<Option<DoodadGroup>>,
     visible: Vec<Cell<bool>>,
 }
@@ -675,7 +688,7 @@ impl Renderer {
             push_constant_ranges: &[],
         });
         let vertex_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 7 => Unorm8x4];
-        let instance_attrs = wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 8 => Float32x4, 9 => Float32x4];
+        let instance_attrs = wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Uint32x4, 11 => Uint32x4];
         let make_model_pipeline = |label: &str, blend: Option<wgpu::BlendState>, depth_write: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -952,25 +965,25 @@ impl Renderer {
     fn ease_room_lights(&mut self, tiles: &[&TileGpu], time: f32) {
         let dt = (time - self.room_clock).clamp(0.0, 0.25);
         self.room_clock = time;
-        let a = &self.atmosphere;
-        let outdoors = crate::models::InteriorLight { ambient: a.ambient.to_array(), diffuse: a.sun_color.to_array(), baked: false };
-        let ease = |from: [f32; 3], to: [f32; 3]| [0, 1, 2].map(|i| from[i] + (to[i] - from[i]).clamp(-2.0 * dt, 2.0 * dt));
+        let outdoors = crate::models::InteriorLight::outdoors(self.atmosphere.ambient, self.atmosphere.sun_color);
         for e in self.entities.iter_mut().filter(|e| e.room_lit && e.visible) {
             if e.pos.distance(e.room_sampled) > 0.2 {
                 e.room_sampled = e.pos;
                 let tile = tile_of(e.pos.x, e.pos.z);
                 e.room_target = tiles.iter().find(|t| t.coord == tile).and_then(|t| {
                     let local = Vec3::new((e.pos.x as f64 - t.origin.0) as f32, e.pos.y, (e.pos.z as f64 - t.origin.1) as f32);
-                    crate::models::room_light_at(t.wmos.iter().map(|w| (&*w.wmo, &w.matrix)), local).map(|(light, _)| light)
+                    let intensity = if crate::terrain::ground_shadowed(&t.shadow, local.x, local.z) { 0.5 } else { 2.5 };
+                    let (mut light, w) = crate::models::room_light_at(t.wmos.iter().map(|w| (&*w.wmo, &w.matrix)), local, intensity)?;
+                    light.lamps = crate::models::lamp_lights(&t.wmos[w].lamps, local);
+                    Some(light)
                 });
             }
             if e.light.is_none() && e.room_target.is_none() {
                 continue;
             }
-            let (from, to) = (e.light.unwrap_or(outdoors), e.room_target.unwrap_or(outdoors));
-            let eased = crate::models::InteriorLight { ambient: ease(from.ambient, to.ambient), diffuse: ease(from.diffuse, to.diffuse), baked: to.baked };
-            let arrived = eased.ambient == to.ambient && eased.diffuse == to.diffuse;
-            e.light = if arrived && e.room_target.is_none() { None } else { Some(eased) };
+            let to = e.room_target.unwrap_or(outdoors);
+            let eased = e.light.unwrap_or(outdoors).eased(to, 2.0 * dt);
+            e.light = if eased == to && e.room_target.is_none() { None } else { Some(eased) };
         }
     }
 
@@ -1158,7 +1171,7 @@ impl Renderer {
                     })
                     .collect();
                 let visible = vec![Cell::new(true); groups.len()];
-                WmoGpu { wmo: w.wmo.clone(), matrix: w.matrix, groups, visible }
+                WmoGpu { wmo: w.wmo.clone(), matrix: w.matrix, lamps: crate::models::lamps_of(&w.wmo, &w.matrix), groups, visible }
             })
             .collect();
 
@@ -1177,6 +1190,7 @@ impl Renderer {
             doodads,
             animated,
             wmos,
+            shadow: tile.shadow.clone(),
             coord: tile.coord,
             origin: tile_origin(tile.coord),
         }

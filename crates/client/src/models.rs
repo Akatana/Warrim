@@ -110,13 +110,44 @@ pub struct ModelCache {
     sounds: Mutex<HashMap<String, Vec<(Vec3, u32)>>>,
 }
 
-/// How a model in a room of a building is lit: the colour of the ambient light and of the light that comes from the sun's direction, replacing the
-/// ones of the open air (red, green and blue, 0 to 1), and whether the model's vertex colours carry the light of the building's lamps near it.
+/// How a model in a room of a building is lit: the colour of the ambient light and of the light from above (the sun's, where `sun_mix` is 1), replacing
+/// the ones of the open air (red, green and blue, 0 to 1), and the lamps of the building near it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InteriorLight {
     pub ambient: [f32; 3],
     pub diffuse: [f32; 3],
-    pub baked: bool,
+    /// How much of the direction of the light is the sun's: 0 the fixed light from above that rooms have, 1 the sun's (the open air).
+    pub sun_mix: f32,
+    pub lamps: [LampLight; 4],
+}
+
+impl InteriorLight {
+    /// The light of the open air in the shape of a room's: its ambient and sun colours, the sun's direction, no lamps.
+    pub fn outdoors(ambient: Vec3, sun: Vec3) -> Self {
+        InteriorLight { ambient: ambient.to_array(), diffuse: sun.to_array(), sun_mix: 1.0, lamps: [LampLight::default(); 4] }
+    }
+
+    /// This light moved toward `to`, each colour (and the share of the sun's direction) by at most `step`: how WoW.exe changes a model's light when its
+    /// place changes (FUN_0069e770: 2 per second, so all of it in half a second). A lamp comes in from the direction it will have.
+    pub fn eased(self, to: InteriorLight, step: f32) -> InteriorLight {
+        let toward = |from: f32, to: f32| from + (to - from).clamp(-step, step);
+        let colors = |from: [f32; 3], to: [f32; 3]| [0, 1, 2].map(|i| toward(from[i], to[i]));
+        let mut lamps = self.lamps;
+        for (lamp, goal) in lamps.iter_mut().zip(to.lamps) {
+            if goal.color != [0.0; 3] {
+                lamp.dir = goal.dir;
+            }
+            lamp.color = colors(lamp.color, goal.color);
+        }
+        InteriorLight { ambient: colors(self.ambient, to.ambient), diffuse: colors(self.diffuse, to.diffuse), sun_mix: toward(self.sun_mix, to.sun_mix), lamps }
+    }
+}
+
+/// One lamp as it lights a model: a light of this colour from this direction (toward the lamp), as WoW.exe sets it (FUN_006a7ac0).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LampLight {
+    pub color: [f32; 3],
+    pub dir: [f32; 3],
 }
 
 /// The light a model placed in a room of a building is lit by, from the colour of its place (`MODD`: blue, green, red, alpha as the file has it), as the
@@ -132,15 +163,16 @@ fn room_light(rgb: [u8; 3], floor: f32) -> InteriorLight {
     let rgb = rgb.map(f32::from);
     let brightest = rgb.iter().cloned().fold(0.0, f32::max);
     if brightest == 0.0 {
-        return InteriorLight { ambient: [0.0; 3], diffuse: [floor / 255.0; 3], baked: false };
+        return InteriorLight { ambient: [0.0; 3], diffuse: [floor / 255.0; 3], sun_mix: 0.0, lamps: [LampLight::default(); 4] };
     }
-    InteriorLight { ambient: rgb.map(|c| c * (96.0 / brightest).min(1.0) / 255.0), diffuse: rgb.map(|c| (c * (floor / brightest).max(1.0)).min(255.0) / 255.0), baked: false }
+    InteriorLight { ambient: rgb.map(|c| c * (96.0 / brightest).min(1.0) / 255.0), diffuse: rgb.map(|c| (c * (floor / brightest).max(1.0)).min(255.0) / 255.0), sun_mix: 0.0, lamps: [LampLight::default(); 4] }
 }
 
 /// How a model of the map that stands in a room of a placed building is lit, as WoW.exe does it (FUN_0069e4c0): a line from a yard above it to 12
 /// yards below it is cast against the room's triangles, and the baked colour at the nearest hit is the light of the place (`room_light`, up to 168).
-/// A triangle with the sun flag (`MOPY` 1) leaves it lit as outdoors (`None`), as does finding no room. The number is the building it is in.
-pub fn room_light_at<'a>(wmos: impl IntoIterator<Item = (&'a WmoCpu, &'a Mat4)>, at: Vec3) -> Option<(InteriorLight, usize)> {
+/// A triangle with the sun flag (`MOPY` 1) leaves it lit as outdoors (`None`), as does finding no room. The number is the building it is in. The light from
+/// above is as strong as `intensity` says (the original's 0.5 where the ground has a baked shadow and 2.5 where not, FUN_0069e280).
+pub fn room_light_at<'a>(wmos: impl IntoIterator<Item = (&'a WmoCpu, &'a Mat4)>, at: Vec3, intensity: f32) -> Option<(InteriorLight, usize)> {
     let mut nearest: Option<(f32, usize, Option<[u8; 3]>)> = None;
     for (wi, (wmo, matrix)) in wmos.into_iter().enumerate() {
         let inverse = matrix.inverse();
@@ -182,7 +214,11 @@ pub fn room_light_at<'a>(wmos: impl IntoIterator<Item = (&'a WmoCpu, &'a Mat4)>,
             }
         }
     }
-    nearest.and_then(|(_, wi, colour)| colour.map(|rgb| (room_light(rgb, 168.0), wi)))
+    nearest.and_then(|(_, wi, colour)| colour.map(|rgb| {
+        let mut light = room_light(rgb, 168.0);
+        light.diffuse = light.diffuse.map(|c| c * intensity);
+        (light, wi)
+    }))
 }
 
 /// A model of the world that has particle emitters or moves, and must be shown by `fires.rs` instead of (or besides) the still model of the tile.
@@ -273,46 +309,20 @@ pub struct Lamp {
     pub attenuation: (f32, f32),
 }
 
-/// The model as it is lit by the building's lamps near it: its vertex colours carry the light of the (at most four) lamps nearest to it, which add to
-/// what the room gives (`InteriorLight::baked`). One lamp lights a vertex by its colour times its intensity, the less the farther the vertex is (full
-/// strength within the first length of the attenuation, none beyond the second) and the more the vertex faces it.
-pub fn lit_by_lamps(model: &ModelCpu, matrix: &Mat4, lamps: &[Lamp]) -> Option<ModelCpu> {
-    let centre = matrix.w_axis.truncate();
-    let mut near: Vec<&Lamp> = lamps.iter().filter(|l| l.position.distance(centre) < l.attenuation.1 + 3.0).collect();
-    near.sort_by(|a, b| a.position.distance(centre).total_cmp(&b.position.distance(centre)));
-    near.truncate(4);
-    if near.is_empty() {
-        return None;
+/// How the lamps of a building light a model standing at `at` (tile-local, render space), as WoW.exe does it (FUN_006a7ac0): the four nearest within their
+/// reach each light it as a light of their colour, full strength within the first length of their attenuation and fading to none at the second, from where
+/// the lamp is seen from a little above the model's origin.
+pub fn lamp_lights(lamps: &[Lamp], at: Vec3) -> [LampLight; 4] {
+    let from = at + Vec3::Y * 1.1667;
+    let mut near: Vec<(f32, &Lamp)> = lamps.iter().map(|l| (l.position.distance(from), l)).filter(|(d, l)| *d < l.attenuation.1 && *d > 1e-3).collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out = [LampLight::default(); 4];
+    for (slot, (d, lamp)) in out.iter_mut().zip(near) {
+        let (start, end) = lamp.attenuation;
+        let reach = if d <= start { 1.0 } else { (end - d) / (end - start).max(1e-3) };
+        *slot = LampLight { color: lamp.color.map(|c| c * reach), dir: ((lamp.position - from) / d).to_array() };
     }
-    let vertices = model
-        .vertices
-        .iter()
-        .map(|v| {
-            let at = matrix.transform_point3(Vec3::from(v.pos));
-            let normal = matrix.transform_vector3(Vec3::from(v.normal)).normalize_or_zero();
-            let mut sum = [0.0f32; 3];
-            for lamp in &near {
-                let to = lamp.position - at;
-                let d = to.length();
-                let (start, end) = lamp.attenuation;
-                let reach = if d >= end { 0.0 } else if d <= start { 1.0 } else { (end - d) / (end - start).max(1e-3) };
-                let facing = if d < 1e-3 { 1.0 } else { normal.dot(to / d).max(0.0) };
-                for (s, c) in sum.iter_mut().zip(lamp.color) {
-                    *s += c * reach * facing;
-                }
-            }
-            ModelVertex { color: [(sum[0].min(1.0) * 255.0) as u8, (sum[1].min(1.0) * 255.0) as u8, (sum[2].min(1.0) * 255.0) as u8, 0], ..*v }
-        })
-        .collect();
-    Some(ModelCpu {
-        key: format!("{}|lamps{:x}", model.key, (centre.x.to_bits() ^ centre.z.to_bits().rotate_left(7) ^ centre.y.to_bits().rotate_left(13))),
-        vertices,
-        indices: model.indices.clone(),
-        batches: model.batches.clone(),
-        col_vertices: model.col_vertices.clone(),
-        col_indices: model.col_indices.clone(),
-        tracks: model.tracks.clone(),
-    })
+    out
 }
 
 /// The lamps of a placed building (its omni lights), where they are in the tile. Every model in the building is lit by the ones near it, whatever
@@ -787,6 +797,27 @@ mod tests {
             .filter(|n| mount.exists(&normalize_model_name(n)))
             .collect();
         assert!(missing.len() <= 3, "models that exist but failed to load: {missing:?}");
+    }
+
+    #[test]
+    fn the_four_nearest_lamps_in_reach_light_a_model_less_the_farther_they_are() {
+        let lamp = |x: f32| Lamp { position: Vec3::new(x, 1.1667, 0.0), color: [1.0, 0.5, 0.25], attenuation: (2.0, 6.0) };
+        let lamps: Vec<Lamp> = [5.0, 1.0, 4.0, 3.0, 5.5, 20.0].map(lamp).into();
+        let lit = lamp_lights(&lamps, Vec3::ZERO);
+        // The nearest is within the first length: all of it, from its direction.
+        assert_eq!((lit[0].color, lit[0].dir), ([1.0, 0.5, 0.25], [1.0, 0.0, 0.0]));
+        // The next ones lose their light as they get farther; of the six only four count, and the one out of reach is not among them.
+        let reach = lit.map(|l| l.color[0]);
+        assert_eq!(reach, [1.0, 0.75, 0.5, 0.25]);
+    }
+
+    #[test]
+    fn a_light_eases_toward_another_by_a_step_and_its_direction_turns_with_it() {
+        let room = interior_light([100, 100, 100, 255]);
+        let outdoors = InteriorLight::outdoors(Vec3::splat(0.5), Vec3::ONE);
+        let half = room.eased(outdoors, 0.1);
+        assert!((half.ambient[0] - room.ambient[0] - 0.1).abs() < 1e-6 && (half.sun_mix - 0.1).abs() < 1e-6);
+        assert_eq!(room.eased(outdoors, 2.0), outdoors);
     }
 
     #[test]

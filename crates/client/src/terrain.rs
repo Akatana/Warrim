@@ -100,7 +100,20 @@ pub struct TileCpu {
     pub doodads: Vec<DoodadInstance>,
     /// Buildings: their groups are shown according to portal visibility each frame.
     pub wmos: Vec<WmoInstance>,
+    /// The shadows baked into the ground, 256 chunks of 512 bytes (see `ground_shadowed`); empty if the tile has none.
+    pub shadow: Vec<u8>,
     pub collision: CollisionMesh,
+}
+
+/// Whether the ground at (`x`, `z`), yards east and south of the tile's corner, has a shadow baked into it: the 64 x 64 bits of its chunk (WoW.exe FUN_0069b350).
+pub fn ground_shadowed(shadow: &[u8], x: f32, z: f32) -> bool {
+    let (cx, cz) = ((x / CHUNK_SIZE).floor() as i32, (z / CHUNK_SIZE).floor() as i32);
+    if !(0..16).contains(&cx) || !(0..16).contains(&cz) {
+        return false;
+    }
+    let cell = |v: f32, c: i32| (((v - c as f32 * CHUNK_SIZE) * 64.0 / CHUNK_SIZE) as usize).min(63);
+    let (ix, iz) = (cell(x, cx), cell(z, cz));
+    shadow.get((cz * 16 + cx) as usize * 512 + iz * 8 + ix / 8).is_some_and(|b| b >> (ix & 7) & 1 != 0)
 }
 
 /// Liquid sets, in the order of the water texture array: 30 animation frames each.
@@ -581,6 +594,16 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
     }
 
     let on_map = doodads.len();
+    let mut shadow = vec![0u8; 256 * 512];
+    for c in &adt.chunks {
+        if let Some(bits) = &c.shadow {
+            let at = (c.index_y as usize % 16 * 16 + c.index_x as usize % 16) * 512;
+            shadow[at..at + 512].copy_from_slice(&bits[..]);
+        }
+    }
+    if adt.chunks.iter().all(|c| c.shadow.is_none()) {
+        shadow.clear();
+    }
 
     // WMOs: same coordinate convention.
     let mut wmos = Vec::new();
@@ -617,15 +640,12 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
             if is_bed(&d.name) {
                 beds.push(place.transform_point3(Vec3::ZERO));
             }
+            // The lamps near it light it too.
+            if let Some(light) = light.as_mut() {
+                light.lamps = crate::models::lamp_lights(&lamps, place.w_axis.truncate());
+            }
             fires.extend(living.map(|l| Fire { model: l.file, matrix: place, mesh: l.mesh, light }));
             if let Some(model) = models.get(mount, &d.name) {
-                let model = match (light.as_mut(), (!moves).then(|| crate::models::lit_by_lamps(&model, &place, &lamps)).flatten()) {
-                    (Some(light), Some(lit)) => {
-                        light.baked = true;
-                        Arc::new(lit)
-                    }
-                    _ => model,
-                };
                 doodads.push(DoodadInstance { model, matrix: place, drawn: !moves, light });
             }
         }
@@ -634,11 +654,10 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
     // The models of the map that stand in a room of a building are lit by the room, as the original does.
     let lamps: Vec<Vec<crate::models::Lamp>> = wmos.iter().map(|w| crate::models::lamps_of(&w.wmo, &w.matrix)).collect();
     for d in &mut doodads[..on_map] {
-        let Some((mut light, w)) = crate::models::room_light_at(wmos.iter().map(|w| (&*w.wmo, &w.matrix)), d.matrix.w_axis.truncate()) else { continue };
-        if let Some(lit) = d.drawn.then(|| crate::models::lit_by_lamps(&d.model, &d.matrix, &lamps[w])).flatten() {
-            d.model = Arc::new(lit);
-            light.baked = true;
-        }
+        let at = d.matrix.w_axis.truncate();
+        let intensity = if ground_shadowed(&shadow, at.x, at.z) { 0.5 } else { 2.5 };
+        let Some((mut light, w)) = crate::models::room_light_at(wmos.iter().map(|w| (&*w.wmo, &w.matrix)), at, intensity) else { continue };
+        light.lamps = crate::models::lamp_lights(&lamps[w], at);
         d.light = Some(light);
     }
 
@@ -675,6 +694,7 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
         beds,
         doodads,
         wmos,
+        shadow,
         collision,
     }
 }
@@ -682,6 +702,17 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shadow_bits_of_the_ground_are_found_by_chunk_and_cell() {
+        let mut shadow = vec![0u8; 256 * 512];
+        // Chunk (2, 3), cell (5, 7): byte 7 * 8 + 0 of its 512, bit 5.
+        shadow[(3 * 16 + 2) * 512 + 7 * 8] |= 1 << 5;
+        let cell = CHUNK_SIZE / 64.0;
+        assert!(ground_shadowed(&shadow, 2.0 * CHUNK_SIZE + 5.5 * cell, 3.0 * CHUNK_SIZE + 7.5 * cell));
+        assert!(!ground_shadowed(&shadow, 2.0 * CHUNK_SIZE + 6.5 * cell, 3.0 * CHUNK_SIZE + 7.5 * cell));
+        assert!(!ground_shadowed(&shadow, -1.0, 3.0) && !ground_shadowed(&[], 3.0, 3.0));
+    }
 
     #[test]
     fn beds_and_hammocks_are_slept_in_and_wardrobes_are_not() {
@@ -860,6 +891,6 @@ mod tests {
         let tile = load_tile(&mount, &TextureCache::default(), &ModelCache::default(), "Azeroth", (32, 48), &[]).unwrap();
         // The abbey has 42 lamps (warm, a share of the way out), and what stands near them is lit by them.
         assert!(tile.wmos.iter().any(|w| w.wmo.lights.len() == 42 && w.wmo.lights.iter().all(|l| l.kind == 0 && l.attenuation.1 > l.attenuation.0)));
-        assert!(tile.doodads.iter().filter(|d| d.light.is_some_and(|l| l.baked)).count() > 30);
+        assert!(tile.doodads.iter().filter(|d| d.light.is_some_and(|l| l.lamps[0].color != [0.0; 3])).count() > 30);
     }
 }
