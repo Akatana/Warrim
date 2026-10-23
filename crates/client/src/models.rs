@@ -123,12 +123,66 @@ pub struct InteriorLight {
 /// original works it out: the ambient light is that colour held down to 96 in its brightest channel, the light from the sun's direction is that colour
 /// held up to 112.
 pub fn interior_light(color: [u8; 4]) -> InteriorLight {
-    let rgb = [color[2] as f32, color[1] as f32, color[0] as f32];
+    room_light([color[2], color[1], color[0]], 112.0)
+}
+
+/// The light of a place of the colour `rgb` (0 to 255): the ambient light is that colour held down to 96 in its brightest channel, the light from
+/// above that colour held up to `floor` (WoW.exe FUN_006a77e0: 112 for what a building lists, 168 for what stands in it on the map).
+fn room_light(rgb: [u8; 3], floor: f32) -> InteriorLight {
+    let rgb = rgb.map(f32::from);
     let brightest = rgb.iter().cloned().fold(0.0, f32::max);
     if brightest == 0.0 {
-        return InteriorLight { ambient: [0.0; 3], diffuse: [112.0 / 255.0; 3], baked: false };
+        return InteriorLight { ambient: [0.0; 3], diffuse: [floor / 255.0; 3], baked: false };
     }
-    InteriorLight { ambient: rgb.map(|c| c * (96.0 / brightest).min(1.0) / 255.0), diffuse: rgb.map(|c| (c * (112.0 / brightest).max(1.0)).min(255.0) / 255.0), baked: false }
+    InteriorLight { ambient: rgb.map(|c| c * (96.0 / brightest).min(1.0) / 255.0), diffuse: rgb.map(|c| (c * (floor / brightest).max(1.0)).min(255.0) / 255.0), baked: false }
+}
+
+/// How a model of the map that stands in a room of a placed building is lit, as WoW.exe does it (FUN_0069e4c0): a line from a yard above it to 12
+/// yards below it is cast against the room's triangles, and the baked colour at the nearest hit is the light of the place (`room_light`, up to 168).
+/// A triangle with the sun flag (`MOPY` 1) leaves it lit as outdoors (`None`), as does finding no room.
+pub fn room_light_at(wmos: &[WmoInstance], at: Vec3) -> Option<InteriorLight> {
+    let mut nearest: Option<(f32, Option<[u8; 3]>)> = None;
+    for w in wmos {
+        let inverse = w.matrix.inverse();
+        let (from, to) = (inverse.transform_point3(at + Vec3::Y), inverse.transform_point3(at - Vec3::Y * 12.0));
+        let (low, high) = (from.min(to) - 0.5, from.max(to) + 0.5);
+        for g in &w.wmo.groups {
+            // Rooms only: the groups of the outside (`flags & 0x48`) are lit by the sun.
+            let Some(model) = g.model.as_ref().filter(|_| g.flags & 0x48 == 0 && g.flags & 0x2000 != 0) else { continue };
+            // The bounds are as the file has them (z up), the model as the renderer has it (y up, z south).
+            let (lo, hi) = (Vec3::new(g.bbox.0[0], g.bbox.0[2], -g.bbox.1[1]), Vec3::new(g.bbox.1[0], g.bbox.1[2], -g.bbox.0[1]));
+            if hi.cmplt(low).any() || lo.cmpgt(high).any() {
+                continue;
+            }
+            let dir = to - from;
+            for (t, tri) in model.indices.chunks_exact(3).enumerate() {
+                let v = |i: u16| &model.vertices[i as usize];
+                let (a, b, c) = (v(tri[0]), v(tri[1]), v(tri[2]));
+                let (pa, pb, pc) = (Vec3::from(a.pos), Vec3::from(b.pos), Vec3::from(c.pos));
+                // Moeller-Trumbore, both sides.
+                let (e1, e2) = (pb - pa, pc - pa);
+                let h = dir.cross(e2);
+                let det = e1.dot(h);
+                if det.abs() < 1e-8 {
+                    continue;
+                }
+                let s = from - pa;
+                let u = s.dot(h) / det;
+                let q = s.cross(e1);
+                let vv = dir.dot(q) / det;
+                let d = e2.dot(q) / det;
+                if u < 0.0 || vv < 0.0 || u + vv > 1.0 || !(0.0..=1.0).contains(&d) || nearest.is_some_and(|(n, _)| n <= d) {
+                    continue;
+                }
+                let colour = (!g.sunlit.get(t).copied().unwrap_or(false)).then(|| {
+                    let mix = |k: usize| (a.color[k] as f32 * (1.0 - u - vv) + b.color[k] as f32 * u + c.color[k] as f32 * vv) as u8;
+                    [mix(0), mix(1), mix(2)]
+                });
+                nearest = Some((d, colour));
+            }
+        }
+    }
+    nearest.and_then(|(_, colour)| colour).map(|rgb| room_light(rgb, 168.0))
 }
 
 /// A model of the world that has particle emitters or moves, and must be shown by `fires.rs` instead of (or besides) the still model of the tile.
@@ -151,6 +205,8 @@ pub struct WmoGroupCpu {
     /// Range of this group's entries in `WmoCpu::portal_refs`.
     pub portals: (u16, u16),
     pub model: Option<Arc<ModelCpu>>,
+    /// For each triangle, whether it is lit by the sun (`MOPY` flag 1).
+    pub sunlit: Vec<bool>,
 }
 
 /// One placed building: cache entry plus a tile-local transform.
@@ -414,6 +470,7 @@ impl ModelCache {
                 bbox: group.bbox,
                 portals: (group.portal_start, group.portal_count),
                 model: None,
+                sunlit: group.tri_info.iter().map(|&(flags, _)| flags & 1 != 0).collect(),
             });
             if group.indices.is_empty() || group.batches.is_empty() {
                 continue;

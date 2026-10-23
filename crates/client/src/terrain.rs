@@ -580,6 +580,8 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
         doodads.push(DoodadInstance { model, matrix, drawn: !moves, light: None });
     }
 
+    let on_map = doodads.len();
+
     // WMOs: same coordinate convention.
     let mut wmos = Vec::new();
     for w in &adt.wmos {
@@ -638,6 +640,11 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
                 doodads.push(DoodadInstance { model, matrix: place, drawn: !moves, light });
             }
         }
+    }
+
+    // The models of the map that stand in a room of a building are lit by the room, as the original does.
+    for d in &mut doodads[..on_map] {
+        d.light = crate::models::room_light_at(&wmos, d.matrix.w_axis.truncate());
     }
 
     // Collision: every placed model's solid triangles, moved into tile space.

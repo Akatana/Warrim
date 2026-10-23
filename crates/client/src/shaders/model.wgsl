@@ -97,9 +97,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         min(g.ambient.rgb + sun_color * ndl * shade * in.color.rgb + params.glow.rgb * g.sun_color.w, vec3<f32>(1.0)),
         building,
     );
-    // A model in a room of a building is lit by the colour of its place instead of the sun's: ambient, and the light from the sun's direction.
-    // The vertex colours of a model near the lamps of the building carry their light (room_sun.a = 1).
-    let room = min(in.room_ambient.rgb + in.room_sun.rgb * ndl + select(vec3<f32>(0.0), in.color.rgb, in.room_sun.a > 0.5), vec3<f32>(1.3));
+    // A model in a room of a building is lit by the colour of its place instead of the sun's: ambient, and a light from a fixed direction, not the
+    // sun's (WoW.exe DAT_00ca816c, set by FUN_006a72b0): (-0.308, -0.308, -0.9) in world space, nearly straight down, here the way to the light in
+    // render space. The surface as the file has it, as a fixed-function light does. The vertex colours of a model near the lamps of the building
+    // carry their light (room_sun.a = 1).
+    let room_ndl = max(dot(normalize(in.normal), vec3<f32>(-0.30784, 0.9, -0.30784)), 0.0);
+    let room = min(in.room_ambient.rgb + in.room_sun.rgb * room_ndl + select(vec3<f32>(0.0), in.color.rgb, in.room_sun.a > 0.5), vec3<f32>(1.3));
     // The pixel shader's steps, each clamped to 0..1 as ps_1_x does: v * a, then 4 * t * that, then t * v + that.
     let overbright = clamp(c.rgb * in.color.rgb + clamp(4.0 * c.rgb * (in.color.rgb * in.color.a), vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(0.0), vec3<f32>(1.0));
     var surface = c.rgb * sun;

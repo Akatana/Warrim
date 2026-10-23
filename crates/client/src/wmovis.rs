@@ -298,7 +298,7 @@ mod tests {
             portal_verts.push(v);
         }
         let bbox = ([-50.0, -50.0, -50.0], [50.0, 50.0, 50.0]);
-        let group = |flags, portals| WmoGroupCpu { id: 0, flags, bbox, portals, model: None };
+        let group = |flags, portals| WmoGroupCpu { id: 0, flags, bbox, portals, ..Default::default() };
         WmoCpu {
             groups: vec![group(OUTDOOR, (0, 2)), group(0x2000, (2, 0)), group(0x2000, (2, 0)), group(0x2000, (2, 0))],
             portal_verts,
