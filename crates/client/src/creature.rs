@@ -1541,7 +1541,7 @@ impl Creatures {
                         rigs[kind] = beast_rig(def, mount, cache)?;
                     }
                     let rig = rigs[kind].as_ref().unwrap();
-                    Visual::Beast { entity: renderer.add_entity(gpu, &rig.template), anim: Channel::new(&rig.m2, STAND, &mut rng), last_seq: usize::MAX, shown: kind }
+                    Visual::Beast { entity: renderer.add_room_lit_entity(gpu, &rig.template), anim: Channel::new(&rig.m2, STAND, &mut rng), last_seq: usize::MAX, shown: kind }
                 }
                 // A look that does not exist for the race (a face, a hair style) is shown as the default of the race instead.
                 Body::Humanoid { outfit, look } => Visual::Person(match Person::load(outfit, look, mount, renderer, gpu, &format!("npc/{n}")) {
@@ -1710,7 +1710,7 @@ impl Creatures {
                         match self.rigs[c.mob.look].as_ref() {
                             Some(rig) => {
                                 renderer.remove_entity(*entity);
-                                (*entity, *anim, *last_seq, *shown) = (renderer.add_entity(gpu, &rig.template), Channel::new(&rig.m2, STAND, &mut self.rng), usize::MAX, c.mob.look);
+                                (*entity, *anim, *last_seq, *shown) = (renderer.add_room_lit_entity(gpu, &rig.template), Channel::new(&rig.m2, STAND, &mut self.rng), usize::MAX, c.mob.look);
                             }
                             None => c.mob.look = *shown,
                         }

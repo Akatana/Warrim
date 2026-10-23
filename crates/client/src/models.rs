@@ -139,14 +139,14 @@ fn room_light(rgb: [u8; 3], floor: f32) -> InteriorLight {
 
 /// How a model of the map that stands in a room of a placed building is lit, as WoW.exe does it (FUN_0069e4c0): a line from a yard above it to 12
 /// yards below it is cast against the room's triangles, and the baked colour at the nearest hit is the light of the place (`room_light`, up to 168).
-/// A triangle with the sun flag (`MOPY` 1) leaves it lit as outdoors (`None`), as does finding no room.
-pub fn room_light_at(wmos: &[WmoInstance], at: Vec3) -> Option<InteriorLight> {
-    let mut nearest: Option<(f32, Option<[u8; 3]>)> = None;
-    for w in wmos {
-        let inverse = w.matrix.inverse();
+/// A triangle with the sun flag (`MOPY` 1) leaves it lit as outdoors (`None`), as does finding no room. The number is the building it is in.
+pub fn room_light_at<'a>(wmos: impl IntoIterator<Item = (&'a WmoCpu, &'a Mat4)>, at: Vec3) -> Option<(InteriorLight, usize)> {
+    let mut nearest: Option<(f32, usize, Option<[u8; 3]>)> = None;
+    for (wi, (wmo, matrix)) in wmos.into_iter().enumerate() {
+        let inverse = matrix.inverse();
         let (from, to) = (inverse.transform_point3(at + Vec3::Y), inverse.transform_point3(at - Vec3::Y * 12.0));
         let (low, high) = (from.min(to) - 0.5, from.max(to) + 0.5);
-        for g in &w.wmo.groups {
+        for g in &wmo.groups {
             // Rooms only: the groups of the outside (`flags & 0x48`) are lit by the sun.
             let Some(model) = g.model.as_ref().filter(|_| g.flags & 0x48 == 0 && g.flags & 0x2000 != 0) else { continue };
             // The bounds are as the file has them (z up), the model as the renderer has it (y up, z south).
@@ -171,18 +171,18 @@ pub fn room_light_at(wmos: &[WmoInstance], at: Vec3) -> Option<InteriorLight> {
                 let q = s.cross(e1);
                 let vv = dir.dot(q) / det;
                 let d = e2.dot(q) / det;
-                if u < 0.0 || vv < 0.0 || u + vv > 1.0 || !(0.0..=1.0).contains(&d) || nearest.is_some_and(|(n, _)| n <= d) {
+                if u < 0.0 || vv < 0.0 || u + vv > 1.0 || !(0.0..=1.0).contains(&d) || nearest.is_some_and(|(n, ..)| n <= d) {
                     continue;
                 }
                 let colour = (!g.sunlit.get(t).copied().unwrap_or(false)).then(|| {
                     let mix = |k: usize| (a.color[k] as f32 * (1.0 - u - vv) + b.color[k] as f32 * u + c.color[k] as f32 * vv) as u8;
                     [mix(0), mix(1), mix(2)]
                 });
-                nearest = Some((d, colour));
+                nearest = Some((d, wi, colour));
             }
         }
     }
-    nearest.and_then(|(_, colour)| colour).map(|rgb| room_light(rgb, 168.0))
+    nearest.and_then(|(_, wi, colour)| colour.map(|rgb| (room_light(rgb, 168.0), wi)))
 }
 
 /// A model of the world that has particle emitters or moves, and must be shown by `fires.rs` instead of (or besides) the still model of the tile.
@@ -228,9 +228,8 @@ pub struct WmoCpu {
     pub doodad_sets: Vec<(u32, u32)>,
     /// The doodads that stand in rooms (indoor groups), which are lit by their own light and not the sun's.
     pub indoor_doodads: std::collections::HashSet<u16>,
-    /// The lamps of the building (the omni ones) and, for each doodad in a room, which of them shine there.
+    /// The lamps of the building.
     pub lights: Vec<wowfmt::wmo::WmoLight>,
-    pub doodad_lights: std::collections::HashMap<u16, Vec<u16>>,
     /// Liquid surfaces of all groups as a triangle list: (render-space position, liquid kind
     /// 0 water / 1 ocean / 2 magma / 3 slime), relative to the building.
     pub liquid_tris: Vec<([f32; 3], u32)>,
@@ -314,6 +313,20 @@ pub fn lit_by_lamps(model: &ModelCpu, matrix: &Mat4, lamps: &[Lamp]) -> Option<M
         col_indices: model.col_indices.clone(),
         tracks: model.tracks.clone(),
     })
+}
+
+/// The lamps of a placed building (its omni lights), where they are in the tile. Every model in the building is lit by the ones near it, whatever
+/// room it stands in.
+pub fn lamps_of(wmo: &WmoCpu, matrix: &Mat4) -> Vec<Lamp> {
+    wmo.lights
+        .iter()
+        .filter(|l| l.kind == 0)
+        .map(|l| Lamp {
+            position: matrix.transform_point3(Vec3::new(l.position[0], l.position[2], -l.position[1])),
+            color: [l.color[2] as f32 / 255.0 * l.intensity, l.color[1] as f32 / 255.0 * l.intensity, l.color[0] as f32 / 255.0 * l.intensity],
+            attenuation: l.attenuation,
+        })
+        .collect()
 }
 
 /// Matrix of a WMO doodad relative to its building, in render space.
@@ -435,7 +448,6 @@ impl ModelCache {
         let mut groups: Vec<WmoGroupCpu> = Vec::new();
         let mut liquid_tris = Vec::new();
         let mut indoor_doodads = std::collections::HashSet::new();
-        let mut doodad_lights: std::collections::HashMap<u16, Vec<u16>> = std::collections::HashMap::new();
         let parsed: Vec<Option<WmoGroup>> = (0..root.group_count)
             .map(|g| {
                 let gpath = group_path(path, g);
@@ -459,9 +471,6 @@ impl ModelCache {
             }
             if group.indoor {
                 indoor_doodads.extend(group.doodad_refs.iter().copied());
-                for &d in &group.doodad_refs {
-                    doodad_lights.entry(d).or_default().extend(group.light_refs.iter().copied());
-                }
             }
             let slot = groups.len();
             groups.push(WmoGroupCpu {
@@ -554,7 +563,6 @@ impl ModelCache {
             doodad_sets: root.doodad_sets,
             indoor_doodads,
             lights: root.lights,
-            doodad_lights,
             liquid_tris,
         })
     }

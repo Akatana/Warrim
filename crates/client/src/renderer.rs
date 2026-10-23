@@ -259,6 +259,10 @@ fn instance_floats(matrix: &Mat4, light: Option<crate::models::InteriorLight>) -
 struct EntityGpu {
     /// How it is lit if it stands in a room.
     light: Option<crate::models::InteriorLight>,
+    /// It is lit by the room it moves through (`add_room_lit_entity`): `light` follows `room_target`, found at `room_sampled`, by easing.
+    room_lit: bool,
+    room_target: Option<crate::models::InteriorLight>,
+    room_sampled: Vec3,
     model: Arc<ModelGpu>,
     instance: wgpu::Buffer,
     /// Render-space position and orientation (rotation, no translation).
@@ -326,6 +330,8 @@ pub struct Renderer {
     grey: wgpu::TextureView,
     depth: Option<(wgpu::TextureView, (u32, u32))>,
     entities: Vec<EntityGpu>,
+    /// The time of the last frame, for what eases.
+    room_clock: f32,
     /// Entities given back (`remove_entity`), to be used again by the next `add_entity`.
     free: Vec<usize>,
     /// The interface, drawn over the finished frame.
@@ -879,6 +885,7 @@ impl Renderer {
             format,
             offscreens: Vec::new(),
             entities: Vec::new(),
+            room_clock: 0.0,
             free: Vec::new(),
         }
     }
@@ -919,7 +926,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let entity = EntityGpu { light: None, model, instance, pos: Vec3::ZERO, orient: Mat4::IDENTITY, visible: false, fade: 1.0 };
+        let entity = EntityGpu { light: None, room_lit: false, room_target: None, room_sampled: Vec3::splat(f32::MAX), model, instance, pos: Vec3::ZERO, orient: Mat4::IDENTITY, visible: false, fade: 1.0 };
         match self.free.pop() {
             Some(id) => {
                 self.entities[id] = entity;
@@ -929,6 +936,41 @@ impl Renderer {
                 self.entities.push(entity);
                 self.entities.len() - 1
             }
+        }
+    }
+
+    /// Add a model that moves on its own and is lit by the rooms of buildings it moves through (a creature, a character): see `ease_room_lights`.
+    pub fn add_room_lit_entity(&mut self, gpu: &Gpu, model: &ModelCpu) -> usize {
+        let id = self.add_entity(gpu, model);
+        self.entities[id].room_lit = true;
+        id
+    }
+
+    /// Light the entities that move through rooms as WoW.exe does (FUN_0069e770, FUN_0069e4c0): the light of the place under them is found when they
+    /// have moved a little, and the ambient light they have eases toward it at 2 per second (all of it in half a second), so that walking through a
+    /// door does not change them with a jump. Out of a room it eases back to the light of the open air, and then it is the open air's.
+    fn ease_room_lights(&mut self, tiles: &[&TileGpu], time: f32) {
+        let dt = (time - self.room_clock).clamp(0.0, 0.25);
+        self.room_clock = time;
+        let a = &self.atmosphere;
+        let outdoors = crate::models::InteriorLight { ambient: a.ambient.to_array(), diffuse: a.sun_color.to_array(), baked: false };
+        let ease = |from: [f32; 3], to: [f32; 3]| [0, 1, 2].map(|i| from[i] + (to[i] - from[i]).clamp(-2.0 * dt, 2.0 * dt));
+        for e in self.entities.iter_mut().filter(|e| e.room_lit && e.visible) {
+            if e.pos.distance(e.room_sampled) > 0.2 {
+                e.room_sampled = e.pos;
+                let tile = tile_of(e.pos.x, e.pos.z);
+                e.room_target = tiles.iter().find(|t| t.coord == tile).and_then(|t| {
+                    let local = Vec3::new((e.pos.x as f64 - t.origin.0) as f32, e.pos.y, (e.pos.z as f64 - t.origin.1) as f32);
+                    crate::models::room_light_at(t.wmos.iter().map(|w| (&*w.wmo, &w.matrix)), local).map(|(light, _)| light)
+                });
+            }
+            if e.light.is_none() && e.room_target.is_none() {
+                continue;
+            }
+            let (from, to) = (e.light.unwrap_or(outdoors), e.room_target.unwrap_or(outdoors));
+            let eased = crate::models::InteriorLight { ambient: ease(from.ambient, to.ambient), diffuse: ease(from.diffuse, to.diffuse), baked: to.baked };
+            let arrived = eased.ambient == to.ambient && eased.diffuse == to.diffuse;
+            e.light = if arrived && e.room_target.is_none() { None } else { Some(eased) };
         }
     }
 
@@ -1442,6 +1484,8 @@ impl Renderer {
                 }
             }
         }
+
+        self.ease_room_lights(&tiles, time);
 
         // Entities are placed relative to the camera's tile, whose uniform they are drawn with.
         let origin = tile_origin(cam_tile);

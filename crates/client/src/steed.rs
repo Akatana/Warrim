@@ -58,7 +58,7 @@ impl Steed {
         let skins: Vec<(u32, &str)> = skins.iter().map(|(slot, file)| (*slot, file.as_str())).collect();
         let m2 = M2::parse(&mount.read(&model)?).with_context(|| model.clone())?;
         let template = cache.creature(mount, &model, &skins)?;
-        let entity = renderer.add_entity(gpu, &template);
+        let entity = renderer.add_room_lit_entity(gpu, &template);
         Ok(Steed { animator: Animator::new(&m2, 0x5EED), m2, template, entity, scale, clock_ms: 0.0, vertices: Vec::new(), percent, display, foot_set })
     }
 

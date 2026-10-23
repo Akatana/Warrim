@@ -607,6 +607,8 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
             let q = matrix.transform_point3(Vec3::from(p));
             water.push(WaterVertex { pos: q.to_array(), uv: [q.x / (UNIT_SIZE * 2.0), q.z / (UNIT_SIZE * 2.0)], kind });
         }
+        // The lamps of the building, where they are in the tile.
+        let lamps = crate::models::lamps_of(&wmo, &matrix);
         for (i, d) in wmo.active_doodads(w.doodad_set) {
             let living = models.living(mount, &d.name);
             let moves = living.as_ref().is_some_and(|l| l.mesh);
@@ -615,19 +617,6 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
             if is_bed(&d.name) {
                 beds.push(place.transform_point3(Vec3::ZERO));
             }
-            // The lamps of the rooms it stands in (the omni ones of the building), where they are in the tile.
-            let lamps: Vec<crate::models::Lamp> = wmo
-                .doodad_lights
-                .get(&(i as u16))
-                .into_iter()
-                .flatten()
-                .filter_map(|&l| wmo.lights.get(l as usize).filter(|l| l.kind == 0))
-                .map(|l| crate::models::Lamp {
-                    position: matrix.transform_point3(Vec3::new(l.position[0], l.position[2], -l.position[1])),
-                    color: [l.color[2] as f32 / 255.0 * l.intensity, l.color[1] as f32 / 255.0 * l.intensity, l.color[0] as f32 / 255.0 * l.intensity],
-                    attenuation: l.attenuation,
-                })
-                .collect();
             fires.extend(living.map(|l| Fire { model: l.file, matrix: place, mesh: l.mesh, light }));
             if let Some(model) = models.get(mount, &d.name) {
                 let model = match (light.as_mut(), (!moves).then(|| crate::models::lit_by_lamps(&model, &place, &lamps)).flatten()) {
@@ -643,8 +632,14 @@ pub fn build_tile(mount: &Mount, cache: &TextureCache, models: &ModelCache, adt:
     }
 
     // The models of the map that stand in a room of a building are lit by the room, as the original does.
+    let lamps: Vec<Vec<crate::models::Lamp>> = wmos.iter().map(|w| crate::models::lamps_of(&w.wmo, &w.matrix)).collect();
     for d in &mut doodads[..on_map] {
-        d.light = crate::models::room_light_at(&wmos, d.matrix.w_axis.truncate());
+        let Some((mut light, w)) = crate::models::room_light_at(wmos.iter().map(|w| (&*w.wmo, &w.matrix)), d.matrix.w_axis.truncate()) else { continue };
+        if let Some(lit) = d.drawn.then(|| crate::models::lit_by_lamps(&d.model, &d.matrix, &lamps[w])).flatten() {
+            d.model = Arc::new(lit);
+            light.baked = true;
+        }
+        d.light = Some(light);
     }
 
     // Collision: every placed model's solid triangles, moved into tile space.

@@ -213,7 +213,7 @@ impl Worn {
 
     /// The body of `character` as an entity, undressed.
     pub fn new(character: &Character, renderer: &mut Renderer, gpu: &Gpu) -> Worn {
-        Worn { body: renderer.add_entity(gpu, &character.model), parts: Vec::new(), fx: Effects::unmounted(), flares: Vec::new(), age: 0.0, dressed: None, stowed: false }
+        Worn { body: renderer.add_room_lit_entity(gpu, &character.model), parts: Vec::new(), fx: Effects::unmounted(), flares: Vec::new(), age: 0.0, dressed: None, stowed: false }
     }
 
     /// Dress `character` in what the equipment holds and make the entities of the models that hang on it, giving the earlier ones back. Nothing is
@@ -226,7 +226,7 @@ impl Worn {
         }
         character.dress(mount, cache, &gear_of(mount, equipment, look))?;
         renderer.remove_entity(self.body);
-        self.body = renderer.add_entity(gpu, &character.model);
+        self.body = renderer.add_room_lit_entity(gpu, &character.model);
         for part in self.parts.drain(..) {
             renderer.remove_entity(part.entity);
         }
@@ -237,7 +237,7 @@ impl Worn {
                 return;
             }
             match cache.item(mount, model, skin) {
-                Ok(m) => parts.push(Part { looks: m.tracks.clone().filter(|t| t.animated).map(|t| (t, m.batches.iter().map(|b| b.refs).collect())), drawn: Drawn::Same, model: model.to_string(), enchant: 0, entity: renderer.add_entity(gpu, &m), attach, fix, on_head, sheath: None }),
+                Ok(m) => parts.push(Part { looks: m.tracks.clone().filter(|t| t.animated).map(|t| (t, m.batches.iter().map(|b| b.refs).collect())), drawn: Drawn::Same, model: model.to_string(), enchant: 0, entity: renderer.add_room_lit_entity(gpu, &m), attach, fix, on_head, sheath: None }),
                 Err(e) => log::warn!("worn model {model}: {e:#}"),
             }
         };
