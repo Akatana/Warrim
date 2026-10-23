@@ -7,12 +7,12 @@
 //! (click it, type, Enter keeps what was typed, Esc throws it away), buttons and arrows that step through choices.
 
 use crate::character::{Race, Sex};
-use crate::content::{self, Action as CreatureAction, GossipOption, Overlay, Prop, Raws, RawBody, RawCreature, RawGoal, RawItem, RawQuest, Spawn};
+use crate::content::{self, Action as CreatureAction, GossipOption, Overlay, Prop, Raws, RawBody, RawCreature, RawGoal, RawItem, RawQuest, Spawn, Step, Waypoint};
 use crate::coords::render_to_wow;
 use crate::font::GlyphSet;
 use crate::gallery::{Gallery, Pic, Subject};
 use crate::propedit::{self, Drag, Eye, Gizmo, Handle, Mode, Models};
-use crate::items::Wear;
+use crate::items::{UseEffect, Wear};
 use crate::lockpick::Level;
 use crate::preview::{self, Preview};
 use crate::renderer::{Gpu, Renderer};
@@ -384,6 +384,37 @@ fn option_row(g: &mut Gui, y: &mut f32, x: f32, w: f32, label: &str, n: usize, v
     true
 }
 
+/// A line for an optional number: empty is none.
+fn option_value_row<T: Display + FromStr>(g: &mut Gui, y: &mut f32, x: f32, w: f32, label: &str, n: usize, value: &mut Option<T>) -> bool {
+    let mut text = value.as_ref().map_or_else(String::new, T::to_string);
+    if !text_row(g, y, x, w, label, n, &mut text) {
+        return false;
+    }
+    if text.trim().is_empty() {
+        *value = None;
+        return true;
+    }
+    match text.trim().parse::<T>() {
+        Ok(v) => {
+            *value = Some(v);
+            true
+        }
+        Err(_) => {
+            g.say(format!("{label}: \"{text}\" is not a valid value (leave it empty for none)"), RED);
+            false
+        }
+    }
+}
+
+/// A grey line under a row, saying what it means.
+fn hint(g: &mut Gui, y: &mut f32, x: f32, text: &str) {
+    let w = WIDTH - x - LABEL_WIDTH - 8.0;
+    for row in wrapped(g, w, text) {
+        g.text(x + LABEL_WIDTH, *y - 2.0, w, &row, DIM);
+        *y += ROW - 2.0;
+    }
+}
+
 /// A line for a list of strings, written with commas.
 fn list_row(g: &mut Gui, y: &mut f32, x: f32, w: f32, label: &str, n: usize, value: &mut Vec<String>, kind: Option<Ref>) -> bool {
     let mut text = value.join(", ");
@@ -709,6 +740,43 @@ impl Editor {
         gizmo.draw(ui, self.white, hot);
     }
 
+    /// The patrol of the creature selected, drawn over the world: its stops numbered and joined by a line along the ground, the last one back to the first.
+    fn patrol_overlay(&self, ui: &mut Ui, size: (u32, u32), eye: Eye, ground: Ground) {
+        let Some(Sel::Creature(i)) = self.selection().filter(|_| self.tab == Tab::World && self.sub == 0) else { return };
+        let Some(s) = self.data.as_ref().and_then(|d| d.cur.spawns.get(i)).filter(|s| !s.path.is_empty()) else { return };
+        let scale = size.1 as f32 / UI_HEIGHT;
+        let at = |north: f32, west: f32| ground(-west, -north).map(|y| Vec3::new(-west, y + 0.3, -north));
+        let white = self.white;
+        let dot = |ui: &mut Ui, p: Vec3, half: f32, color: [f32; 4]| {
+            if let Some(px) = eye.project(p) {
+                ui.quad(Quad { texture: white, rect: [px.x - half, px.y - half, 2.0 * half, 2.0 * half], uv: FULL_UV, color, additive: false });
+            }
+        };
+        let stops: Vec<Option<Vec3>> = s.path.iter().map(|w| at(w.at.0, w.at.1)).collect();
+        let line = [0.4, 0.7, 1.0, 0.9];
+        for (k, from) in stops.iter().enumerate() {
+            let (Some(a), Some(b)) = (from, stops[(k + 1) % stops.len()].as_ref()) else { continue };
+            let steps = (a.distance(*b) as usize).max(1);
+            for n in 0..steps {
+                let p = a.lerp(*b, n as f32 / steps as f32);
+                let y = ground(p.x, p.z).map_or(p.y, |h| h + 0.3);
+                dot(ui, Vec3::new(p.x, y, p.z), 1.5, line);
+            }
+        }
+        for (k, p) in stops.iter().enumerate() {
+            let Some(p) = p else { continue };
+            dot(ui, *p, 7.0, [0.0, 0.0, 0.0, 0.8]);
+            dot(ui, *p, 5.0, if k == 0 { GREEN } else { GOLD });
+            if let Some(px) = eye.project(*p + Vec3::Y * 0.8) {
+                let text = (k + 1).to_string();
+                let big = scale * 1.3;
+                let (tx, ty) = (px.x - self.font.width(&text) * big / 2.0, px.y - 14.0 * big);
+                ui.quad(Quad { texture: white, rect: [tx - 3.0, ty - 1.0, self.font.width(&text) * big + 6.0, 16.0 * big], uv: FULL_UV, color: [0.0, 0.0, 0.0, 0.7], additive: false });
+                self.font.draw(ui, &text, tx, ty, big, TEXT);
+            }
+        }
+    }
+
     /// The left button went down in the world, outside the window: it takes hold of the part of the gizmo under the pointer, or else
     /// selects the prop, creature or chest that the pointer is over (and shows its tab and its place in the list). True when it did
     /// something.
@@ -865,6 +933,7 @@ impl Editor {
                 Aim::Prop => None,
                 Aim::Chest => Some(Want::Chest(p.chest.clone(), at, p.turn.to_radians())),
                 Aim::Creature => Some(Want::Creature(p.creature.clone(), at, p.turn.to_radians())),
+                Aim::Stop => None,
             }),
             _ => None,
         };
@@ -925,6 +994,11 @@ impl Editor {
                 p.selected = d.cur.spawns.len() - 1;
                 p.scroll = d.cur.spawns.len().saturating_sub(10);
             }
+            Aim::Stop => {
+                if let Some(s) = d.cur.spawns.get_mut(self.pick[0].selected) {
+                    s.path.push(Waypoint { at: (north, west), wait: 0.0, facing: None, steps: Vec::new() });
+                }
+            }
             Aim::Chest => {
                 // Like the chest selected (its lock and what it holds), else a plain one that holds something.
                 let mut chest = d.cur.chests.get(self.pick[1].selected).or(d.cur.chests.first()).cloned().unwrap_or_else(|| content::ChestDef { id: String::new(), model: String::new(), at: (0.0, 0.0), facing: 0.0, lock: Some(Level::Novice), loot: "chest_poor".into(), copper: 0, items: Vec::new() });
@@ -978,8 +1052,14 @@ impl Editor {
         self.gizmo(ui, eye, size.1, ground);
         // A creature or a chest that has no ghost to show gets a mark on the ground with an arrow for the way it will face.
         if let (true, Some(at), false) = (self.placer.placing, self.placer.hover, self.placer.ghosted || self.placer.aim == Aim::Prop) {
-            propedit::draw_marker(ui, self.white, &eye, at, self.placer.turn, if self.placer.aim == Aim::Chest { [1.0, 0.6, 0.2, 1.0] } else { [0.4, 1.0, 0.4, 1.0] });
+            let color = match self.placer.aim {
+                Aim::Chest => [1.0, 0.6, 0.2, 1.0],
+                Aim::Stop => [0.4, 0.7, 1.0, 1.0],
+                _ => [0.4, 1.0, 0.4, 1.0],
+            };
+            propedit::draw_marker(ui, self.white, &eye, at, self.placer.turn, color);
         }
+        self.patrol_overlay(ui, size, eye, ground);
         let (save, apply, revert) = {
             let s = size.1 as f32 / UI_HEIGHT;
             let Editor { font, white, poi_icons, tab, sub, pick, data, input, edit, status, kind, preview, modal, placer, .. } = self;
@@ -1079,58 +1159,72 @@ fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind:
         let p = &mut pick[0];
         list(g, 8.0, top + 28.0, LIST_WIDTH, rows, &lines, p);
         let kinds: Vec<String> = d.cur.creatures.iter().map(|c| c.id.clone()).collect();
-        let mut y = top + 28.0;
-        if let Some(s) = d.cur.spawns.get_mut(p.selected) {
-            g.text(x, y, w, "The selected creature", GOLD);
-            y += ROW + 4.0;
-            text_row_ref(g, &mut y, x, w, "Kind", 4, &mut s.creature, Ref::Creature, None);
-            let before = s.at;
-            value_row(g, &mut y, x, w, "North", 0, &mut s.at.0);
-            value_row(g, &mut y, x, w, "West", 1, &mut s.at.1);
-            if s.at != before {
-                s.height = None;
+        let selected = p.selected;
+        let (mut delete, mut added) = (false, false);
+        // The form scrolls: the patrol can be long.
+        form(g, p, x, top + 28.0, w, bottom, |g, y, _| {
+            if let Some(s) = d.cur.spawns.get_mut(selected) {
+                g.text(x, *y, w, "The selected creature", GOLD);
+                *y += ROW + 4.0;
+                text_row_ref(g, y, x, w, "Kind", 4, &mut s.creature, Ref::Creature, None);
+                let before = s.at;
+                value_row(g, y, x, w, "North", 0, &mut s.at.0);
+                value_row(g, y, x, w, "West", 1, &mut s.at.1);
+                if s.at != before {
+                    s.height = None;
+                }
+                value_row(g, y, x, w, "Facing", 2, &mut s.facing);
+                // How far from here it strolls, in yards (0 stands still).
+                value_row(g, y, x, w, "Wander", 3, &mut s.wander);
+                s.wander = s.wander.max(0.0);
+                option_value_row(g, y, x, w, "Back after (s)", 5, &mut s.respawn);
+                hint(g, y, x, "Seconds from its death until it is back; empty: as long as its kind says.");
+                if g.button(x, *y, 150.0, "Here (where I stand)") {
+                    (s.at, s.facing, s.height) = ((me.north, me.west), me.yaw, None);
+                }
+                if g.button(x + 156.0, *y, 90.0, "Go to it") {
+                    actions.push(Action::Teleport(s.at.0, s.at.1));
+                }
+                *y += ROW + 8.0;
+                patrol_form(g, y, x, w, s, me, actions, placer);
+                if g.button(x, *y, 100.0, "Delete") {
+                    delete = true;
+                }
+                *y += ROW + 8.0;
+                gizmo_row(g, y, x, w, placer, false);
             }
-            value_row(g, &mut y, x, w, "Facing", 2, &mut s.facing);
-            // How far from here it strolls, in yards (0 stands still).
-            value_row(g, &mut y, x, w, "Wander", 3, &mut s.wander);
-            s.wander = s.wander.max(0.0);
-            if g.button(x, y, 150.0, "Here (where I stand)") {
-                (s.at, s.facing, s.height) = ((me.north, me.west), me.yaw, None);
+            *y += 12.0;
+            g.text(x, *y, w, "Put a new creature down", GOLD);
+            *y += ROW + 4.0;
+            *kind = (*kind).min(kinds.len().saturating_sub(1));
+            let mut current = kinds.get(*kind).cloned().unwrap_or_default();
+            // What is chosen in the window starts the putting down at once, as for props.
+            let chosen = matches!(&g.modal.picked, Some((t, _)) if *t == fid("pick", 5));
+            if text_row_ref(g, y, x, w, "Kind", 5, &mut current, Ref::Creature, None) {
+                *kind = kinds.iter().position(|k| *k == current).unwrap_or(0);
             }
-            if g.button(x + 156.0, y, 90.0, "Go to it") {
-                actions.push(Action::Teleport(s.at.0, s.at.1));
+            if chosen {
+                placer.start(Aim::Creature, &current, me.yaw);
             }
-            y += ROW + 8.0;
-            if g.button(x, y, 100.0, "Delete") {
-                d.cur.spawns.remove(p.selected);
-                p.selected = p.selected.saturating_sub(1);
+            if placer.placing && placer.aim == Aim::Creature {
+                if g.button(x, *y, 260.0, "Stop putting down (Esc)") {
+                    placer.placing = false;
+                }
+            } else if g.button(x, *y, 260.0, "Click in the world to put it down") {
+                placer.start(Aim::Creature, &current, me.yaw);
             }
-            y += ROW + 8.0;
-            gizmo_row(g, &mut y, x, w, placer, false);
+            *y += ROW + 6.0;
+            if g.button(x, *y, 220.0, "New here, facing as I do") {
+                d.cur.spawns.push(Spawn { creature: current, at: (me.north, me.west), facing: me.yaw, wander: crate::content::DEFAULT_WANDER, height: None, respawn: None, path: Vec::new() });
+                added = true;
+            }
+            *y += ROW + 12.0;
+        });
+        if delete {
+            d.cur.spawns.remove(selected);
+            p.selected = selected.saturating_sub(1);
         }
-        let mut y = top + 28.0 + 12.0 * (ROW + 3.0) + 70.0;
-        g.text(x, y, w, "Put a new creature down", GOLD);
-        y += ROW + 4.0;
-        *kind = (*kind).min(kinds.len().saturating_sub(1));
-        let mut current = kinds.get(*kind).cloned().unwrap_or_default();
-        // What is chosen in the window starts the putting down at once, as for props.
-        let chosen = matches!(&g.modal.picked, Some((t, _)) if *t == fid("pick", 5));
-        if text_row_ref(g, &mut y, x, w, "Kind", 5, &mut current, Ref::Creature, None) {
-            *kind = kinds.iter().position(|k| *k == current).unwrap_or(0);
-        }
-        if chosen {
-            placer.start(Aim::Creature, &current, me.yaw);
-        }
-        if placer.placing && placer.aim == Aim::Creature {
-            if g.button(x, y, 260.0, "Stop putting down (Esc)") {
-                placer.placing = false;
-            }
-        } else if g.button(x, y, 260.0, "Click in the world to put it down") {
-            placer.start(Aim::Creature, &current, me.yaw);
-        }
-        y += ROW + 6.0;
-        if g.button(x, y, 220.0, "New here, facing as I do") {
-            d.cur.spawns.push(Spawn { creature: current, at: (me.north, me.west), facing: me.yaw, wander: crate::content::DEFAULT_WANDER, height: None, respawn: None, path: Vec::new() });
+        if added {
             p.selected = d.cur.spawns.len() - 1;
             p.scroll = d.cur.spawns.len().saturating_sub(rows);
         }
@@ -1213,14 +1307,16 @@ fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind:
     if placer.placing && !g.blocked && g.input.keys.contains(&Key::Escape) {
         placer.placing = false;
     }
-    placer.placing &= matches!((placer.aim, *sub), (Aim::Creature, 0) | (Aim::Chest, 1) | (Aim::Prop, 3));
+    placer.placing &= matches!((placer.aim, *sub), (Aim::Creature | Aim::Stop, 0) | (Aim::Chest, 1) | (Aim::Prop, 3));
 }
 
 /// What the mouse and keys do in the world while the editor is open, over the world beside the window (the lines for what is going on
 /// come first).
 fn hud(g: &mut Gui, placer: &Placer, props: bool, width: f32) {
     let mut lines: Vec<(String, [f32; 4])> = Vec::new();
-    if placer.placing && placer.aim != Aim::Prop {
+    if placer.placing && placer.aim == Aim::Stop {
+        lines.push(("Adding stops to the patrol: every click in the world adds one stop there (a blue mark shows where). Esc stops.".to_string(), GOLD));
+    } else if placer.placing && placer.aim != Aim::Prop {
         let what = if placer.aim == Aim::Creature { placer.creature.as_str() } else { file_stem(&placer.chest) };
         lines.push((format!("Putting down {what}: click stands it there, facing the way the arrow points. Hold the right button and move the mouse to turn it ({:.0} deg). Esc stops.", placer.turn), GOLD));
     } else if placer.placing {
@@ -1300,7 +1396,8 @@ impl Placer {
     fn start(&mut self, aim: Aim, what: &str, facing: f32) {
         match aim {
             Aim::Creature => self.creature = what.to_string(),
-            _ => self.chest = what.to_string(),
+            Aim::Chest => self.chest = what.to_string(),
+            Aim::Prop | Aim::Stop => {}
         }
         (self.aim, self.placing, self.turn) = (aim, true, facing);
     }
@@ -1323,6 +1420,8 @@ enum Aim {
     Prop,
     Creature,
     Chest,
+    /// A stop of the patrol of the creature selected.
+    Stop,
 }
 
 /// The chest models the game can open and show (the picks and the opening animation are those of these two).
@@ -1632,6 +1731,213 @@ fn gizmo_row(g: &mut Gui, y: &mut f32, x: f32, w: f32, placer: &mut Placer, scal
     *y += 2.0 * ROW + 8.0;
 }
 
+/// The patrol of a creature: the places it walks to one after the other, round and round, and for each the seconds it stands there, the way it
+/// turns and what it does there (the original's waypoint script). Stops are added where one stands or by clicking in the world, where the
+/// patrol is drawn.
+#[allow(clippy::too_many_arguments)]
+fn patrol_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, s: &mut Spawn, me: Place, actions: &mut Vec<Action>, placer: &mut Placer) {
+    g.text(x, *y, w, if s.path.is_empty() { "Patrol (none: it stays where it is or strolls)" } else { "Patrol (stop 1, 2, 3 ... and round again)" }, GOLD);
+    *y += ROW + 4.0;
+    let count = s.path.len();
+    let (mut remove, mut swap) = (None, None);
+    for (i, stop) in s.path.iter_mut().enumerate() {
+        let base = 800 + i * 8;
+        g.text(x, *y + 3.0, LABEL_WIDTH, &format!("Stop {}", i + 1), GOLD);
+        let bx = x + LABEL_WIDTH;
+        if g.button(bx, *y, 54.0, "Here") {
+            stop.at = (me.north, me.west);
+        }
+        if g.button(bx + 58.0, *y, 40.0, "Go") {
+            actions.push(Action::Teleport(stop.at.0, stop.at.1));
+        }
+        if g.button(bx + 102.0, *y, 40.0, "Up") && i > 0 {
+            swap = Some((i - 1, i));
+        }
+        if g.button(bx + 146.0, *y, 50.0, "Down") && i + 1 < count {
+            swap = Some((i, i + 1));
+        }
+        if g.button(bx + 200.0, *y, 64.0, "Remove") {
+            remove = Some(i);
+        }
+        *y += ROW + 3.0;
+        let mut place = [stop.at.0, stop.at.1];
+        if numbers_row(g, y, x, w, "  north, west", base, &mut place) {
+            stop.at = (place[0], place[1]);
+        }
+        value_row(g, y, x, w, "  waits (s)", base + 1, &mut stop.wait);
+        stop.wait = stop.wait.max(0.0);
+        option_value_row(g, y, x, w, "  turns to", base + 2, &mut stop.facing);
+        steps_form(g, y, x, w, &mut stop.steps, 5000 + i * 100);
+        *y += 4.0;
+    }
+    if let Some((a, b)) = swap {
+        s.path.swap(a, b);
+    }
+    if let Some(i) = remove {
+        s.path.remove(i);
+    }
+    if count > 0 {
+        hint(g, y, x, "\"waits\": how long it stands there; \"turns to\": the heading while it does (empty: as it walks).");
+    }
+    if g.button(x + LABEL_WIDTH, *y, 220.0, "Add a stop here (where I stand)") {
+        s.path.push(Waypoint { at: (me.north, me.west), wait: 0.0, facing: None, steps: Vec::new() });
+    }
+    *y += ROW + 3.0;
+    if placer.placing && placer.aim == Aim::Stop {
+        if g.button(x + LABEL_WIDTH, *y, 220.0, "Stop adding (Esc)") {
+            placer.placing = false;
+        }
+    } else if g.button(x + LABEL_WIDTH, *y, 220.0, "Click in the world to add stops") {
+        placer.start(Aim::Stop, "", me.yaw);
+    }
+    *y += ROW + 3.0;
+    if count > 0 {
+        if g.button(x + LABEL_WIDTH, *y, 220.0, "Clear the patrol") {
+            s.path.clear();
+        }
+        *y += ROW + 3.0;
+    }
+    *y += 8.0;
+}
+
+/// What a spell line of an item does, one effect to a line: its kind chosen with the arrows, and its numbers under names. `base` keeps the
+/// fields of this list apart from those of the others.
+fn effects_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, effects: &mut Vec<UseEffect>, base: usize) {
+    use UseEffect as E;
+    const KINDS: [&str; 8] = ["Heals", "Restores mana", "Heals over time", "Restores mana over time", "Raises a stat", "Returns to the hearth", "Gives a mount", "Gives a bonus while worn"];
+    let stats: Vec<String> = ["Strength", "Agility", "Stamina", "Intellect", "Spirit", "Armor", "Health"].iter().map(|s| s.to_string()).collect();
+    let mut remove = None;
+    for (j, e) in effects.iter_mut().enumerate().take(10) {
+        let n = base + j * 10;
+        let now = match e {
+            E::Heal(..) => 0,
+            E::Mana(..) => 1,
+            E::HealOver(..) => 2,
+            E::ManaOver(..) => 3,
+            E::Boost(..) => 4,
+            E::Hearth => 5,
+            E::Mount(..) => 6,
+            E::Equip(..) => 7,
+        };
+        g.text(x, *y + 3.0, LABEL_WIDTH, &format!("  does {}", j + 1), DIM);
+        let by = g.arrows(x + LABEL_WIDTH, *y, 220.0, KINDS[now]);
+        if g.button(x + LABEL_WIDTH + 230.0, *y, 70.0, "Remove") {
+            remove = Some(j);
+        }
+        *y += ROW + 3.0;
+        if by != 0 {
+            *e = match (now as i32 + by).rem_euclid(KINDS.len() as i32) {
+                0 => E::Heal(20, 30),
+                1 => E::Mana(20, 30),
+                2 => E::HealOver(100, 10.0),
+                3 => E::ManaOver(100, 10.0),
+                4 => E::Boost(2, 10, 60.0),
+                5 => E::Hearth,
+                6 => E::Mount(0, 60),
+                _ => E::Equip(0, 0, 1),
+            };
+        }
+        match e {
+            E::Heal(low, high) | E::Mana(low, high) => {
+                value_row(g, y, x, w, "    at least", n, low);
+                value_row(g, y, x, w, "    at most", n + 1, high);
+            }
+            E::HealOver(total, seconds) | E::ManaOver(total, seconds) => {
+                value_row(g, y, x, w, "    in all", n, total);
+                value_row(g, y, x, w, "    over (s)", n + 1, seconds);
+            }
+            E::Boost(stat, amount, seconds) => {
+                let mut name = stats[(*stat as usize).min(stats.len() - 1)].clone();
+                if choice_row(g, y, x, w, "    stat", &stats, &mut name) {
+                    *stat = stats.iter().position(|s| *s == name).unwrap_or(0) as u8;
+                }
+                value_row(g, y, x, w, "    by", n + 1, amount);
+                value_row(g, y, x, w, "    for (s)", n + 2, seconds);
+                hint(g, y, x, "0 seconds: for as long as it is worn.");
+            }
+            E::Hearth => {}
+            E::Mount(display, percent) => {
+                value_row(g, y, x, w, "    mount look", n, display);
+                hint(g, y, x, "A row of CreatureDisplayInfo.dbc.");
+                value_row(g, y, x, w, "    speed added %", n + 1, percent);
+            }
+            E::Equip(aura, misc, amount) => {
+                value_row(g, y, x, w, "    aura number", n, aura);
+                value_row(g, y, x, w, "    misc", n + 1, misc);
+                value_row(g, y, x, w, "    amount", n + 2, amount);
+                hint(g, y, x, "The aura of the original's spell (what a worn item gives); misc: for a spell bonus, its schools.");
+            }
+        }
+    }
+    if let Some(j) = remove {
+        effects.remove(j);
+    }
+    if effects.len() < 10 && g.button(x + LABEL_WIDTH, *y, 150.0, "Add an effect") {
+        effects.push(E::Heal(20, 30));
+    }
+    *y += ROW + 3.0;
+}
+
+/// What a stop of a patrol makes the creature do (the original's waypoint script), one thing to a line, each some seconds after it arrives.
+fn steps_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, steps: &mut Vec<(f32, Step)>, base: usize) {
+    const KINDS: [&str; 5] = ["Runs or walks on", "Strolls around", "Stays for good", "Plays an animation", "Looks like another kind"];
+    let mut remove = None;
+    for (j, (after, what)) in steps.iter_mut().enumerate().take(10) {
+        let n = base + j * 10;
+        let now = match what {
+            Step::Run(_) => 0,
+            Step::Roam(..) => 1,
+            Step::Idle => 2,
+            Step::Emote(_) => 3,
+            Step::Morph(_) => 4,
+        };
+        g.text(x, *y + 3.0, LABEL_WIDTH, &format!("  does {}", j + 1), DIM);
+        let by = g.arrows(x + LABEL_WIDTH, *y, 220.0, KINDS[now]);
+        if g.button(x + LABEL_WIDTH + 230.0, *y, 70.0, "Remove") {
+            remove = Some(j);
+        }
+        *y += ROW + 3.0;
+        if by != 0 {
+            *what = match (now as i32 + by).rem_euclid(KINDS.len() as i32) {
+                0 => Step::Run(true),
+                1 => Step::Roam(5.0, 10.0),
+                2 => Step::Idle,
+                3 => Step::Emote(1),
+                _ => Step::Morph(String::new()),
+            };
+        }
+        value_row(g, y, x, w, "    after (s)", n, after);
+        *after = after.max(0.0);
+        match what {
+            Step::Run(run) => {
+                switch_row(g, y, x, "    runs", run);
+                hint(g, y, x, "Yes: it runs from here on; no: it walks.");
+            }
+            Step::Roam(yards, seconds) => {
+                value_row(g, y, x, w, "    within (yd)", n + 1, yards);
+                value_row(g, y, x, w, "    for (s)", n + 2, seconds);
+                hint(g, y, x, "Then it goes on with the patrol.");
+            }
+            Step::Idle => hint(g, y, x, "No more patrol until it is back from a fight or has died and come again."),
+            Step::Emote(animation) => {
+                value_row(g, y, x, w, "    animation", n + 1, animation);
+                hint(g, y, x, "A number of the model's animations, held while it stands; 0 stops it.");
+            }
+            Step::Morph(kind) => {
+                text_row_ref(g, y, x, w, "    looks like", n + 1, kind, Ref::Creature, None);
+                hint(g, y, x, "It stays what it is; only its look changes.");
+            }
+        }
+    }
+    if let Some(j) = remove {
+        steps.remove(j);
+    }
+    if steps.len() < 10 && g.button(x + LABEL_WIDTH, *y, 150.0, "Add something to do") {
+        steps.push((0.0, Step::Run(true)));
+    }
+    *y += ROW + 3.0;
+}
+
 fn props(g: &mut Gui, d: &mut Data, p: &mut Pick, placer: &mut Placer, me: Place, actions: &mut Vec<Action>, top: f32, rows: usize, x: f32, w: f32) {
     let near = |n: f32, west: f32| ((n - me.north).powi(2) + (west - me.west).powi(2)).sqrt();
     let lines: Vec<String> = d.cur.props.iter().map(|q| format!("{} {:.0}yd {}", file_stem(&q.model), near(q.at.0, q.at.1), q.zone.as_deref().unwrap_or(""))).collect();
@@ -1740,6 +2046,8 @@ fn pois(g: &mut Gui, d: &mut Data, p: &mut Pick, me: Place, actions: &mut Vec<Ac
         value_row(g, &mut y, x, w, "North", 22, &mut q.at.0);
         value_row(g, &mut y, x, w, "West", 23, &mut q.at.1);
         value_row(g, &mut y, x, w, "Radius (yd)", 24, &mut q.radius);
+        option_value_row(g, &mut y, x, w, "Feet height", 25, &mut q.height);
+        hint(g, &mut y, x, "A floor of a building or a bridge; empty: the terrain.");
         if g.button(x, y, 150.0, "Here (where I stand)") {
             q.at = (me.north, me.west);
         }
@@ -1963,6 +2271,12 @@ fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature, 
     text_row(g, y, x, w, "Name", 101, &mut c.name);
     option_row(g, y, x, w, "Title", 102, &mut c.title);
     value_row(g, y, x, w, "Level", 103, &mut c.level);
+    let types: Vec<String> = ["None", "Beast", "Dragonkin", "Demon", "Elemental", "Giant", "Undead", "Humanoid", "Critter", "Mechanical"].iter().map(|s| s.to_string()).collect();
+    let mut kind = types[(c.kind as usize).min(types.len() - 1)].clone();
+    if choice_row(g, y, x, w, "Type", &types, &mut kind) {
+        c.kind = types.iter().position(|t| *t == kind).unwrap_or(0) as u32;
+    }
+    hint(g, y, x, "What the bonuses of gear \"versus\" name.");
     switch_row(g, y, x, "Enemy", &mut c.hostile);
     switch_row(g, y, x, "Neutral", &mut c.neutral);
     value_row(g, y, x, w, "Health", 104, &mut c.health);
@@ -2005,26 +2319,42 @@ fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature, 
         let mut remove = None;
         for (i, o) in gossip.options.iter_mut().enumerate() {
             text_row(g, y, x, w, &format!("Line {}", i + 1), 130 + i, &mut o.text);
-            let says = matches!(o.action, CreatureAction::Say(_));
-            let mut kind = match o.action {
+            let kinds: Vec<String> = ["Say", "Vendor", "Train"].iter().map(|s| s.to_string()).collect();
+            let now = match o.action {
                 CreatureAction::Say(_) => "Say",
                 CreatureAction::Vendor => "Vendor",
                 CreatureAction::Train { .. } => "Train",
-            }
-            .to_string();
+            };
             g.text(x, *y + 3.0, LABEL_WIDTH, "  does", DIM);
-            let by = g.arrows(x + LABEL_WIDTH, *y, 140.0, &kind);
+            let by = g.arrows(x + LABEL_WIDTH, *y, 140.0, now);
             if by != 0 {
-                // (A trainer's line keeps its terms until it is changed; it goes on to Say.)
-                o.action = if says { CreatureAction::Vendor } else { CreatureAction::Say("...".into()) };
-                kind = if says { "Vendor".into() } else { "Say".into() };
+                o.action = match step(&kinds, now, by) {
+                    "Say" => CreatureAction::Say("...".into()),
+                    "Vendor" => CreatureAction::Vendor,
+                    _ => CreatureAction::Train { skill: crate::skills::Skill::Riding, rank: 75, needs: 0, level: 40, cost: 900_000 },
+                };
             }
             if g.button(x + LABEL_WIDTH + 150.0, *y, 70.0, "Remove") {
                 remove = Some(i);
             }
             *y += ROW + 3.0;
-            if let CreatureAction::Say(text) = &mut o.action {
-                text_row(g, y, x, w, "  says", 160 + i, text);
+            match &mut o.action {
+                CreatureAction::Say(text) => {
+                    text_row(g, y, x, w, "  says", 160 + i, text);
+                }
+                CreatureAction::Vendor => {}
+                CreatureAction::Train { skill, rank, needs, level, cost } => {
+                    let names: Vec<String> = crate::skills::ALL.iter().map(|s| s.name().to_string()).collect();
+                    let mut taught = skill.name().to_string();
+                    if choice_row(g, y, x, w, "  teaches", &names, &mut taught) {
+                        *skill = crate::skills::ALL.into_iter().find(|s| s.name() == taught).unwrap_or(*skill);
+                    }
+                    value_row(g, y, x, w, "  up to rank", 1000 + i * 4, rank);
+                    value_row(g, y, x, w, "  needs rank", 1001 + i * 4, needs);
+                    value_row(g, y, x, w, "  min. level", 1002 + i * 4, level);
+                    value_row(g, y, x, w, "  cost (copper)", 1003 + i * 4, cost);
+                    hint(g, y, x, &format!("= {}g {}s {}c, for a character who has rank {} and is level {} or more.", *cost / 10_000, *cost / 100 % 100, *cost % 100, needs, level));
+                }
             }
         }
         if let Some(i) = remove {
@@ -2065,6 +2395,8 @@ fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: f32) {
         text_row_ref(g, y, x, w, "Given by", 202, &mut q.giver, Ref::Creature, None);
         text_row_ref(g, y, x, w, "Turned in to", 203, &mut q.turn_in, Ref::Creature, None);
         option_ref_row(g, y, x, w, "Needs quest", 204, &mut q.requires, Ref::Quest);
+        value_row(g, y, x, w, "Level", 213, &mut q.level);
+        hint(g, y, x, "0 for none; the experience falls as the character outgrows the quest.");
         text_row(g, y, x, w, "Offer says", 205, &mut q.details);
         text_row(g, y, x, w, "Objective", 206, &mut q.objective);
         text_row(g, y, x, w, "Waiting says", 207, &mut q.progress);
@@ -2073,6 +2405,8 @@ fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: f32) {
         value_row(g, y, x, w, "Experience", 210, &mut q.reward.xp);
         stacks_row(g, y, x, w, "Gives", 211, &mut q.reward.items);
         stacks_row(g, y, x, w, "Choose one of", 212, &mut q.reward.choice);
+        stacks_row(g, y, x, w, "Given at start", 214, &mut q.start_items);
+        hint(g, y, x, "Handed over when the quest is taken (a letter to deliver); taken back if it is given up.");
         *y += 4.0;
         g.text(x, *y, w, "Goals", GOLD);
         *y += ROW + 2.0;
@@ -2145,6 +2479,8 @@ fn loot(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: f32) {
             if numbers_row(g, y, x, w, "Copper", 501, &mut copper) {
                 table.copper = (copper[0], copper[1]);
             }
+            list_row(g, y, x, w, "Also rolls", 502, &mut table.also, Some(Ref::Loot));
+            hint(g, y, x, "Other tables rolled as well: their copper is added and their items are among these (one step deep).");
             *y += 4.0;
             g.text(x, *y, 170.0, "Item", GOLD);
             g.text(x + 176.0, *y, 60.0, "Count", GOLD);
@@ -2369,6 +2705,36 @@ fn item_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, it: &mut RawItem, pv: &mu
     g.text(x + LABEL_WIDTH, *y - 2.0, w, "(bit masks; 0 for everyone)", DIM);
     *y += ROW - 2.0;
     value_row(g, y, x, w, "Sold in", 428, &mut it.buy_count);
+    option_value_row(g, y, x, w, "Weight", 450, &mut it.weight);
+    hint(g, y, x, "What one of it weighs in the pack; empty: the usual for its kind.");
+    let mut conjured = it.flags & 2 != 0;
+    if switch_row(g, y, x, "Conjured", &mut conjured) {
+        it.flags = if conjured { it.flags | 2 } else { it.flags & !2 };
+    }
+    value_row(g, y, x, w, "Flags", 452, &mut it.flags);
+    hint(g, y, x, "The original's item flags as one number; the game uses 2 (conjured) and keeps the rest as they are.");
+    value_row(g, y, x, w, "Bag slots", 451, &mut it.slots);
+    hint(g, y, x, "For a bag or a quiver: how many slots it adds (0 for none).");
+    // More damage of a weapon, of other schools than the blow itself.
+    let mut remove = None;
+    for (i, m) in it.more.iter_mut().enumerate() {
+        let mut v = [m.0, m.1, m.2 as f32];
+        if numbers_row(g, y, x, w, &format!("More damage {}", i + 1), 460 + i, &mut v) {
+            *m = (v[0], v[1], v[2].clamp(0.0, 255.0) as u8);
+        }
+        if g.button(x + LABEL_WIDTH, *y, 90.0, "Remove") {
+            remove = Some(i);
+        }
+        *y += ROW + 3.0;
+    }
+    if let Some(i) = remove {
+        it.more.remove(i);
+    }
+    if g.button(x, *y, 150.0, "Add more damage") {
+        it.more.push((1.0, 2.0, 2));
+    }
+    *y += ROW + 3.0;
+    hint(g, y, x, "lowest, highest, school (1 holy, 2 fire, 3 nature, 4 frost, 5 shadow, 6 arcane).");
     // What it casts when used (0), worn (1) or on a blow (2), in the words of the original's spell.
     let mut remove = None;
     for (i, s) in it.spells.iter_mut().enumerate() {
@@ -2377,6 +2743,13 @@ fn item_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, it: &mut RawItem, pv: &mu
             (s.spell, s.trigger) = (v[0], v[1].min(255) as u8);
         }
         text_row(g, y, x, w, "  says", 440 + i, &mut s.text);
+        value_row(g, y, x, w, "  charges", 1100 + i * 4, &mut s.charges);
+        hint(g, y, x, "Negative: one use uses the item up.");
+        value_row(g, y, x, w, "  cooldown (ms)", 1101 + i * 4, &mut s.cooldown);
+        hint(g, y, x, "-1: the spell's own.");
+        value_row(g, y, x, w, "  procs a minute", 1102 + i * 4, &mut s.ppm);
+        hint(g, y, x, "For a spell on a blow; 0: the spell's own chance.");
+        effects_form(g, y, x, w, &mut s.effects, 3000 + i * 100);
         if g.button(x + LABEL_WIDTH, *y, 90.0, "Remove") {
             remove = Some(i);
         }
@@ -2828,6 +3201,40 @@ mod tests {
         let text = ron::to_string(&bed).unwrap();
         assert!(text.contains("sleep:true"));
         assert!(ron::from_str::<content::Prop>(&text).unwrap().sleep);
+    }
+
+    #[test]
+    fn a_patrol_a_trainer_and_the_other_new_fields_are_kept_and_still_valid() {
+        let base = Raws::files().unwrap();
+        let mut cur = base.clone();
+        let stop = |north: f32, steps: Vec<(f32, Step)>| Waypoint { at: (north, -100.0), wait: 2.0, facing: Some(90.0), steps };
+        let steps = vec![(0.0, Step::Run(true)), (1.5, Step::Emote(1)), (2.0, Step::Roam(4.0, 10.0))];
+        // What the "does" field shows is read back as it was.
+        assert_eq!(ron::from_str::<Vec<(f32, Step)>>(&ron::to_string(&steps).unwrap()).unwrap(), steps);
+        (cur.spawns[0].respawn, cur.spawns[0].path) = (Some(60.0), vec![stop(-8900.0, steps), stop(-8910.0, Vec::new())]);
+        let talker = cur.creatures.iter_mut().find(|c| c.gossip.is_some()).unwrap();
+        talker.kind = 7;
+        talker.gossip.as_mut().unwrap().options.push(GossipOption { text: "Teach me.".into(), action: CreatureAction::Train { skill: crate::skills::Skill::Riding, rank: 75, needs: 0, level: 40, cost: 900_000 } });
+        (cur.quests[0].level, cur.quests[0].start_items) = (5, vec![("hearthstone".into(), 1)]);
+        let plain = cur.loot.iter().find(|(_, t)| t.also.is_empty()).map(|(k, _)| k.clone()).unwrap();
+        cur.loot.insert("both".into(), content::RawTable { copper: (1, 2), items: Vec::new(), also: vec![plain] });
+        let item = &mut cur.items[0];
+        (item.weight, item.slots, item.more) = (Some(1.5), 4, vec![(1.0, 2.0, 2)]);
+        let effects = vec![crate::items::UseEffect::Heal(30, 40), crate::items::UseEffect::Boost(2, 10, 60.0)];
+        assert_eq!(ron::from_str::<Vec<crate::items::UseEffect>>(&ron::to_string(&effects).unwrap()).unwrap(), effects);
+        item.flags |= 2;
+        item.spells.push(crate::items::ItemSpell { spell: 133, trigger: 2, charges: -1, cooldown: 5000, ppm: 3.5, effects, text: "Test".into() });
+        cur.pois[0].height = Some(12.0);
+        let overlay = Overlay::between(&base, &cur);
+        let back: Overlay = ron::from_str(&ron::ser::to_string_pretty(&overlay, ron::ser::PrettyConfig::default()).unwrap()).unwrap();
+        let again = base.clone().with(&back);
+        assert!(again.creatures == cur.creatures && again.quests == cur.quests && again.items == cur.items && again.pois == cur.pois && again.loot == cur.loot);
+        assert!(cur.spawns.iter().all(|s| again.spawns.contains(s)));
+        content::check(&again).unwrap();
+        // A stop of a patrol that turns into a kind that does not exist is caught before it is saved.
+        let mut broken = cur.clone();
+        broken.spawns[0].path[0].steps.push((0.0, Step::Morph("nobody".into())));
+        assert!(content::check(&broken).is_err());
     }
 
     #[test]
