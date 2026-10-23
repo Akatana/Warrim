@@ -1,6 +1,6 @@
 //! Props that can be picked up (`pickup` of a prop in `content/props.ron`): a sack, a flower, a crate the quests ask for. They stand in the
 //! world like any prop, but only while a quest being worked on still wants their item can they be used; taking one hides it, and it is
-//! there again after its time (not part of the saved game: a game that is loaded has them all back).
+//! there again after its time (those that are gone are in the saved game, with the time left).
 
 use crate::content::{self, Prop};
 use crate::models::{placement_matrix, ModelCache};
@@ -67,6 +67,19 @@ impl Pickups {
         }
     }
 
+    /// Those that are gone as saved: (their place in the list, seconds until they are back).
+    pub fn snapshot(&self) -> Vec<(usize, f32)> {
+        self.list.iter().enumerate().filter_map(|(i, p)| Some((i, p.gone?))).collect()
+    }
+
+    pub fn restore(&mut self, saved: &[(usize, f32)]) {
+        for &(i, left) in saved {
+            if let Some(p) = self.list.get_mut(i).filter(|p| p.vanish) {
+                p.gone = Some(left.max(0.0)).filter(|&l| l > 0.0);
+            }
+        }
+    }
+
     fn usable(&self, i: usize, wanted: &[usize]) -> bool {
         self.list[i].gone.is_none() && wanted.contains(&self.list[i].item)
     }
@@ -112,6 +125,17 @@ mod tests {
 
     fn pickup(item: usize, at: f32) -> Pickup {
         Pickup { item, respawn: 10.0, vanish: true, pos: Vec3::new(at, 0.0, 0.0), orient: Mat4::IDENTITY, entity: 0, gone: None, shown: None }
+    }
+
+    #[test]
+    fn what_is_gone_comes_back_gone_with_its_time_left() {
+        let mut pickups = Pickups { list: vec![pickup(3, 0.0), pickup(3, 5.0)] };
+        pickups.take(1);
+        let saved = pickups.snapshot();
+        assert_eq!(saved, vec![(1, 10.0)]);
+        let mut again = Pickups { list: vec![pickup(3, 0.0), pickup(3, 5.0)] };
+        again.restore(&saved);
+        assert_eq!((again.list[0].gone, again.list[1].gone), (None, Some(10.0)));
     }
 
     #[test]

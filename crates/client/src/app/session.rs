@@ -14,7 +14,11 @@ impl State {
         saved.bar = self.actionbar.as_ref().map_or_else(Vec::new, |b| b.layout());
         saved.discovered = content::get().pois.iter().zip(&panels.found).filter(|(_, &f)| f).map(|(p, _)| p.id.clone()).collect();
         saved.explored = panels.explored.clone();
-        saved.hour = (!self.fixed_time).then_some(self.hour);
+        (saved.hour, saved.time_fixed) = (Some(self.hour), self.fixed_time);
+        saved.weather = self.weather.snapshot();
+        saved.gone = self.pickups.as_ref().map_or_else(Vec::new, |p| p.snapshot());
+        saved.moved = self.bodies.as_ref().map_or_else(Vec::new, |b| b.snapshot());
+        saved.lifts_clock = self.lifts.as_ref().map_or(0.0, |l| l.clock());
         (saved.mana, saved.stamina) = (player.vitals.mana.fraction(), player.vitals.stamina.fraction());
         saved.cooldowns = content::get().spells.iter().zip(&panels.cooldowns).filter(|(_, &left)| left > 0.0).map(|(s, &left)| (s.id.clone(), left)).collect();
         saved.mobs = self.wolves.as_ref().map_or_else(Vec::new, |w| w.snapshot());

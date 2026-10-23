@@ -335,6 +335,22 @@ impl Weather {
         self.kind
     }
 
+    /// The weather of the zones as saved: (zone, kind 0 none / 1 rain / 2 snow / 3 sand, grade, seconds to the next roll), by zone.
+    pub fn snapshot(&self) -> Vec<(u32, u8, f32, f32)> {
+        let mut zones: Vec<_> = self.zones.iter().map(|(&id, z)| (id, z.kind.map_or(0, |k| k as u8 + 1), z.grade, z.timer)).collect();
+        zones.sort_by_key(|z| z.0);
+        zones
+    }
+
+    /// Back from a save: the zones go on from there (what shows follows the zone the player is in, fading in).
+    pub fn restore(&mut self, saved: &[(u32, u8, f32, f32)]) {
+        for &(id, kind, grade, timer) in saved {
+            let kind = [None, Some(Kind::Rain), Some(Kind::Snow), Some(Kind::Sand)].get(kind as usize).copied().flatten();
+            let grade = if kind.is_some() { grade.clamp(0.0, 1.0) } else { 0.0 };
+            self.zones.insert(id, Zone { kind, grade, timer: timer.clamp(0.0, ROLL_SECONDS) });
+        }
+    }
+
     #[cfg(test)]
     pub fn intensity(&self) -> f32 {
         self.intensity
@@ -605,6 +621,14 @@ mod tests {
         for _ in 0..(seconds * 30.0) as usize {
             w.update(1.0 / 30.0, &m, &Flat, None);
         }
+    }
+
+    #[test]
+    fn the_weather_of_the_zones_comes_back_from_a_save() {
+        let mut w = Weather::new(1);
+        w.restore(&[(12, 2, 0.5, 100.0), (14, 0, 0.7, 5.0), (15, 9, 0.5, 5.0), (16, 1, 0.5, 9999.0)]);
+        // Snow at half strength; clear holds no strength; a kind that does not exist is clear; the timer is held to the roll.
+        assert_eq!(w.snapshot(), vec![(12, 2, 0.5, 100.0), (14, 0, 0.0, 5.0), (15, 0, 0.0, 5.0), (16, 1, 0.5, ROLL_SECONDS)]);
     }
 
     #[test]

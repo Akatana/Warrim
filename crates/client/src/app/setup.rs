@@ -96,10 +96,20 @@ impl State {
             chests.restore(&saved.chests);
         }
         let pickup_props = pickup_props();
-        let pickups = Pickups::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &map).map_err(|e| log::warn!("no pickups: {e:#}")).ok();
+        let mut pickups = Pickups::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &map).map_err(|e| log::warn!("no pickups: {e:#}")).ok();
         let mut effects = crate::effects::Effects::new(player_mount.clone());
-        let lifts = crate::lifts::Lifts::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &mut effects, &map, 0.0).map_err(|e| log::warn!("no lifts: {e:#}")).ok();
-        let bodies = Bodies::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &map).map_err(|e| log::warn!("no physics props: {e:#}")).ok();
+        let lifts = crate::lifts::Lifts::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &mut effects, &map, loaded.as_ref().map_or(0.0, |s| s.lifts_clock)).map_err(|e| log::warn!("no lifts: {e:#}")).ok();
+        let mut bodies = Bodies::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &map).map_err(|e| log::warn!("no physics props: {e:#}")).ok();
+        let mut weather = weather_at_start(&args);
+        if let Some(saved) = &loaded {
+            weather.restore(&saved.weather);
+            if let Some(pickups) = &mut pickups {
+                pickups.restore(&saved.gone);
+            }
+            if let Some(bodies) = &mut bodies {
+                bodies.restore(&saved.moved);
+            }
+        }
         let lock_art = crate::lockpick::LockArt::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no lockpicking pictures: {e:#}")).ok();
         // The pointer of the original replaces the system's, which is shown only if its pictures are missing.
         let cursors = Cursors::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no mouse pointer: {e:#}")).ok();
@@ -214,8 +224,8 @@ impl State {
             cursor: None,
             last_eye: start,
             hour: args.time.or(loaded.as_ref().and_then(|s| s.hour)).unwrap_or(12.0),
-            fixed_time: args.time.is_some(),
-            weather: weather_at_start(&args),
+            fixed_time: args.time.is_some() || loaded.as_ref().is_some_and(|s| s.time_fixed),
+            weather,
             indoors: false,
             zone: None,
             weather_look: 0.0,

@@ -331,7 +331,12 @@ impl Lifts {
         Ok(Lifts { list, away, clock, riding: None })
     }
 
-    /// Take them out of the world, giving their entities back. Returns the clock, for the lifts of the next map to go on from.
+    /// Seconds since the game began, as saved (the ships go on from there).
+    pub fn clock(&self) -> f32 {
+        self.clock
+    }
+
+    /// Take them out of the world, giving their entities back. Returns the clock,for the lifts of the next map to go on from.
     pub fn retire(self, renderer: &mut Renderer, effects: &mut Effects) -> f32 {
         self.list.iter().flat_map(|l| &l.entities).for_each(|&e| renderer.remove_entity(e));
         self.list.iter().flat_map(|l| &l.effects).for_each(|&(id, _)| effects.stop(id));

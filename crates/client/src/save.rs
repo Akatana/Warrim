@@ -121,6 +121,18 @@ pub struct Save {
     /// The level-up points spent on health, mana and stamina (what is unspent follows from the level).
     #[serde(default)]
     pub spent: [u32; 3],
+    /// The rest of the world: the hour is held (the console's `time`); the weather of the zones (zone, kind, grade, seconds to the next roll); the
+    /// props to pick up that are gone (place, seconds until they are back); the physics props that were moved; the seconds on the lifts' and ships' clock.
+    #[serde(default)]
+    pub time_fixed: bool,
+    #[serde(default)]
+    pub weather: Vec<(u32, u8, f32, f32)>,
+    #[serde(default)]
+    pub gone: Vec<(usize, f32)>,
+    #[serde(default)]
+    pub moved: Vec<crate::physics::BodySave>,
+    #[serde(default)]
+    pub lifts_clock: f32,
 }
 
 fn entries(slots: &[Option<Stack>]) -> Vec<Entry> {
@@ -181,6 +193,11 @@ impl Save {
             look: Appearance::default(),
             map: None,
             spent: [0; 3],
+            time_fixed: false,
+            weather: Vec::new(),
+            gone: Vec::new(),
+            moved: Vec::new(),
+            lifts_clock: 0.0,
         }
     }
 

@@ -117,7 +117,12 @@ struct Body {
     ready: bool,
     /// What the renderer was last told.
     synced: Option<(Vec3, Quat)>,
+    /// Where it was put in the world, to tell what has been moved.
+    home: (Vec3, Quat),
 }
+
+/// A prop that has been moved, as saved: its place in the list, where it was put, and where it lies (render space) turned as (x, y, z, w).
+pub type BodySave = (usize, [f32; 3], [f32; 3], [f32; 4]);
 
 /// The static colliders around a point.
 struct Arena {
@@ -183,7 +188,31 @@ impl Bodies {
         });
         let body = RigidBodyBuilder::dynamic().pose(Pose::from_parts(to(pos), Rotation::from_xyzw(turn.x, turn.y, turn.z, turn.w))).sleeping(true).ccd_enabled(true).linear_damping(0.1).angular_damping(0.8);
         let (handle, collider) = self.sim.insert(body, shape.density(400.0).friction(0.7).restitution(0.1).collision_groups(body_groups()));
-        self.list.push(Body { handle, collider, scale, entity, ready: false, synced: None });
+        self.list.push(Body { handle, collider, scale, entity, ready: false, synced: None, home: (pos, turn) });
+    }
+
+    /// The props that lie other than where they were put.
+    pub fn snapshot(&self) -> Vec<BodySave> {
+        self.list
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| {
+                let body = &self.sim.bodies[b.handle];
+                let (pos, r) = (from(body.translation()), body.rotation());
+                let turn = Quat::from_xyzw(r.x, r.y, r.z, r.w);
+                (pos.distance(b.home.0) > 0.05 || turn.angle_between(b.home.1) > 0.05).then(|| (i, b.home.0.to_array(), pos.to_array(), turn.to_array()))
+            })
+            .collect()
+    }
+
+    /// Put props back where they lay: those whose place in the list still has the same home (the props may have changed since), asleep.
+    pub fn restore(&mut self, saved: &[BodySave]) {
+        for &(i, home, pos, turn) in saved {
+            let Some(b) = self.list.get(i).filter(|b| b.home.0.distance(Vec3::from(home)) < 0.01) else { continue };
+            let body = &mut self.sim.bodies[b.handle];
+            body.set_position(Pose::from_parts(to(Vec3::from(pos)), Rotation::from_xyzw(turn[0], turn[1], turn[2], turn[3])), false);
+            body.sleep();
+        }
     }
 
     /// Take them out of the world, giving their entities back.
