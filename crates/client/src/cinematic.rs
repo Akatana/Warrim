@@ -14,7 +14,7 @@ use wowfmt::m2::{M2Camera, M2Track, M2};
 /// The row of `CinematicCamera.dbc` that is the fly-by of a race.
 fn camera_id(race: Race) -> u32 {
     match race {
-        Race::Human => 142,
+        Race::Human | Race::Goblin => 142,
         Race::Orc => 235,
         Race::Dwarf => 234,
         Race::NightElf => 122,

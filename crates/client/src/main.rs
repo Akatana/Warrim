@@ -224,12 +224,15 @@ pub struct Args {
     pub loading: Option<f32>,
 }
 
+/// Where the game starts when the command line says nothing: the human starting area, Northshire Valley (a new character of another race starts in its own homeland).
+pub const START_POS: (f32, f32, Option<f32>) = (-8949.95, -132.49, None);
+
 fn parse_args() -> Result<Args> {
     let mut a = Args {
         wow_dir: None,
         map: "Azeroth".into(),
         // Human starting area, Northshire Valley.
-        pos: (-8949.95, -132.49, None),
+        pos: START_POS,
         yaw_deg: 200.0,
         pitch_deg: -8.0,
         radius: 2,

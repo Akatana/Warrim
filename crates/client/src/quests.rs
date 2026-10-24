@@ -35,12 +35,33 @@ pub struct Progress {
     pub need: u32,
 }
 
-/// What the compass and the map point to for a quest: kinds of creatures (indexes) with their picture, and an item that chests may hold.
+/// Who is asking about quests: the level and the race (the original's bit mask, 1 human... 128 troll) of the character.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Who {
+    pub level: u32,
+    pub race: u32,
+}
+
+impl Who {
+    /// Whether the character may take the quest: he is high enough, and of a race it is for.
+    pub fn may(self, quest: &content::Quest) -> bool {
+        self.level >= quest.min_level && (quest.races == 0 || quest.races & self.race != 0)
+    }
+}
+
+impl Default for Who {
+    fn default() -> Who {
+        Who { level: 1, race: 1 }
+    }
+}
+
+/// What the compass and the map point to for a quest: kinds of creatures (indexes) with their picture, an item that chests may hold, and places (north, west).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lead {
     pub kinds: Vec<usize>,
     pub item: Option<usize>,
     pub icon: Icon,
+    pub places: Vec<(f32, f32)>,
 }
 
 /// The picture of a place on the compass and the map: a skull for a creature to kill (or to take the item from), a chest, the bag of a
@@ -70,16 +91,17 @@ impl QuestLog {
         let c = content::get();
         let q = content::quest(quest);
         let kinds = |wanted: &dyn Fn(&content::CreatureDef) -> bool| (0..c.creatures.len()).filter(|&i| wanted(&c.creatures[i])).collect::<Vec<_>>();
-        let open = q.goals.iter().enumerate().find(|&(i, g)| self.have(quest, i, inv) < match *g { Goal::Kill { count, .. } | Goal::Collect { count, .. } => count }).map(|(_, g)| *g);
+        let open = q.goals.iter().enumerate().find(|&(i, g)| self.have(quest, i, inv) < g.count()).map(|(_, g)| *g);
         match open {
-            None => Lead { kinds: vec![q.turn_in], item: None, icon: Icon::TurnIn },
-            Some(Goal::Kill { creature, .. }) => Lead { kinds: vec![creature], item: None, icon: Icon::Skull },
+            None => Lead { kinds: vec![q.turn_in], item: None, icon: Icon::TurnIn, places: Vec::new() },
+            Some(Goal::Kill { creature, .. }) => Lead { kinds: vec![creature], item: None, icon: Icon::Skull, places: Vec::new() },
+            Some(Goal::Reach { at, .. }) => Lead { kinds: Vec::new(), item: None, icon: Icon::TurnIn, places: vec![at] },
             Some(Goal::Collect { item, .. }) => {
                 let drops = kinds(&|cr| cr.loot.as_ref().is_some_and(|t| c.loot[t].items.iter().any(|d| d.0 == item)));
                 if drops.is_empty() {
-                    Lead { kinds: kinds(&|cr| cr.vendor.contains(&item)), item: Some(item), icon: Icon::Vendor }
+                    Lead { kinds: kinds(&|cr| cr.vendor.contains(&item)), item: Some(item), icon: Icon::Vendor, places: Vec::new() }
                 } else {
-                    Lead { kinds: drops, item: Some(item), icon: Icon::Skull }
+                    Lead { kinds: drops, item: Some(item), icon: Icon::Skull, places: Vec::new() }
                 }
             }
         }
@@ -87,7 +109,15 @@ impl QuestLog {
 
     /// The items that the quests being worked on still want: those of their collect goals that are not all in the bags yet.
     pub fn wanted(&self, inv: &Inventory) -> Vec<usize> {
-        self.active.iter().flat_map(|a| &content::quest(a.quest).goals).filter_map(|g| if let Goal::Collect { item, count } = *g { Some((item, count)) } else { None }).filter(|&(item, count)| inv.count(item) < count).map(|(item, _)| item).collect()
+        let begun = content::get().item_quests.iter().filter(|&(&item, &quest)| inv.count(item) == 0 && !self.is_active(quest) && !self.done.contains(&quest)).map(|(&item, _)| item);
+        self.active.iter().flat_map(|a| &content::quest(a.quest).goals).filter_map(|g| if let Goal::Collect { item, count } = *g { Some((item, count)) } else { None }).filter(|&(item, count)| inv.count(item) < count).map(|(item, _)| item).chain(begun).collect()
+    }
+
+    /// The quest that using `item` begins, if it can be taken now.
+    pub fn begun_by(&self, item: usize, who: Who) -> Option<usize> {
+        let c = content::get();
+        let quest = *c.item_quests.get(&item)?;
+        (!self.is_active(quest) && !self.done.contains(&quest) && c.quests[quest].requires.is_none_or(|r| self.done.contains(&r)) && who.may(&c.quests[quest])).then_some(quest)
     }
 
     pub fn is_active(&self, quest: usize) -> bool {
@@ -95,13 +125,19 @@ impl QuestLog {
     }
 
     /// The quests creature `creature` can give: not taken or done yet, with what they require done.
-    pub fn offered_by(&self, creature: usize) -> Vec<usize> {
-        let quests = &content::get().quests;
-        (0..quests.len()).filter(|&q| quests[q].giver == creature && !self.is_active(q) && !self.done.contains(&q) && quests[q].requires.is_none_or(|r| self.done.contains(&r))).collect()
+    pub fn offered_by(&self, creature: usize, who: Who) -> Vec<usize> {
+        let c = content::get();
+        if c.creatures[creature].attackable() {
+            return Vec::new();
+        }
+        c.giving.get(&creature).into_iter().flatten().copied().filter(|&q| !self.is_active(q) && !self.done.contains(&q) && c.quests[q].requires.is_none_or(|r| self.done.contains(&r)) && who.may(&c.quests[q])).collect()
     }
 
     /// The quests being worked on that creature `creature` takes back, each with whether it can be turned in now.
     pub fn taken_by(&self, creature: usize, inv: &Inventory) -> Vec<(usize, bool)> {
+        if !content::get().taking.contains_key(&creature) || content::get().creatures[creature].attackable() {
+            return Vec::new();
+        }
         self.active.iter().filter(|a| content::quest(a.quest).turn_in == creature).map(|a| (a.quest, self.complete(a.quest, inv))).collect()
     }
 
@@ -111,17 +147,13 @@ impl QuestLog {
         match content::quest(quest).goals[goal] {
             Goal::Kill { count, .. } => active.kills[goal].min(count),
             Goal::Collect { item, count } => inv.count(item).min(count),
+            Goal::Reach { .. } => active.kills[goal].min(1),
         }
     }
 
     /// Whether every goal of an active quest is met.
     pub fn complete(&self, quest: usize, inv: &Inventory) -> bool {
-        self.is_active(quest) && content::quest(quest).goals.iter().enumerate().all(|(i, g)| {
-            let need = match *g {
-                Goal::Kill { count, .. } | Goal::Collect { count, .. } => count,
-            };
-            self.have(quest, i, inv) >= need
-        })
+        self.is_active(quest) && content::quest(quest).goals.iter().enumerate().all(|(i, g)| self.have(quest, i, inv) >= g.count())
     }
 
     /// Take a quest. False when the log is full or the quest was taken or done already.
@@ -156,6 +188,22 @@ impl QuestLog {
         steps
     }
 
+    /// The character stands at (north, west) of `map`: every walk to a place that is within reach moves on.
+    pub fn arrived(&mut self, map: &str, north: f32, west: f32) -> Vec<Progress> {
+        let mut steps = Vec::new();
+        for active in &mut self.active {
+            for (goal, g) in content::quest(active.quest).goals.iter().enumerate() {
+                if let Goal::Reach { map: m, at, radius } = *g {
+                    if active.kills[goal] == 0 && m.eq_ignore_ascii_case(map) && (at.0 - north).hypot(at.1 - west) <= radius {
+                        active.kills[goal] = 1;
+                        steps.push(Progress { quest: active.quest, goal, have: 1, need: 1 });
+                    }
+                }
+            }
+        }
+        steps
+    }
+
     /// Turn in an active, complete quest: the items it asks for are taken, the reward is given (with the one of its
     /// `choice` items that was picked, which must be given when there are any and only then). The pack grows to
     /// hold the reward, so this is never refused.
@@ -179,10 +227,10 @@ impl QuestLog {
     }
 
     /// What the creature shows for the quests it gives or takes back.
-    pub fn marker(&self, creature: usize, inv: &Inventory) -> Option<Marker> {
+    pub fn marker(&self, creature: usize, inv: &Inventory, who: Who) -> Option<Marker> {
         if self.taken_by(creature, inv).iter().any(|&(_, ready)| ready) {
             Some(Marker::Complete)
-        } else if !self.offered_by(creature).is_empty() {
+        } else if !self.offered_by(creature, who).is_empty() {
             Some(Marker::Available)
         } else if !self.taken_by(creature, inv).is_empty() {
             Some(Marker::Incomplete)
@@ -197,6 +245,8 @@ mod tests {
     use super::*;
     use crate::items::Stack;
 
+    const WHO: Who = Who { level: 2, race: 1 };
+
     /// Deputy Willem, who sends new arrivals to Marshal McBride.
     fn willem() -> usize {
         content::creature_index("c823")
@@ -209,19 +259,19 @@ mod tests {
         let mut log = QuestLog::default();
         let mut inv = Inventory::new();
         // Only the first quest of the chain is offered, and the giver shows the "!".
-        assert_eq!(log.offered_by(willem()), vec![threat]);
-        assert_eq!(log.marker(willem(), &inv), Some(Marker::Available));
+        assert_eq!(log.offered_by(willem(), WHO), vec![threat]);
+        assert_eq!(log.marker(willem(), &inv, WHO), Some(Marker::Available));
         assert!(log.accept(threat) && !log.accept(threat), "a quest is taken once");
         // Taken: nothing more to give, no grey "?" at the one who gave it, and a quest without goals is done as soon as it is taken, at the one who takes it back.
-        assert_eq!((log.offered_by(willem()), log.marker(willem(), &inv)), (vec![], None));
+        assert_eq!((log.offered_by(willem(), WHO), log.marker(willem(), &inv, WHO)), (vec![], None));
         assert_eq!(log.taken_by(mcbride, &inv), vec![(threat, true)]);
-        assert_eq!(log.marker(mcbride, &inv), Some(Marker::Complete));
+        assert_eq!(log.marker(mcbride, &inv, WHO), Some(Marker::Complete));
         assert_eq!(log.turn_in(threat, &mut inv, None), Ok(()));
         // The next ones are offered now: the marshal's first task, and Willem's others.
-        assert_eq!(log.offered_by(mcbride), vec![kobolds]);
-        assert!(log.offered_by(willem()).len() >= 2 && !log.offered_by(willem()).contains(&threat));
+        assert_eq!(log.offered_by(mcbride, WHO), vec![kobolds]);
+        assert!(log.offered_by(willem(), WHO).len() >= 2 && !log.offered_by(willem(), WHO).contains(&threat));
         assert!(log.accept(kobolds));
-        assert_eq!(log.marker(mcbride, &inv), Some(Marker::Incomplete));
+        assert_eq!(log.marker(mcbride, &inv, WHO), Some(Marker::Incomplete));
         // Ten kobolds are needed; a kill of another kind or too many kills change nothing.
         assert!(!log.complete(kobolds, &inv));
         assert_eq!(log.killed(willem()), vec![]);
@@ -229,7 +279,7 @@ mod tests {
             assert_eq!(log.killed(vermin), vec![Progress { quest: kobolds, goal: 0, have, need: 10 }]);
         }
         assert!(log.killed(vermin).is_empty(), "the goal is met: more kills do not count");
-        assert!(log.complete(kobolds, &inv) && log.marker(mcbride, &inv) == Some(Marker::Complete));
+        assert!(log.complete(kobolds, &inv) && log.marker(mcbride, &inv, WHO) == Some(Marker::Complete));
         let money = inv.money;
         assert_eq!(log.turn_in(kobolds, &mut inv, None), Ok(()));
         assert_eq!(inv.money, money + 25);
@@ -256,7 +306,34 @@ mod tests {
         assert_eq!(log.tracked, Some(threat));
         log.abandon(threat);
         assert_eq!(log.tracked, None);
-        assert_eq!(log.offered_by(willem()), vec![threat]);
+        assert_eq!(log.offered_by(willem(), WHO), vec![threat]);
+    }
+
+    #[test]
+    fn an_item_that_begins_a_quest_is_wanted_until_the_quest_is_taken_and_opens_it() {
+        let c = content::get();
+        let (&item, &quest) = c.item_quests.iter().find(|(&i, &q)| c.quests[q].requires.is_none() && !c.quests[q].goals.iter().any(|g| matches!(g, Goal::Collect { item, .. } if *item == i))).expect("a quest begun by an item");
+        // Of a race it is for, and high enough.
+        let who = Who { level: 60, race: if c.quests[quest].races == 0 { 1 } else { 1 << c.quests[quest].races.trailing_zeros() } };
+        let (mut log, inv) = (QuestLog::default(), Inventory::new());
+        assert!(log.wanted(&inv).contains(&item), "what drops it is let drop it");
+        assert_eq!(log.begun_by(item, who), Some(quest));
+        assert!(c.giving.values().flatten().all(|&q| q != quest), "nobody offers it");
+        log.accept(quest);
+        assert!(!log.wanted(&inv).contains(&item) && log.begun_by(item, who).is_none());
+    }
+
+    #[test]
+    fn a_walk_to_a_place_is_done_when_the_character_gets_there() {
+        let c = content::get();
+        let (quest, goal, map, at, radius) = c.quests.iter().enumerate().find_map(|(i, q)| q.goals.iter().enumerate().find_map(|(n, g)| if let Goal::Reach { map, at, radius } = *g { Some((i, n, map, at, radius)) } else { None })).expect("a walk to a place");
+        let mut log = QuestLog::default();
+        assert!(log.accept(quest));
+        // Too far, or in another map: nothing.
+        assert!(log.arrived(map, at.0 + radius + 5.0, at.1).is_empty() && log.arrived("Nowhere", at.0, at.1).is_empty());
+        assert_eq!(log.arrived(map, at.0, at.1 + radius * 0.5).len(), 1);
+        assert_eq!(log.have(quest, goal, &Inventory::new()), 1);
+        assert!(log.arrived(map, at.0, at.1).is_empty(), "it is done once");
     }
 
     #[test]
@@ -270,6 +347,6 @@ mod tests {
         let lead = log.lead(meat_quest, &inv);
         assert!(lead.kinds.contains(&wolf) && lead.item == Some(meat) && lead.icon == Icon::Skull, "whatever drops the meat, or holds it in a chest");
         inv.add(Stack { item: meat, count: 8 });
-        assert_eq!(log.lead(meat_quest, &inv), Lead { kinds: vec![eagan], item: None, icon: Icon::TurnIn }, "then the turn in");
+        assert_eq!(log.lead(meat_quest, &inv), Lead { kinds: vec![eagan], item: None, icon: Icon::TurnIn, places: Vec::new() }, "then the turn in");
     }
 }

@@ -28,6 +28,11 @@ pub struct Eye {
 }
 
 impl Eye {
+    /// Where the eye is (render space).
+    pub fn position(&self) -> Vec3 {
+        self.pos
+    }
+
     pub fn of(camera: &Camera, size: (u32, u32)) -> Eye {
         let view_proj = camera.view_proj_relative();
         Eye { view_proj, inverse: view_proj.inverse(), pos: camera.pos, size: Vec2::new(size.0 as f32, size.1 as f32), fov_y: camera.fov_y }

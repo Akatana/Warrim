@@ -1,6 +1,6 @@
-// The looks that the waypoint scripts of Northshire's people turn them into (a peasant carrying logs), made by tools/import_northshire.py: kinds that nobody stands as.
+// The looks that the waypoint scripts of the original's people turn them into (a peasant carrying logs), made by tools/import_world.py: kinds that nobody stands as.
 // Ids are `m<display>`. Do not edit by hand.
 [
-    (id: "m89", name: "Northshire Peasant", body: Beast(model: "Creature\\HumanMalePeasant\\HumanMalePeasantWood.m2", skins: [(11, "Creature\\HumanMalePeasant\\HumanMalePeasantLightSkin.blp"), (12, "Creature\\HumanMalePeasant\\HumanMalePeasantLogs.blp")], scale: 1.0)),
-    (id: "m308", name: "Northshire Peasant", body: Beast(model: "Creature\\HumanMalePeasant\\HumanMalePeasant.m2", skins: [(11, "Creature\\HumanMalePeasant\\HumanMalePeasantLightSkin.blp")], scale: 1.0)),
+    (id: "m89", name: "Lumberjack", body: Beast(model: "Creature\\HumanMalePeasant\\HumanMalePeasantWood.m2", skins: [(11, "Creature\\HumanMalePeasant\\HumanMalePeasantLightSkin.blp"), (12, "Creature\\HumanMalePeasant\\HumanMalePeasantLogs.blp")], scale: 1.0)),
+    (id: "m308", name: "Lumberjack", body: Beast(model: "Creature\\HumanMalePeasant\\HumanMalePeasant.m2", skins: [(11, "Creature\\HumanMalePeasant\\HumanMalePeasantLightSkin.blp")], scale: 1.0)),
 ]

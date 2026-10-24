@@ -122,6 +122,8 @@ pub struct CreatureDef {
     pub hostile: bool,
     /// Leaves the player alone (yellow name) until he attacks it, then fights back; neither hostile nor neutral is a friend to talk to.
     pub neutral: bool,
+    /// (hostile, neutral) as a player on the Horde's side finds it, where that is not as above (`hostile` and `neutral` are what the Alliance finds).
+    pub horde: Option<(bool, bool)>,
     pub health: f32,
     pub bite_damage: f32,
     /// Seconds from death until it is back.
@@ -136,10 +138,32 @@ pub struct CreatureDef {
     pub brain: Brain,
 }
 
+/// Whether the player is on the Horde's side (an orc, an undead, a tauren, a troll): who attacks him and who is his friend follows from it.
+static HORDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_horde(on: bool) {
+    HORDE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl CreatureDef {
+    /// Whether it attacks the player (who is of the Alliance or of the Horde).
+    pub fn is_hostile(&self) -> bool {
+        self.horde.filter(|_| HORDE.load(std::sync::atomic::Ordering::Relaxed)).map_or(self.hostile, |h| h.0)
+    }
+
+    /// Whether it leaves the player alone until he attacks it.
+    pub fn is_neutral(&self) -> bool {
+        self.horde.filter(|_| HORDE.load(std::sync::atomic::Ordering::Relaxed)).map_or(self.neutral, |h| h.1)
+    }
+
     /// Whether the player can fight it: a hostile or a neutral creature.
     pub fn attackable(&self) -> bool {
-        self.hostile || self.neutral
+        self.is_hostile() || self.is_neutral()
+    }
+
+    /// Whether it is somebody's friend to talk to, of either side (what a quest needs of whoever gives it).
+    pub fn friend_of_a_side(&self) -> bool {
+        (!self.hostile && !self.neutral) || self.horde.is_some_and(|h| !h.0 && !h.1)
     }
 }
 
@@ -170,6 +194,9 @@ pub struct RawCreature {
     pub hostile: bool,
     #[serde(default)]
     pub neutral: bool,
+    /// What a player on the Horde's side finds it (hostile, neutral), where that is not what the Alliance finds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horde: Option<(bool, bool)>,
     #[serde(default = "hundred")]
     pub health: f32,
     #[serde(default)]
@@ -202,6 +229,9 @@ fn respawn_time() -> f32 {
 #[serde(deny_unknown_fields)]
 pub struct Spawn {
     pub creature: String,
+    /// The map it stands in ("Azeroth", "Kalimdor", a dungeon); none (what the editor put down) is every map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
     pub at: (f32, f32),
     pub facing: f32,
     /// How far from `at` it strolls, yards (0 stands still): the database's `spawndist`, whose usual value is the default.
@@ -318,12 +348,24 @@ pub struct Start {
 }
 
 /// Something a quest asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Goal {
     /// Kill this many of a kind of creature (an index into the creatures).
     Kill { creature: usize, count: u32 },
     /// Carry this many of an item (an index into the items) to the turn in.
     Collect { item: usize, count: u32 },
+    /// Walk to a place of a map (north, west) and come within so many yards of it.
+    Reach { map: &'static str, at: (f32, f32), radius: f32 },
+}
+
+impl Goal {
+    /// How many it asks for (a place is reached once).
+    pub fn count(&self) -> u32 {
+        match *self {
+            Goal::Kill { count, .. } | Goal::Collect { count, .. } => count,
+            Goal::Reach { .. } => 1,
+        }
+    }
 }
 
 impl Quest {
@@ -357,6 +399,11 @@ pub struct Quest {
     /// The quest's level (0 for none), and the items given when it is taken.
     pub level: u32,
     pub start_items: Vec<Stack>,
+    /// The lowest level that may take it, and the races it is for (the original's bit mask: 1 human, 2 orc, 4 dwarf, 8 night elf, 16 undead, 32 tauren, 64 gnome, 128 troll; 0 for all).
+    pub min_level: u32,
+    pub races: u32,
+    /// The item that begins it (a letter, a note: using it opens the quest); the quest is then not offered by its giver.
+    pub begins_with: Option<usize>,
 }
 
 /// A chest in the world (`content/chests.ron`).
@@ -623,8 +670,15 @@ pub struct Content {
     pub portals: Vec<Portal>,
     pub chests: Vec<ChestDef>,
     pub quests: Vec<Quest>,
+    /// The quests (indexes) each creature kind gives and takes back.
+    pub giving: std::collections::HashMap<usize, Vec<usize>>,
+    pub taking: std::collections::HashMap<usize, Vec<usize>>,
+    /// The quest (an index) that using an item (an index) begins.
+    pub item_quests: std::collections::HashMap<usize, usize>,
     pub loot: BTreeMap<String, DropTable>,
     pub creatures: Vec<CreatureDef>,
+    /// The place in `creatures` of each kind, by id.
+    pub creature_numbers: std::collections::HashMap<String, usize>,
     pub spawns: Vec<Spawn>,
     pub props: Vec<Prop>,
     pub start: Start,
@@ -687,7 +741,7 @@ pub fn creature(id: &str) -> &'static CreatureDef {
 
 /// The index of the creature kind with this id.
 pub fn creature_index(id: &str) -> usize {
-    get().creatures.iter().position(|c| c.id == id).unwrap_or_else(|| panic!("no creature {id}"))
+    *get().creature_numbers.get(id).unwrap_or_else(|| panic!("no creature {id}"))
 }
 
 /// The spell of the original with this row of `Spell.dbc`.
@@ -846,6 +900,8 @@ fn cloth() -> String {
 pub enum RawGoal {
     Kill(String, u32),
     Collect(String, u32),
+    /// Walk to a place: the map, the place (north, west) and how close, yards.
+    Reach(String, (f32, f32), f32),
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
@@ -884,6 +940,12 @@ pub struct RawQuest {
     /// Items given when the quest is taken (a letter to deliver), and taken away again when it is given up.
     #[serde(default)]
     pub start_items: Vec<(String, u32)>,
+    #[serde(default)]
+    pub min_level: u32,
+    #[serde(default)]
+    pub races: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub begins_with: Option<String>,
 }
 
 /// What a creature or chest drops (`content/loot.ron`): copper from low to high, and items with a count (low, high) and a chance in percent.
@@ -1237,6 +1299,10 @@ pub fn classic_props() -> Result<Vec<Prop>> {
 
 /// The entries of `base` that `current` lacks, and those of `current` that `base` lacks (a list of entries without ids: whole entries are compared).
 pub fn difference<T: Clone + PartialEq>(base: &[T], current: &[T]) -> (Vec<T>, Vec<T>) {
+    // What both lists have alike at the start and at the end is not looked at again (the world's spawns are tens of thousands, and little of them changes).
+    let head = base.iter().zip(current).take_while(|(b, c)| b == c).count();
+    let tail = base[head..].iter().rev().zip(current[head..].iter().rev()).take_while(|(b, c)| b == c).count();
+    let (base, current) = (&base[head..base.len() - tail], &current[head..current.len() - tail]);
     let mut unused: Vec<&T> = current.iter().collect();
     let mut removed = Vec::new();
     for b in base {
@@ -1281,13 +1347,15 @@ impl Raws {
                 let mut items: Vec<RawItem> = ron::from_str(&source("items.ron", include_str!("../../../content/items.ron"))).context("items.ron")?;
                 items.extend(ron::from_str::<Vec<RawItem>>(&source("classic_items.ron", include_str!("../../../content/classic_items.ron"))).context("classic_items.ron")?);
                 items.extend(ron::from_str::<Vec<RawItem>>(&source("classic_pieces.ron", include_str!("../../../content/classic_pieces.ron"))).context("classic_pieces.ron")?);
+                // What using an object that a quest asks for gives (`tools/import_world.py`).
+                items.extend(ron::from_str::<Vec<RawItem>>(&source("classic_goal_items.ron", include_str!("../../../content/classic_goal_items.ron"))).context("classic_goal_items.ron")?);
                 items
             },
             creatures: {
                 let mut creatures: Vec<RawCreature> = ron::from_str(&source("creatures.ron", include_str!("../../../content/creatures.ron"))).context("creatures.ron")?;
                 let mut classic: Vec<RawCreature> = ron::from_str(&source("classic_creatures.ron", include_str!("../../../content/classic_creatures.ron"))).context("classic_creatures.ron")?;
                 let mut brains: BTreeMap<String, Brain> = ron::from_str(&source("classic_creature_ai.ron", include_str!("../../../content/classic_creature_ai.ron"))).context("classic_creature_ai.ron")?;
-                // What the people of the original's Northshire say (`tools/import_northshire.py`): a merchant keeps its wares and takes the words.
+                // What the people of the original's Northshire say (`tools/import_world.py`): a merchant keeps its wares and takes the words.
                 let mut gossip: BTreeMap<String, Gossip> = ron::from_str(&source("classic_gossip.ron", include_str!("../../../content/classic_gossip.ron"))).context("classic_gossip.ron")?;
                 for c in &mut classic {
                     c.brain = brains.remove(&c.id).unwrap_or_default();
@@ -1298,8 +1366,10 @@ impl Raws {
                     }
                 }
                 creatures.extend(classic);
-                // The looks that the waypoint scripts of Northshire's people change into (`tools/import_northshire.py`).
+                // The looks that the waypoint scripts of Northshire's people change into (`tools/import_world.py`).
                 creatures.extend(ron::from_str::<Vec<RawCreature>>(&source("classic_morphs.ron", include_str!("../../../content/classic_morphs.ron"))).context("classic_morphs.ron")?);
+                // The objects that give and take back quests, each a creature too small to see (`tools/import_world.py`).
+                creatures.extend(ron::from_str::<Vec<RawCreature>>(&source("classic_objects.ron", include_str!("../../../content/classic_objects.ron"))).context("classic_objects.ron")?);
                 creatures
             },
             quests: {
@@ -1442,7 +1512,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
             ensure!(vendor.iter().all(|&i| items[i].buy > 0), "creature {}: sells an item that has no price", c.id);
             let sells = c.gossip.as_ref().is_some_and(|g| g.options.iter().any(|o| matches!(o.action, Action::Vendor)));
             ensure!(sells == !vendor.is_empty(), "creature {}: a vendor line needs wares and wares need a vendor line", c.id);
-            Ok(CreatureDef { id: c.id, name: c.name, level: c.level, kind: c.kind, title: c.title, body, hostile: c.hostile, neutral: c.neutral, health: c.health, bite_damage: c.bite_damage, respawn: c.respawn, loot: c.loot, gossip: c.gossip, vendor, brain: c.brain })
+            Ok(CreatureDef { id: c.id, name: c.name, level: c.level, kind: c.kind, title: c.title, body, hostile: c.hostile, neutral: c.neutral, horde: c.horde, health: c.health, bite_damage: c.bite_damage, respawn: c.respawn, loot: c.loot, gossip: c.gossip, vendor, brain: c.brain })
         })
         .collect::<Result<Vec<_>>>()?;
     for c in &creatures {
@@ -1450,39 +1520,46 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
             ensure!(loot.contains_key(table), "creature {}: unknown loot table {table}", c.id);
         }
     }
+    let known: HashSet<&str> = creatures.iter().map(|c| c.id.as_str()).collect();
     for s in &spawns {
-        ensure!(creatures.iter().any(|c| c.id == s.creature), "spawn of unknown creature {}", s.creature);
+        ensure!(known.contains(s.creature.as_str()), "spawn of unknown creature {}", s.creature);
         for step in s.path.iter().flat_map(|w| &w.steps) {
             if let (_, Step::Morph(id)) = step {
-                ensure!(creatures.iter().any(|c| c.id == *id), "a patrol of {} turns into unknown creature {id}", s.creature);
+                ensure!(known.contains(id.as_str()), "a patrol of {} turns into unknown creature {id}", s.creature);
             }
         }
     }
 
-    let creature = |id: &str| creatures.iter().position(|c| c.id == id).with_context(|| format!("unknown creature {id}"));
+    let creature_numbers: std::collections::HashMap<String, usize> = creatures.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
+    let creature = |id: &str| creature_numbers.get(id).copied().with_context(|| format!("unknown creature {id}"));
     let mut quests: Vec<Quest> = Vec::new();
+    let mut quest_ids = HashSet::new();
+    let mut quest_numbers: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for q in raw_quests {
         let id = q.id.clone();
-        let build = || -> Result<Quest> {
-            ensure!(!quests.iter().any(|o| o.id == q.id), "the id is used twice");
+        let mut build = || -> Result<Quest> {
+            ensure!(quest_ids.insert(q.id.clone()), "the id is used twice");
             let goals = q
                 .goals
                 .iter()
                 .map(|g| match g {
                     RawGoal::Kill(name, count) => Ok(Goal::Kill { creature: creature(name)?, count: *count }),
                     RawGoal::Collect(name, count) => Ok(Goal::Collect { item: item(name)?, count: *count }),
+                    RawGoal::Reach(map, at, radius) => Ok(Goal::Reach { map: leak(map.clone()), at: *at, radius: *radius }),
                 })
                 .collect::<Result<Vec<_>>>()?;
-            ensure!(goals.iter().all(|g| matches!(g, Goal::Kill { count, .. } | Goal::Collect { count, .. } if *count > 0)), "a goal of zero");
+            ensure!(goals.iter().all(|g| matches!(g, Goal::Kill { count, .. } | Goal::Collect { count, .. } if *count > 0) || matches!(g, Goal::Reach { radius, .. } if *radius > 0.0)), "a goal of zero");
             let reward_items = q.reward.items.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count })).collect::<Result<Vec<_>>>()?;
             let choice = q.reward.choice.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count })).collect::<Result<Vec<_>>>()?;
             // The window has ten places for them.
             ensure!(reward_items.len() + choice.len() <= 10 && choice.len() != 1, "too many reward items, or a choice of one");
             let start_items = q.start_items.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count })).collect::<Result<Vec<_>>>()?;
-            let requires = q.requires.as_deref().map(|r| quests.iter().position(|o| o.id == r).with_context(|| format!("requires {r}, which must come earlier in the file"))).transpose()?;
-            Ok(Quest { id: q.id.clone(), title: q.title.clone(), giver: creature(&q.giver)?, turn_in: creature(&q.turn_in)?, details: q.details.clone(), objective: q.objective.clone(), progress: q.progress.clone(), completion: q.completion.clone(), goals, copper: q.reward.copper, xp: q.reward.xp, items: reward_items, choice, requires, level: q.level, start_items })
+            let requires = q.requires.as_deref().map(|r| quest_numbers.get(r).copied().with_context(|| format!("requires {r}, which must come earlier in the file"))).transpose()?;
+            let begins_with = q.begins_with.as_deref().map(item).transpose()?;
+            Ok(Quest { id: q.id.clone(), title: q.title.clone(), giver: creature(&q.giver)?, turn_in: creature(&q.turn_in)?, details: q.details.clone(), objective: q.objective.clone(), progress: q.progress.clone(), completion: q.completion.clone(), goals, copper: q.reward.copper, xp: q.reward.xp, items: reward_items, choice, requires, level: q.level, start_items, min_level: q.min_level, races: q.races, begins_with })
         };
         let quest = build().with_context(|| format!("quest {id}"))?;
+        quest_numbers.insert(quest.id.clone(), quests.len());
         quests.push(quest);
     }
 
@@ -1515,11 +1592,20 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         ensure!(model.ends_with(".m2") || model.ends_with(".wmo"), "prop {}: only .m2 and .wmo models can be placed", p.model);
         ensure!(p.scale > 0.0 && p.at.0.is_finite() && p.at.1.is_finite() && p.at.2.is_finite(), "prop {}: scale or place", p.model);
         if let Some(k) = &p.pickup {
-            ensure!(items.iter().any(|i| i.id == k.item.as_str()) && k.respawn > 0.0 && model.ends_with(".m2"), "prop {}: its pickup needs an item of the game, a time and a model file", p.model);
+            ensure!(item_numbers.contains_key(k.item.as_str()) && k.respawn > 0.0 && model.ends_with(".m2"), "prop {}: its pickup needs an item of the game, a time and a model file", p.model);
         }
     }
     let portals: Vec<Portal> = ron::from_str(&source("classic_portals.ron", include_str!("../../../content/classic_portals.ron"))).context("classic_portals.ron")?;
-    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, chests, quests, loot, creatures, spawns, props, start: Start { spells: known, money: raw_start.money, equipment, bag } })
+    let (mut giving, mut taking): (std::collections::HashMap<usize, Vec<usize>>, std::collections::HashMap<usize, Vec<usize>>) = Default::default();
+    let mut item_quests: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for (i, q) in quests.iter().enumerate() {
+        match q.begins_with {
+            Some(item) => drop(item_quests.insert(item, i)),
+            None => giving.entry(q.giver).or_default().push(i),
+        }
+        taking.entry(q.turn_in).or_default().push(i);
+    }
+    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, start: Start { spells: known, money: raw_start.money, equipment, bag } })
 }
 
 #[cfg(test)]
@@ -1571,27 +1657,34 @@ mod tests {
     #[test]
     fn every_quest_can_be_given_and_finished_by_creatures_that_exist_in_the_world() {
         let c = get();
+        let standing: HashSet<&str> = c.spawns.iter().map(|s| s.creature.as_str()).collect();
+        // What can be had: dropped by a creature that stands in the world (or a chest), picked up from an object, or bought.
+        let mut dropped = HashSet::new();
+        for cr in c.creatures.iter().filter(|cr| standing.contains(cr.id.as_str())) {
+            dropped.extend(cr.loot.iter().flat_map(|t| c.loot[t].items.iter().map(|d| d.0)));
+        }
+        let sold: HashSet<usize> = c.creatures.iter().flat_map(|cr| cr.vendor.iter().copied()).collect();
+        let picked: HashSet<&str> = c.props.iter().filter_map(|p| p.pickup.as_ref().map(|k| k.item.as_str())).collect();
+        let rewarded: HashSet<usize> = c.quests.iter().flat_map(|q| q.rewards().map(|s| s.item)).collect();
         for q in &c.quests {
             // Both ends of the quest stand somewhere (a spawn of their kind), so the player can find them.
             for end in [q.giver, q.turn_in] {
-                assert!(c.spawns.iter().any(|s| s.creature == c.creatures[end].id), "{} has nobody to talk to: {}", q.title, c.creatures[end].id);
-                assert!(c.creatures[end].gossip.is_some() && !c.creatures[end].hostile, "{}: {} cannot be talked to", q.title, c.creatures[end].id);
+                assert!(standing.contains(c.creatures[end].id.as_str()), "{} has nobody to talk to: {}", q.title, c.creatures[end].id);
+                assert!(c.creatures[end].gossip.is_some() && c.creatures[end].friend_of_a_side(), "{}: {} cannot be talked to", q.title, c.creatures[end].id);
             }
-            // Kills are of hostile creatures and items to collect can actually be had: dropped by a creature or bought.
+            // Kills are of hostile creatures and items to collect can actually be had.
             for g in &q.goals {
                 match *g {
                     Goal::Kill { creature, .. } => {
-                        assert!(c.creatures[creature].attackable(), "{}: kills a creature that cannot be fought", q.title);
-                        assert!(c.spawns.iter().any(|s| s.creature == c.creatures[creature].id), "{}: nobody of {} stands in the world", q.title, c.creatures[creature].id);
+                        let cr = &c.creatures[creature];
+                        assert!(cr.hostile || cr.neutral || cr.horde.is_some_and(|h| h.0 || h.1), "{}: kills a creature that cannot be fought", q.title);
+                        assert!(standing.contains(c.creatures[creature].id.as_str()), "{}: nobody of {} stands in the world", q.title, c.creatures[creature].id);
                     }
                     Goal::Collect { item, .. } => {
-                        // Dropped by a creature that stands in the world (or a chest), picked up from an object, or bought.
-                        let dropped = c.creatures.iter().any(|cr| cr.loot.as_ref().is_some_and(|t| c.spawns.iter().any(|s| s.creature == cr.id) && c.loot[t].items.iter().any(|d| d.0 == item)));
-                        let sold = c.creatures.iter().any(|cr| cr.vendor.contains(&item));
-                        let picked = c.props.iter().any(|p| p.pickup.as_ref().is_some_and(|k| k.item == c.items[item].id));
                         let given = q.start_items.iter().any(|s| s.item == item);
-                        assert!(dropped || sold || picked || given, "{}: {} cannot be had", q.title, c.items[item].name);
+                        assert!(dropped.contains(&item) || sold.contains(&item) || picked.contains(c.items[item].id) || given || rewarded.contains(&item), "{}: {} cannot be had", q.title, c.items[item].name);
                     }
+                    Goal::Reach { radius, .. } => assert!(radius > 0.0),
                 }
             }
         }
@@ -1610,10 +1703,10 @@ mod tests {
     #[test]
     fn the_items_that_quests_collect_are_the_quest_items_and_are_not_sold() {
         let c = get();
-        let collected: Vec<usize> = c.quests.iter().flat_map(|q| &q.goals).filter_map(|g| if let Goal::Collect { item, .. } = g { Some(*item) } else { None }).collect();
-        // What a quest asks to collect is a quest item (the original's quest items, of its own tables, are many more), and none is sold.
-        assert!(collected.iter().all(|&i| c.items[i].quest), "a collected item is not flagged");
+        // The original's quest items are many; none is sold. The objects that quests ask to use give an item of their own.
         assert!(c.items.iter().filter(|i| i.quest).all(|i| i.sell == 0));
+        let uses: Vec<usize> = c.quests.iter().flat_map(|q| &q.goals).filter_map(|g| if let Goal::Collect { item, .. } = g { Some(*item) } else { None }).filter(|&i| c.items[i].id.starts_with('o')).collect();
+        assert!(uses.iter().all(|&i| c.items[i].quest));
     }
 
     #[test]

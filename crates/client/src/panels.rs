@@ -555,6 +555,7 @@ impl Panels {
             let (text, need) = match *goal {
                 Goal::Kill { creature, count } => (self.counted_text("ERR_QUEST_ADD_KILL_SII", &content::get().creatures[creature].name, quest, i - 1, count), count),
                 Goal::Collect { item, count } => (self.counted_text("ERR_QUEST_ADD_ITEM_SII", crate::items::get(item).name, quest, i - 1, count), count),
+                Goal::Reach { .. } => (format!("Reach the destination: {}/1", self.quests.have(quest, i - 1, &self.inv)), 1),
             };
             let finished = self.quests.have(quest, i - 1, &self.inv) >= need;
             self.tree.set_text(&line, &if finished { format!("{text} ({})", self.string("COMPLETE")) } else { text });
@@ -780,7 +781,7 @@ impl Panels {
         let kind = kind_of(def);
         let mut lines = Vec::new();
         if !answered {
-            lines.extend(self.quests.offered_by(kind).into_iter().map(Line::Available));
+            lines.extend(self.quests.offered_by(kind, self.who()).into_iter().map(Line::Available));
             lines.extend(self.quests.taken_by(kind, &self.inv).into_iter().map(|(quest, _)| Line::Active(quest)));
             lines.extend((0..gossip.options.len()).map(Line::Option));
         }
@@ -1052,7 +1053,7 @@ impl Panels {
                         self.notice(&self.string("ERR_QUEST_REWARD_ITEM_S").replacen("%s", crate::items::get(stack.item).name, 1));
                     }
                     // The creature may have the next quest of the chain for the player right away.
-                    match self.quests.offered_by(kind_of(def)).first() {
+                    match self.quests.offered_by(kind_of(def), self.who()).first() {
                         Some(&next) => self.open_quest(creature, def, next, QuestScreen::Detail),
                         None => {
                             self.hide_quest();
@@ -1085,6 +1086,7 @@ impl Panels {
     /// The character's name and race, which the character sheet, the quest texts and the tooltips of items go by.
     pub fn set_identity(&mut self, name: &str, race: crate::character::Race) {
         (self.name, self.race) = (name.to_string(), race);
+        content::set_horde(race.horde());
     }
 
     pub fn restore(&mut self, saved: &crate::save::Save) {
@@ -1224,7 +1226,23 @@ impl Panels {
 
     /// What a creature of kind `def` shows over its head for the quests.
     pub fn marker(&self, kind: usize) -> Option<Marker> {
-        self.quests.marker(kind, &self.inv)
+        self.quests.marker(kind, &self.inv, self.who())
+    }
+
+    /// Who the quests are for: the character's level and race.
+    pub fn who(&self) -> crate::quests::Who {
+        crate::quests::Who { level: self.progress.level, race: 1 << self.race as u32 }
+    }
+
+    /// The character is at (north, west) of `map`: a quest that asks to walk there moves on.
+    pub fn arrive(&mut self, map: &str, north: f32, west: f32) {
+        let steps = self.quests.arrived(map, north, west);
+        for step in &steps {
+            self.notice(&format!("{}: Destination reached", content::quest(step.quest).title));
+        }
+        if !steps.is_empty() {
+            self.update_quests();
+        }
     }
     pub fn toggle_character(&mut self) {
         let on = !self.character_open();
@@ -1412,7 +1430,8 @@ impl Panels {
         };
         let creatures = creatures.map_or_else(Vec::new, |c| c.positions(&lead.kinds));
         let chests = lead.item.map_or_else(Vec::new, |item| chests.map_or_else(Vec::new, |c| c.holding(item)).into_iter().chain(pickups.map_or_else(Vec::new, |p| p.holding(item))).collect());
-        self.quest_targets = creatures.into_iter().map(|p| (p, lead.icon)).chain(chests.into_iter().map(|p| (p, crate::quests::Icon::Chest))).collect();
+        let places = lead.places.iter().map(|&(north, west)| crate::coords::wow_to_render([north, west, 0.0]));
+        self.quest_targets = creatures.into_iter().map(|p| (p, lead.icon)).chain(places.map(|p| (p, lead.icon))).chain(chests.into_iter().map(|p| (p, crate::quests::Icon::Chest))).collect();
     }
 
     /// The skill was used `uses` times; a new rank says so.
@@ -2012,6 +2031,9 @@ impl Panels {
                         self.inv.click_bag(slot);
                     } else if self.merchant.is_some() {
                         self.sell_item(slot);
+                    } else if let Some(quest) = self.inv.bag[slot].and_then(|s| self.quests.begun_by(s.item, self.who())) {
+                        // A letter or a note that begins a quest: the quest is offered as by the one who takes it back.
+                        self.open_quest(usize::MAX, &content::get().creatures[content::quest(quest).turn_in], quest, QuestScreen::Detail);
                     } else if self.inv.bag[slot].is_some_and(|s| crate::items::get(s.item).tome.is_some()) {
                         self.read_tome(slot);
                     } else if self.inv.bag[slot].is_some_and(|s| crate::consume::Consumed::can_use(s.item)) {
@@ -2373,6 +2395,7 @@ impl Panels {
                 let (name, need) = match *goal {
                     Goal::Kill { creature, count } => (format!("{} slain", content::get().creatures[creature].name), count),
                     Goal::Collect { item, count } => (crate::items::get(item).name.to_string(), count),
+                    Goal::Reach { .. } => ("Destination".to_string(), 1),
                 };
                 let have = self.quests.have(active.quest, g, &self.inv);
                 let color = if have >= need { GREY } else { WHITE };

@@ -117,14 +117,19 @@ fn pickup_props() -> Vec<content::Prop> {
     content::get().props.iter().filter(|p| p.pickup.is_some() || p.physics).cloned().collect()
 }
 
-/// The respawn time and the patrol of each spawn, in the order of `spawn_list`.
-fn spawn_routes() -> Vec<(Option<f32>, Vec<content::Waypoint>)> {
-    content::get().spawns.iter().map(|s| (s.respawn, s.path.clone())).collect()
+/// The spawns that stand in `map` (those the editor put down have none and stand in every map).
+fn map_spawns(map: &str) -> impl Iterator<Item = &'static content::Spawn> + '_ {
+    content::get().spawns.iter().filter(move |s| s.map.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(map)))
 }
 
-/// The creatures of `content/spawns.ron`: (kind, feet position in render space, heading in radians, yards it strolls).
-fn spawn_list() -> Vec<(usize, Vec3, f32, f32)> {
-    content::get().spawns.iter().map(|s| (content::creature_index(&s.creature), wow_to_render([s.at.0, s.at.1, s.height.unwrap_or(0.0)]), s.facing.to_radians(), s.wander)).collect()
+/// The respawn time and the patrol of each spawn of `map`, in the order of `spawn_list`.
+fn spawn_routes(map: &str) -> Vec<(Option<f32>, Vec<content::Waypoint>)> {
+    map_spawns(map).map(|s| (s.respawn, s.path.clone())).collect()
+}
+
+/// The creatures of the content that stand in `map`: (kind, feet position in render space, heading in radians, yards it strolls).
+fn spawn_list(map: &str) -> Vec<(usize, Vec3, f32, f32)> {
+    map_spawns(map).map(|s| (content::creature_index(&s.creature), wow_to_render([s.at.0, s.at.1, s.height.unwrap_or(0.0)]), s.facing.to_radians(), s.wander)).collect()
 }
 
 struct State {

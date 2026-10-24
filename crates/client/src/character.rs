@@ -14,7 +14,7 @@ use wowfmt::blp::Blp;
 use wowfmt::dbc::Dbc;
 use wowfmt::m2::{Blend, M2};
 
-/// The races of the player's side and the other (the ones a character can be made as in 1.12).
+/// The races of the player's side and the other (the ones a character can be made as in 1.12), and the goblins, whom only the original's people are.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum Race {
     #[default]
@@ -26,6 +26,7 @@ pub enum Race {
     Tauren,
     Gnome,
     Troll,
+    Goblin,
 }
 
 impl Race {
@@ -33,6 +34,9 @@ impl Race {
 
     /// Its row of `ChrRaces.dbc`, which the tables of character customization go by.
     fn id(self) -> u32 {
+        if self == Race::Goblin {
+            return 9;
+        }
         Race::ALL.iter().position(|&r| r == self).map_or(1, |i| i as u32 + 1)
     }
 
@@ -47,6 +51,7 @@ impl Race {
             Race::Tauren => "Tauren",
             Race::Gnome => "Gnome",
             Race::Troll => "Troll",
+            Race::Goblin => "Goblin",
         }
     }
 
@@ -58,6 +63,18 @@ impl Race {
     /// The name the original's texts and icons go by (`RACE_INFO_SCOURGE`).
     pub fn key(self) -> String {
         self.folder().to_ascii_uppercase()
+    }
+
+    /// Where a new character of the race starts, as the original's `playercreateinfo` has it: the map, the place (north, west; the ground is found there) and the heading of the camera, degrees.
+    pub fn start(self) -> (&'static str, (f32, f32, Option<f32>), f32) {
+        match self {
+            Race::Human | Race::Goblin => ("Azeroth", crate::START_POS, 200.0),
+            Race::Orc | Race::Troll => ("Kalimdor", (-618.518, -4251.67, None), 0.0),
+            Race::Dwarf | Race::Gnome => ("Azeroth", (-6240.32, 331.033, None), -354.0),
+            Race::NightElf => ("Kalimdor", (10311.3, 831.463, None), -314.0),
+            Race::Undead => ("Azeroth", (1676.35, 1677.45, None), -155.0),
+            Race::Tauren => ("Kalimdor", (-2917.58, -257.98, None), 0.0),
+        }
     }
 
     /// Whether it is on the Horde's side.
@@ -215,13 +232,13 @@ impl Parts {
             sections.iter().find(|r| r.u32(1) == race && r.u32(2) == sex && r.u32(3) == kind && r.u32(4) == variation && r.u32(5) == color)
         };
         let text = |s: &str| (!s.is_empty()).then(|| s.to_string());
-        let skin_row = section(0, 0, a.skin).context("no such skin colour")?;
-        let mut skin = Some(skin_row.string(6).to_string()).filter(|s| !s.is_empty()).context("no such skin colour")?;
-        // CreatureDisplayInfoExtra: 18 the name of the baked picture (in Textures\BakedNpcTextures).
+        let skin_row = section(0, 0, a.skin);
+        // CreatureDisplayInfoExtra: 18 the name of the baked picture (in Textures\BakedNpcTextures), which is the whole skin (the goblins have no other).
         let baked = (a.baked != 0).then(|| dbc("CreatureDisplayInfoExtra")).transpose()?.and_then(|t| Some(t.find_by_id(a.baked)?.string(18).to_string())).filter(|n| !n.is_empty());
-        if let Some(name) = &baked {
-            skin = format!(r"Textures\BakedNpcTextures\{name}");
-        }
+        let skin = match &baked {
+            Some(name) => format!(r"Textures\BakedNpcTextures\{name}"),
+            None => skin_row.map(|r| r.string(6).to_string()).filter(|s| !s.is_empty()).context("no such skin colour")?,
+        };
         // A face that the tables do not have for this skin is left out (the editor offers only those that exist).
         let face = section(1, a.face, a.skin);
         let facial = (a.beard > 0).then(|| section(2, a.beard, a.hair_color)).flatten();
@@ -236,7 +253,7 @@ impl Parts {
         Ok(Parts {
             skin,
             face: [face.and_then(|r| text(r.string(6))), face.and_then(|r| text(r.string(7)))],
-            skin_extra: text(skin_row.string(7)),
+            skin_extra: skin_row.and_then(|r| text(r.string(7))),
             facial: [facial.and_then(|r| text(r.string(6))), facial.and_then(|r| text(r.string(7)))],
             underwear,
             hair,
@@ -656,7 +673,8 @@ mod tests {
         }));
         for look in looks {
             let parts = Parts::of(&mount, &look).unwrap_or_else(|e| panic!("{look:?}: {e:#}"));
-            assert!(parts.face.iter().all(Option::is_some), "{look:?} has a face");
+            // (The goblins have no faces of their own: their baked picture is all of them.)
+            assert!(parts.face.iter().all(Option::is_some) || look.race == Race::Goblin, "{look:?} has a face");
             // A hair style shows a mesh part and a texture, bald shows neither; a beard paints facial hair over the face.
             assert_eq!((parts.hair_geoset > 0, parts.hair.is_some()), (look.hair_style > 0, look.hair_style > 0), "{look:?}");
             assert_eq!(parts.facial[0].is_some(), look.beard > 0, "{look:?}");
