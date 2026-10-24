@@ -17,8 +17,10 @@ impl State {
             }
             None => None,
         };
-        // A character saved in a dungeon comes back in it.
-        let map = loaded.as_ref().and_then(|s| s.map.clone()).unwrap_or_else(|| args.map.clone());
+        // A new character starts in the homeland of its race, unless the command line asked for a place; one that was saved comes back where it was (in a dungeon too).
+        let homeland = loaded.is_none() && args.map == "Azeroth" && args.pos == crate::START_POS;
+        let (start_map, start_pos, start_yaw) = if homeland { args.look.race.start() } else { (args.map.as_str(), args.pos, args.yaw_deg) };
+        let map = loaded.as_ref().and_then(|s| s.map.clone()).unwrap_or_else(|| start_map.to_string());
 
         let view_distance = args.radius as f32 * wowfmt::adt::TILE_SIZE * 0.95;
         let mut renderer = Renderer::new(&gpu, format, Atmosphere::daytime(view_distance));
@@ -136,18 +138,18 @@ impl State {
         let foes = crate::foes::Foes::new(crate::visuals::load_classic(&player_mount).map_err(|e| log::warn!("no creature spell visuals: {e:#}")).unwrap_or_default());
         let combat_text = CombatText::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no combat text: {e:#}")).ok();
 
-        let (x, y, z) = args.pos;
+        let (x, y, z) = start_pos;
         let spawn = wow_to_render([x, y, z.unwrap_or(0.0)]);
         // Where the saved character stood (it drops onto the ground there), or the start.
         let (start, yaw, pitch) = match &loaded {
             Some(saved) => (wow_to_render([saved.position.0, saved.position.1, 0.0]), saved.heading.to_radians(), saved.pitch.to_radians()),
-            None => (spawn, args.yaw_deg.to_radians(), args.pitch_deg.to_radians()),
+            None => (spawn, start_yaw.to_radians(), args.pitch_deg.to_radians()),
         };
         let mut camera = Camera::new(start, yaw, pitch);
         // The wolves of `content/spawns.ron`.
-        let mut wolves = Creatures::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &spawn_list()).map_err(|e| log::warn!("no creatures: {e:#}")).ok();
+        let mut wolves = Creatures::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &spawn_list(&map)).map_err(|e| log::warn!("no creatures: {e:#}")).ok();
         if let Some(wolves) = &mut wolves {
-            wolves.set_routes(spawn_routes());
+            wolves.set_routes(spawn_routes(&map));
             wolves.set_spell_anims(foes.anims());
         }
         if let (Some(wolves), Some(saved)) = (&mut wolves, &loaded) {
@@ -182,7 +184,7 @@ impl State {
             pickups_stale: false,
             beds: bed_spots(&content::get().props, &map),
             map,
-            home: args.map.clone(),
+            home: start_map.to_string(),
             in_portal: None,
             screens: Default::default(),
             lock: None,

@@ -175,7 +175,8 @@ impl State {
             editor.click();
             // A click on the gizmo takes hold of it; a click on a prop selects it.
             let world = &self.world;
-            if editor.world_press(&|x, z| world.height_at(x, z)) {
+            let standing = self.wolves.as_ref().map_or_else(Vec::new, |w| w.standing());
+            if editor.world_press(&|x, z| world.height_at(x, z), &standing) {
                 return;
             }
         }

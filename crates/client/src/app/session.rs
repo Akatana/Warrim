@@ -91,16 +91,24 @@ impl State {
         if let Some(audio) = &mut self.audio {
             audio.bank.reload_cries(&self.mount).unwrap_or_else(|e| log::warn!("no cries: {e:#}"));
         }
-        self.wolves = Creatures::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu, &spawn_list()).map_err(|e| log::warn!("no creatures: {e:#}")).ok();
-        if let Some(wolves) = &mut self.wolves {
-            wolves.set_routes(spawn_routes());
-            wolves.set_spell_anims(self.foes.anims());
-        }
+        self.load_creatures();
         self.chests = Chests::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu).map_err(|e| log::warn!("no chests: {e:#}")).ok();
         self.pickup_props = pickup_props();
         self.beds = bed_spots(&content::get().props, &self.map);
         self.load_pickups();
         Ok(())
+    }
+
+    /// Put the creatures of the map being played in the world, in place of those there were (their models are made as the player comes near).
+    pub(super) fn load_creatures(&mut self) {
+        if let Some(old) = self.wolves.take() {
+            old.retire(&mut self.renderer);
+        }
+        self.wolves = Creatures::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu, &spawn_list(&self.map)).map_err(|e| log::warn!("no creatures: {e:#}")).ok();
+        if let Some(wolves) = &mut self.wolves {
+            wolves.set_routes(spawn_routes(&self.map));
+            wolves.set_spell_anims(self.foes.anims());
+        }
     }
 
     /// Put the props to pick up and those with physics in the world, in place of those there were (the props changed).

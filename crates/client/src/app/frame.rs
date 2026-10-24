@@ -123,7 +123,7 @@ impl State {
         }
         if let Some(pickups) = &mut self.pickups {
             let world = &self.world;
-            pickups.update(dt, |x, z| world.height_at(x, z), &mut self.renderer);
+            pickups.update(dt, self.camera.pos, |x, z| world.height_at(x, z), &mut self.renderer);
         }
         self.drag_if_held();
         if let Some(bodies) = &mut self.bodies {
@@ -553,6 +553,8 @@ impl State {
                 };
                 // Creatures that died to the sword count for the kill goals of quests.
                 panels.on_kills(&wolves.take_deaths());
+                let [north, west, _] = render_to_wow(feet);
+                panels.arrive(&self.map, north, west);
                 wolves.set_wanted(panels.quests.wanted(&panels.inv));
                 panels.update_quests();
                 if self.names {
@@ -709,7 +711,7 @@ impl State {
             if let Some(editor) = &mut self.editor {
                 let [north, west, eye] = render_to_wow(self.camera.pos);
                 editor.set_hover(hover);
-                for action in editor.draw(&mut self.renderer.ui, size, crate::editor::Place { north, west, height: eye - EYE_HEIGHT, yaw: self.camera.yaw.to_degrees().rem_euclid(360.0) }, crate::propedit::Eye::of(&render_camera, size), &|x, z| self.world.height_at(x, z)) {
+                for action in editor.draw(&mut self.renderer.ui, size, crate::editor::Place { north, west, height: eye - EYE_HEIGHT, yaw: self.camera.yaw.to_degrees().rem_euclid(360.0), map: crate::editor::interned(&self.map) }, crate::propedit::Eye::of(&render_camera, size), &|x, z| self.world.height_at(x, z)) {
                     match action {
                         crate::editor::Action::Teleport(north, west) => match &mut self.free {
                             // The camera goes to look at the place from a little way off and above.

@@ -25,7 +25,9 @@ use anyhow::{Context, Result};
 use glam::{Mat4, Vec3};
 use mpq::Mount;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use wowfmt::m2::M2;
 
 /// Animation ids of the sequences every creature model has.
@@ -97,6 +99,20 @@ const REST: (f32, f32) = (3.0, 10.0);
 const STEP: f32 = 2.3;
 /// Creatures further than this from the player are not animated or drawn, yards.
 const DRAW_RANGE: f32 = 150.0;
+/// The world holds tens of thousands of places where creatures stand (`Site`): one within `ACTIVATE` yards of the player becomes a creature (a `Mob`, no model yet;
+/// the model is made within `DRAW_RANGE`), and one that is resting beyond `DEACTIVATE` is put away again. Cells of the grid that finds them are `CELL` yards wide.
+const ACTIVATE: f32 = 200.0;
+const DEACTIVATE: f32 = 260.0;
+const CELL: f32 = 128.0;
+/// Seconds between two looks at who is near, how many creatures get their model in one frame at most, and the longest a frame spends on that (at least one is made).
+const SCAN: f32 = 0.25;
+const MAKE_PER_FRAME: usize = 3;
+/// Creatures nearer than the first are posed every frame, nearer than the second every other frame, the rest every fourth.
+const POSE_NEAR: f32 = 45.0;
+const POSE_FAR: f32 = 90.0;
+const MAKE_TIME: Duration = Duration::from_millis(12);
+/// The most places the compass and the map are told of for a kind of creature (the nearest).
+const MOST_LEADS: usize = 40;
 /// The models of the quest marks floating over a creature's head, by `Marker` (the original's own: they spin).
 const MARKER_MODELS: [&str; 3] = [r"Interface\Buttons\TalkToMe.m2", r"Interface\Buttons\TalkToMeQuestionMark.m2", r"Interface\Buttons\TalkToMeQuestion_Grey.m2"];
 /// How high above a person's feet the mark's model stands (its own origin; it reaches 0.15 to 0.77 above that), over the name.
@@ -524,6 +540,29 @@ impl Mob {
         self.todo.clear();
     }
 
+    /// A corpse counts down to the day it is back: standing up at home, or (a summoned one) going back to the pool.
+    fn tick_dead(&mut self, dt: f32) {
+        let State::Dead(t) = self.state else { return };
+        if t + dt < self.respawn {
+            self.state = State::Dead(t + dt);
+        } else if self.summoned {
+            self.state = State::Unborn;
+        } else {
+            (self.pos, self.health, self.loot) = (self.home, self.def.health, None);
+            self.reset_route();
+            self.mana = self.def.brain.mana;
+            self.rest = self.new_rest();
+            self.state = State::Idle;
+            self.end_fight();
+            self.fresh = true;
+        }
+    }
+
+    /// Whether a save has to keep it: it is hurt, dead, away from rest or carries loot (anything else starts afresh).
+    pub fn worth_saving(&self) -> bool {
+        !matches!(self.state, State::Idle | State::Wander(_)) || self.health < self.def.health || self.loot.is_some()
+    }
+
     /// Dead, or waiting in the pool of summoned creatures: either way it is not in the world.
     pub fn is_dead(&self) -> bool {
         matches!(self.state, State::Dead(_) | State::Unborn)
@@ -636,7 +675,7 @@ impl Mob {
     /// (a sneaking player is noticed from `SNEAK_AGGRO` of the range, so the way between is what the reticle's eye shows).
     pub fn alert(&self, target: Vec3, level: u32) -> f32 {
         match self.state {
-            _ if !self.def.hostile || self.def.brain.calm || self.is_dead() => 0.0,
+            _ if !self.def.is_hostile() || self.def.brain.calm || self.is_dead() => 0.0,
             State::Return(_) => 0.0,
             State::Idle | State::Wander(_) => ((1.0 - (target - self.pos).length() / aggro_range(self.def.level, level)) / (1.0 - SNEAK_AGGRO * self.notice)).clamp(0.0, 1.0),
             _ => 1.0,
@@ -980,25 +1019,11 @@ impl Mob {
         }
         match self.state {
             State::Unborn => {}
-            State::Dead(t) => {
-                if t + dt < self.respawn {
-                    self.state = State::Dead(t + dt);
-                } else if self.summoned {
-                    self.state = State::Unborn;
-                } else {
-                    (self.pos, self.health, self.loot) = (self.home, self.def.health, None);
-                    self.reset_route();
-                    self.mana = self.def.brain.mana;
-                    self.rest = self.new_rest();
-                    self.state = State::Idle;
-                    self.end_fight();
-                    self.fresh = true;
-                }
-            }
+            State::Dead(_) => self.tick_dead(dt),
             State::Flinch(t) => self.state = if t + dt >= FLINCH_TIME { State::Chase } else { State::Flinch(t + dt) },
             State::Idle | State::Wander(_) => {
                 let noticed = aggro_range(self.def.level, watch.level) * if self.hidden { SNEAK_AGGRO * self.notice } else { 1.0 };
-                if self.def.hostile && !self.def.brain.calm && (target - self.pos).length() < noticed {
+                if self.def.is_hostile() && !self.def.brain.calm && (target - self.pos).length() < noticed {
                     self.state = State::Chase;
                     self.sounds.push(Cry::Aggro);
                 } else if self.def.attackable() || !self.route.is_empty() {
@@ -1412,6 +1437,8 @@ enum Visual {
         shown: usize,
     },
     Person(Person),
+    /// Not made yet (it is near, but its turn has not come) or no longer there.
+    None,
 }
 
 /// A quest mark's model, shared by every creature that shows it.
@@ -1424,6 +1451,8 @@ struct Creature {
     mob: Mob,
     /// The creature whose script summons this one (it waits in the pool of summoned creatures until then).
     parent: Option<usize>,
+    /// The place it stands at, while it is in the world (none for a summoned one, or for a slot that is free).
+    site: Option<usize>,
     visual: Visual,
     /// The entities of its three quest marks (those creatures that can be talked to have them), and the one shown.
     marks: Option<[usize; 3]>,
@@ -1431,6 +1460,9 @@ struct Creature {
     /// It fell as a ragdoll when it died, and lies as that until it is back; whether it was dead at the last frame.
     ragdoll: Option<Ragdoll>,
     was_dead: bool,
+    /// Seconds not posed yet and the frame it is at of the few it is posed every (far creatures are posed less often).
+    owed: f32,
+    beat: u8,
 }
 
 /// The rectangle (x0, y0, x1, y1 in pixels) that a thing `height` yards tall standing at `feet` covers on a `size` screen seen
@@ -1467,10 +1499,38 @@ pub struct Label {
     pub y: f32,
 }
 
+/// A place of the map where a creature of some kind stands (a spawn of the content): while the player is far it is only this.
+struct Site {
+    kind: usize,
+    pos: Vec3,
+    yaw: f32,
+    wander: f32,
+    respawn: Option<f32>,
+    route: Vec<Stop>,
+    /// Its place among the creatures while it is in the world.
+    slot: Option<usize>,
+}
+
+fn cell_of(at: Vec3) -> (i32, i32) {
+    ((at.x / CELL).floor() as i32, (at.z / CELL).floor() as i32)
+}
+
 pub struct Creatures {
     /// By kind (index into the content's creatures): the model of every kind of beast in the world.
     rigs: Vec<Option<BeastRig>>,
+    /// The creatures in the world now (those near the player); a slot that is free holds an unborn creature and is in `free`.
     creatures: Vec<Creature>,
+    sites: Vec<Site>,
+    /// The sites by cell and by kind.
+    grid: HashMap<(i32, i32), Vec<usize>>,
+    by_kind: HashMap<usize, Vec<usize>>,
+    free: Vec<usize>,
+    /// What a save says of a creature whose site is not in the world now, by site.
+    pending: HashMap<usize, MobSave>,
+    mount: Arc<Mount>,
+    cache: ModelCache,
+    budget: usize,
+    scan: f32,
     markers: Vec<MarkerRig>,
     viewer: Vec3,
     rng: Rng,
@@ -1492,12 +1552,11 @@ pub struct Creatures {
 const MOST_SUMMONED: usize = 6;
 
 impl Creatures {
-    /// The creatures at `spawns`: (kind, feet position in render space, heading in radians, yards it strolls from there).
-    pub fn load(mount: &Mount, cache: &ModelCache, renderer: &mut Renderer, gpu: &Gpu, spawns: &[(usize, Vec3, f32, f32)]) -> Result<Creatures> {
+    /// The creatures at `spawns`: (kind, feet position in render space, heading in radians, yards it strolls from there). They are made as the player comes near.
+    pub fn load(mount: &Arc<Mount>, cache: &ModelCache, renderer: &mut Renderer, gpu: &Gpu, spawns: &[(usize, Vec3, f32, f32)]) -> Result<Creatures> {
         let defs = &content::get().creatures;
         let mut rigs: Vec<Option<BeastRig>> = defs.iter().map(|_| None).collect();
-        let mut rng = Rng(0x5EED_1234);
-        let mut creatures = Vec::new();
+        let rng = Rng(0x5EED_1234);
         // The models of the marks; without them (a missing file) the creatures simply show none.
         let markers: Vec<MarkerRig> = MARKER_MODELS
             .iter()
@@ -1510,90 +1569,251 @@ impl Creatures {
             log::warn!("the quest mark models are missing");
         }
         let markers = if markers.len() == MARKER_MODELS.len() { markers } else { Vec::new() };
-        // Behind the creatures of the spawns wait the ones that their scripts summon (twice as many as there are summon actions, so that a summon that
-        // repeats finds some), each with the creature that summons it.
-        let mut all: Vec<(usize, Vec3, f32, f32, Option<usize>)> = spawns.iter().map(|&(kind, pos, yaw, wander)| (kind, pos, yaw, wander, None)).collect();
-        for (parent, &(kind, pos, yaw, wander)) in spawns.iter().enumerate() {
-            let mut waiting: Vec<(usize, usize)> = Vec::new();
-            for act in defs[kind].brain.events.iter().flat_map(|e| &e.acts).filter(|a| a.0 == brain::act::SUMMON) {
-                let id = format!("c{}", act.1);
-                let Some(summoned) = defs.iter().position(|d| d.id == id) else { continue };
-                match waiting.iter_mut().find(|w| w.0 == summoned) {
-                    Some(w) => w.1 = (w.1 + 2).min(MOST_SUMMONED),
-                    None => waiting.push((summoned, 2)),
-                }
-            }
-            for (summoned, count) in waiting {
-                all.extend((0..count).map(|_| (summoned, pos, yaw, wander, Some(parent))));
-            }
-        }
         // The looks that the waypoint scripts turn creatures into.
         for id in content::get().spawns.iter().flat_map(|s| &s.path).flat_map(|w| &w.steps).filter_map(|(_, step)| if let content::Step::Morph(id) = step { Some(id) } else { None }) {
             if let Some(kind) = defs.iter().position(|d| d.id == *id).filter(|&k| rigs[k].is_none()) {
                 rigs[kind] = beast_rig(&defs[kind], mount, cache)?;
             }
         }
-        for (n, &(kind, pos, yaw, wander, parent)) in all.iter().enumerate() {
-            let def = &defs[kind];
-            let visual = match &def.body {
-                Body::Beast { .. } => {
-                    if rigs[kind].is_none() {
-                        rigs[kind] = beast_rig(def, mount, cache)?;
-                    }
-                    let rig = rigs[kind].as_ref().unwrap();
-                    Visual::Beast { entity: renderer.add_room_lit_entity(gpu, &rig.template), anim: Channel::new(&rig.m2, STAND, &mut rng), last_seq: usize::MAX, shown: kind }
-                }
-                // A look that does not exist for the race (a face, a hair style) is shown as the default of the race instead.
-                Body::Humanoid { outfit, look } => Visual::Person(match Person::load(outfit, look, mount, renderer, gpu, &format!("npc/{n}")) {
-                    Ok(person) => person,
-                    Err(e) => {
-                        log::warn!("{}: {e:#}; showing the default look", def.name);
-                        Person::load(outfit, &Appearance { race: look.race, sex: look.sex, skin: 0, face: 0, hair_style: 0, hair_color: 0, beard: 0, baked: 0 }, mount, renderer, gpu, &format!("npc/{n}"))?
-                    }
-                }),
-            };
-            // Whoever can be talked to may have a quest mark over its head: one entity for each of the three marks.
-            let marks = (def.gossip.is_some() && !markers.is_empty()).then(|| [0, 1, 2].map(|m| renderer.add_entity(gpu, &markers[m].template)));
-            let mut mob = Mob::new(kind, pos, yaw);
-            mob.wander = wander;
-            if parent.is_some() {
-                (mob.summoned, mob.state) = (true, State::Unborn);
-            }
-            creatures.push(Creature { mob, parent, visual, marks, want: None, ragdoll: None, was_dead: false });
+        let sites: Vec<Site> = spawns.iter().map(|&(kind, pos, yaw, wander)| Site { kind, pos, yaw, wander, respawn: None, route: Vec::new(), slot: None }).collect();
+        let (mut grid, mut by_kind): (HashMap<(i32, i32), Vec<usize>>, HashMap<usize, Vec<usize>>) = Default::default();
+        for (i, site) in sites.iter().enumerate() {
+            grid.entry(cell_of(site.pos)).or_default().push(i);
+            by_kind.entry(site.kind).or_default().push(i);
         }
-        Ok(Creatures { rigs, creatures, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, wanted: Vec::new(), ragdolls: true, anims: SpellAnims::new() })
+        let _ = renderer;
+        let _ = gpu;
+        Ok(Creatures { rigs, creatures: Vec::new(), sites, grid, by_kind, free: Vec::new(), pending: HashMap::new(), mount: mount.clone(), cache: ModelCache::default(), budget: MAKE_PER_FRAME, scan: SCAN, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, wanted: Vec::new(), ragdolls: true, anims: SpellAnims::new() })
     }
 
-    /// Where the creatures of the given kinds are now (render space): the living ones, else the corpses (which wait to come back).
+    /// The creatures at their places that have a model: (kind id, north and west of the place, where it is now in render space).
+    pub fn standing(&self) -> Vec<(String, f32, f32, Vec3)> {
+        self.creatures
+            .iter()
+            .filter(|c| c.site.is_some() && !matches!(c.visual, Visual::None) && !c.mob.is_dead())
+            .map(|c| (c.mob.def.id.clone(), -c.mob.home.z, -c.mob.home.x, c.mob.pos))
+            .collect()
+    }
+
+    /// How many creatures are in the world now, and how many of them have their model made (the log of a picture taken from the command line says it).
+    pub fn counts(&self) -> (usize, usize) {
+        let live = self.creatures.iter().filter(|c| c.site.is_some());
+        (live.clone().count(), live.filter(|c| !matches!(c.visual, Visual::None)).count())
+    }
+
+    /// How many creatures get their model in one frame at most (the first frames of a picture taken from the command line want them all).
+    pub fn set_budget(&mut self, most: usize) {
+        self.budget = most;
+    }
+
+    /// Put a creature into a free slot, or a new one.
+    fn alloc(&mut self, creature: Creature) -> usize {
+        match self.free.pop() {
+            Some(i) => {
+                self.creatures[i] = creature;
+                i
+            }
+            None => {
+                self.creatures.push(creature);
+                self.creatures.len() - 1
+            }
+        }
+    }
+
+    /// The place at `site` becomes a creature in the world (without a model yet), with the creatures that its script summons waiting behind it.
+    fn activate(&mut self, site: usize) {
+        let defs = &content::get().creatures;
+        let s = &self.sites[site];
+        let (kind, pos, yaw, wander) = (s.kind, s.pos, s.yaw, s.wander);
+        let mut mob = Mob::new(kind, pos, yaw);
+        mob.wander = wander;
+        mob.respawn = s.respawn.unwrap_or(mob.def.respawn);
+        mob.route = s.route.clone();
+        if let Some(saved) = self.pending.remove(&site) {
+            mob.restore(&saved);
+        }
+        let slot = self.alloc(Creature { mob, parent: None, site: Some(site), visual: Visual::None, marks: None, want: None, ragdoll: None, was_dead: false, owed: 0.0, beat: 0 });
+        self.sites[site].slot = Some(slot);
+        // Behind it wait the creatures that its script summons (twice as many as there are summon actions, so that a summon that repeats finds some).
+        let mut waiting: Vec<(usize, usize)> = Vec::new();
+        for act in defs[kind].brain.events.iter().flat_map(|e| &e.acts).filter(|a| a.0 == brain::act::SUMMON) {
+            let id = format!("c{}", act.1);
+            let Some(summoned) = content::get().creature_numbers.get(&id).copied() else { continue };
+            match waiting.iter_mut().find(|w| w.0 == summoned) {
+                Some(w) => w.1 = (w.1 + 2).min(MOST_SUMMONED),
+                None => waiting.push((summoned, 2)),
+            }
+        }
+        for (summoned, count) in waiting {
+            for _ in 0..count {
+                let mut mob = Mob::new(summoned, pos, yaw);
+                (mob.wander, mob.summoned, mob.state) = (wander, true, State::Unborn);
+                self.alloc(Creature { mob, parent: Some(slot), site: None, visual: Visual::None, marks: None, want: None, ragdoll: None, was_dead: false, owed: 0.0, beat: 0 });
+            }
+        }
+    }
+
+    /// Take creature `i` and what it summons out of the world (its models go back), leaving free slots.
+    fn deactivate(&mut self, i: usize, renderer: &mut Renderer) {
+        let site = self.creatures[i].site;
+        let kids: Vec<usize> = (0..self.creatures.len()).filter(|&j| self.creatures[j].parent == Some(i)).collect();
+        for j in kids.into_iter().chain([i]) {
+            let c = &mut self.creatures[j];
+            match std::mem::replace(&mut c.visual, Visual::None) {
+                Visual::Beast { entity, .. } => renderer.remove_entity(entity),
+                Visual::Person(p) => p.retire(renderer),
+                Visual::None => {}
+            }
+            c.marks.take().into_iter().flatten().for_each(|e| renderer.remove_entity(e));
+            (c.parent, c.site, c.want, c.ragdoll, c.was_dead) = (None, None, None, None, false);
+            c.mob.state = State::Unborn;
+            self.free.push(j);
+        }
+        if let Some(site) = site {
+            self.sites[site].slot = None;
+        }
+        if self.target == Some(i) {
+            self.target = None;
+        }
+    }
+
+    /// Look at who is near: the places within `ACTIVATE` yards become creatures, and the ones at rest beyond `DEACTIVATE` are put away.
+    fn stream(&mut self, player: Vec3, renderer: &mut Renderer) {
+        let (cx, cz) = cell_of(player);
+        let reach = (ACTIVATE / CELL).ceil() as i32;
+        let mut wake = Vec::new();
+        for dx in -reach..=reach {
+            for dz in -reach..=reach {
+                for &s in self.grid.get(&(cx + dx, cz + dz)).into_iter().flatten() {
+                    if self.sites[s].slot.is_none() && flat(self.sites[s].pos - player).length() <= ACTIVATE {
+                        wake.push(s);
+                    }
+                }
+            }
+        }
+        for s in wake {
+            self.activate(s);
+        }
+        // Only a creature that is at rest goes: not one that fights, runs home, lies dead (its time to come back is counted), or is the target.
+        let gone: Vec<usize> = (0..self.creatures.len())
+            .filter(|&i| {
+                let c = &self.creatures[i];
+                c.site.is_some()
+                    && self.target != Some(i)
+                    && matches!(c.mob.state, State::Idle | State::Wander(_))
+                    && flat(c.mob.pos - player).length() > DEACTIVATE
+                    && flat(c.mob.home - player).length() > DEACTIVATE
+            })
+            .collect();
+        for i in gone {
+            self.deactivate(i, renderer);
+        }
+    }
+
+    /// Give the models to the creatures that are near and have none, the nearest first, a few in a frame (a model is read and dressed for each).
+    fn make_visible(&mut self, player: Vec3, renderer: &mut Renderer, gpu: &Gpu) {
+        let mut need: Vec<(f32, usize)> = (0..self.creatures.len())
+            .filter(|&i| matches!(self.creatures[i].visual, Visual::None) && self.creatures[i].mob.state != State::Unborn)
+            .map(|i| (flat(self.creatures[i].mob.pos - player).length(), i))
+            .filter(|&(d, _)| d <= DRAW_RANGE)
+            .collect();
+        need.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let started = Instant::now();
+        for (n, (_, i)) in need.into_iter().enumerate() {
+            if n >= self.budget || (n > 0 && started.elapsed() > MAKE_TIME) {
+                break;
+            }
+            if let Err(e) = self.make(i, renderer, gpu) {
+                // It is not in the world then (and is not tried again).
+                log::warn!("{}: {e:#}", self.creatures[i].mob.def.name);
+                self.creatures[i].mob.state = State::Unborn;
+            }
+        }
+    }
+
+    /// The model of creature `i` (and its quest marks).
+    fn make(&mut self, i: usize, renderer: &mut Renderer, gpu: &Gpu) -> Result<()> {
+        let (kind, def) = (self.creatures[i].mob.kind, self.creatures[i].mob.def);
+        // People of one kind share the picture of their skin (they are dressed alike), under a key of the kind.
+        let key = format!("npc/{kind}");
+        let visual = match &def.body {
+            Body::Beast { .. } => {
+                if self.rigs[kind].is_none() {
+                    self.rigs[kind] = beast_rig(def, &self.mount, &self.cache)?;
+                }
+                let rig = self.rigs[kind].as_ref().unwrap();
+                Visual::Beast { entity: renderer.add_room_lit_entity(gpu, &rig.template), anim: Channel::new(&rig.m2, STAND, &mut self.rng), last_seq: usize::MAX, shown: kind }
+            }
+            // A look that does not exist for the race (a face, a hair style) is shown as the default of the race instead.
+            Body::Humanoid { outfit, look } => Visual::Person(match Person::load(outfit, look, &self.mount, renderer, gpu, &key) {
+                Ok(person) => person,
+                Err(e) => {
+                    log::warn!("{}: {e:#}; showing the default look", def.name);
+                    Person::load(outfit, &Appearance { race: look.race, sex: look.sex, skin: 0, face: 0, hair_style: 0, hair_color: 0, beard: 0, baked: 0 }, &self.mount, renderer, gpu, &key)?
+                }
+            }),
+        };
+        // Whoever can be talked to may have a quest mark over its head: one entity for each of the three marks.
+        let marks = (def.gossip.is_some() && !self.markers.is_empty()).then(|| [0, 1, 2].map(|m| renderer.add_entity(gpu, &self.markers[m].template)));
+        let c = &mut self.creatures[i];
+        (c.visual, c.marks) = (visual, marks);
+        Ok(())
+    }
+
+    /// Where the creatures of the given kinds are now (render space): the living ones, else the corpses (which wait to come back); of those
+    /// that are not in the world now, where they stand. The nearest few to the viewer.
     pub fn positions(&self, kinds: &[usize]) -> Vec<Vec3> {
-        let of_kind = || self.creatures.iter().map(|c| &c.mob).filter(|m| kinds.contains(&m.kind));
-        let alive: Vec<Vec3> = of_kind().filter(|m| !m.is_dead()).map(|m| m.pos).collect();
-        if alive.is_empty() { of_kind().map(|m| m.pos).collect() } else { alive }
+        let of_kind = || self.creatures.iter().filter(|c| c.site.is_some() || c.parent.is_some()).map(|c| &c.mob).filter(|m| kinds.contains(&m.kind));
+        let mut all: Vec<Vec3> = of_kind().filter(|m| !m.is_dead()).map(|m| m.pos).collect();
+        all.extend(kinds.iter().filter_map(|k| self.by_kind.get(k)).flatten().map(|&s| &self.sites[s]).filter(|s| s.slot.is_none()).map(|s| s.pos));
+        if all.is_empty() {
+            all = of_kind().map(|m| m.pos).collect();
+        }
+        all.sort_by(|a, b| flat(*a - self.viewer).length().total_cmp(&flat(*b - self.viewer).length()));
+        all.truncate(MOST_LEADS);
+        all
     }
 
-    /// Every creature as it is, in spawn order.
+    /// The creatures worth keeping in a save (the ones hurt, dead, fighting or carrying loot; the rest start afresh), and the ones kept for places not in the world now.
     pub fn snapshot(&self) -> Vec<MobSave> {
-        self.creatures.iter().map(|c| c.mob.snapshot()).collect()
+        self.creatures.iter().filter(|c| c.site.is_some() && c.mob.worth_saving()).map(|c| c.mob.snapshot()).chain(self.pending.values().cloned()).collect()
     }
 
-    /// Give the spawned creatures their own respawn times and patrols (the n-th is the n-th spawned): the seconds to come back, and the places to walk to.
+    /// Give the sites their own respawn times and patrols (the n-th is the n-th spawned): the seconds to come back, and the places to walk to.
     pub fn set_routes(&mut self, routes: Vec<(Option<f32>, Vec<content::Waypoint>)>) {
-        for (c, (respawn, path)) in self.creatures.iter_mut().zip(routes) {
-            c.mob.respawn = respawn.unwrap_or(c.mob.def.respawn);
-            c.mob.route = path
+        for (site, (respawn, path)) in self.sites.iter_mut().zip(routes) {
+            site.respawn = respawn;
+            site.route = path
                 .into_iter()
                 .map(|w| Stop { at: crate::coords::wow_to_render([w.at.0, w.at.1, 0.0]), wait: w.wait, facing: w.facing.map(f32::to_radians), steps: w.steps })
                 .collect();
         }
     }
 
-    /// Put saved creatures back (the n-th saved is the n-th spawned); those that do not match the spawn list any more start afresh.
+    /// The site a saved creature stood at (the same kind with the same home: the content may have changed since).
+    fn site_of(&self, saved: &MobSave) -> Option<usize> {
+        let (cx, cz) = cell_of(saved.home);
+        let defs = &content::get().creatures;
+        (-1..=1)
+            .flat_map(|dx| (-1..=1).map(move |dz| (cx + dx, cz + dz)))
+            .flat_map(|cell| self.grid.get(&cell).into_iter().flatten().copied())
+            .find(|&s| defs[self.sites[s].kind].id == saved.kind && flat(self.sites[s].pos - saved.home).length() <= 1.0)
+    }
+
+    /// Put saved creatures back; those that do not match a place of the world any more start afresh. A creature whose place is not in the world now comes back when it is.
     pub fn restore(&mut self, saved: &[MobSave]) {
         let mut back = 0;
-        for (c, s) in self.creatures.iter_mut().zip(saved) {
-            back += c.mob.restore(s) as usize;
+        for s in saved {
+            let Some(site) = self.site_of(s) else { continue };
+            match self.sites[site].slot {
+                Some(slot) => back += self.creatures[slot].mob.restore(s) as usize,
+                None => {
+                    self.pending.insert(site, s.clone());
+                    back += 1;
+                }
+            }
         }
-        log::info!("{back} of {} creatures back as saved", self.creatures.len());
+        log::info!("{back} of {} creatures back as saved", saved.len());
     }
 
     /// Where an attachment of creature `who` (1 the right hand, 2 the left) is in the world, if it is a person: what the glows of its spells follow.
@@ -1624,6 +1844,12 @@ impl Creatures {
     pub fn update(&mut self, dt: f32, watch: &Watch, ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool, mut physics: Option<&mut Bodies>, renderer: &mut Renderer, gpu: &Gpu) -> (Vec<Foe>, Vec<(Sfx, Vec3)>) {
         self.clock_ms += dt * 1000.0;
         let player = watch.feet;
+        self.scan += dt;
+        if self.scan >= SCAN {
+            self.scan = 0.0;
+            self.stream(player, renderer);
+        }
+        self.make_visible(player, renderer, gpu);
         let (mut foes, mut cries) = (Vec::new(), Vec::new());
         // Who is about, for the creatures that look after friends, call them and run to them.
         let roster: Vec<Friend> = self
@@ -1643,13 +1869,19 @@ impl Creatures {
                 if c.mob.state.fights() {
                     c.mob.state = State::Return(0.0);
                 }
+                c.mob.tick_dead(dt);
                 match &c.visual {
                     Visual::Beast { entity, .. } => renderer.set_entity(*entity, c.mob.pos, Mat4::IDENTITY, false),
                     Visual::Person(p) => p.hide(c.mob.pos, renderer),
+                    Visual::None => {}
                 }
                 for e in c.marks.into_iter().flatten() {
                     renderer.set_entity(e, c.mob.pos, Mat4::IDENTITY, false);
                 }
+                continue;
+            }
+            // Near, but its model is yet to be made.
+            if matches!(c.visual, Visual::None) {
                 continue;
             }
             // The quest mark: a small model that spins above the head (its own animation), only the one that is wanted.
@@ -1703,6 +1935,15 @@ impl Creatures {
             c.was_dead = dead;
             let push = flat(c.mob.pos - player).normalize_or_zero() * RAGDOLL_PUSH + Vec3::Y * 1.5;
             let spawn_here = fresh && self.ragdolls && flat(c.mob.pos - player).length() < RAGDOLL_REACH;
+            // Far from the player a creature is posed less often (its model is skinned and sent to the graphics card each time): every second frame
+            // beyond 45 yards, every fourth beyond 90. One that fights, lies dead or falls is posed at once.
+            let away = flat(c.mob.pos - player).length();
+            c.owed += dt;
+            c.beat = (c.beat + 1) % if away < POSE_NEAR { 1 } else if away < POSE_FAR { 2 } else { 4 };
+            if c.beat != 0 && c.ragdoll.is_none() && !dead && !c.mob.state.fights() && !spawn_here {
+                continue;
+            }
+            let dt = std::mem::take(&mut c.owed);
             match &mut c.visual {
                 Visual::Beast { entity, anim, last_seq, shown } => {
                     // A script changed how it looks: the model of the new kind takes the place of the old.
@@ -1771,6 +2012,7 @@ impl Creatures {
                     (person.emote, person.run) = (c.mob.emote, c.mob.run);
                     person.pose(dt, c.mob.pos, c.mob.yaw, c.mob.state, c.mob.moving, anims, (c.mob.pos + Vec3::Y - self.viewer).normalize_or_zero(), self.viewer, renderer, gpu)
                 }
+                Visual::None => {}
             }
         }
         // Summoned creatures come out of the pool, round whoever summoned them.
@@ -1958,7 +2200,7 @@ impl Creatures {
             return None;
         }
         let m = &c.mob;
-        Some(TargetView { id: i, name: m.def.name.clone(), level: m.def.level, fraction: (m.health / m.def.health).clamp(0.0, 1.0), dead: m.is_dead(), hostile: m.def.hostile, neutral: m.def.neutral })
+        Some(TargetView { id: i, name: m.def.name.clone(), level: m.def.level, fraction: (m.health / m.def.health).clamp(0.0, 1.0), dead: m.is_dead(), hostile: m.def.is_hostile(), neutral: m.def.is_neutral() })
     }
 
     /// A camera looking at the head of a creature and the entities to draw, for the portrait of the target frame.
@@ -1968,6 +2210,7 @@ impl Creatures {
             (Visual::Person(p), _) => (1.25 * p.tall(), 1.84 * p.tall(), p.worn.entities()),
             (Visual::Beast { entity, .. }, Body::Beast { scale, .. }) => (1.9 * scale, 0.85 * scale, vec![*entity]),
             (Visual::Beast { entity, .. }, _) => (1.9, 0.85, vec![*entity]),
+            (Visual::None, _) => return None,
         };
         // In front of the creature, looking back at it.
         let front = c.mob.yaw + std::f32::consts::PI;
@@ -1983,6 +2226,7 @@ impl Creatures {
             match c.visual {
                 Visual::Beast { entity, .. } => renderer.remove_entity(entity),
                 Visual::Person(p) => p.retire(renderer),
+                Visual::None => {}
             }
             c.marks.into_iter().flatten().for_each(|e| renderer.remove_entity(e));
         }
@@ -2075,6 +2319,9 @@ impl Creatures {
             .filter_map(|i| {
                 let c = &self.creatures[i];
                 let m = &c.mob;
+                if matches!(c.visual, Visual::None) {
+                    return None;
+                }
                 let kind = if m.is_dead() {
                     m.loot.is_some().then_some(Kind::LootAll)?
                 } else if m.def.attackable() {
@@ -2106,11 +2353,11 @@ impl Creatures {
     pub fn labels(&self, camera: &Camera, size: (u32, u32)) -> Vec<Label> {
         self.creatures
             .iter()
-            .filter(|c| !c.mob.is_dead() && (c.mob.pos - camera.pos).length() <= NAME_RANGE)
+            .filter(|c| !c.mob.is_dead() && !matches!(c.visual, Visual::None) && (c.mob.pos - camera.pos).length() <= NAME_RANGE)
             .filter_map(|c| {
                 let height = if let Visual::Person(p) = &c.visual { NAME_HEIGHT.1 * p.tall() } else { NAME_HEIGHT.0 };
                 let (x, y) = Self::on_screen(camera, size, c.mob.pos + Vec3::Y * height)?;
-                let color = if c.mob.def.hostile { [1.0, 0.1, 0.1, 1.0] } else if c.mob.def.neutral { [1.0, 0.9, 0.1, 1.0] } else { [0.1, 1.0, 0.1, 1.0] };
+                let color = if c.mob.def.is_hostile() { [1.0, 0.1, 0.1, 1.0] } else if c.mob.def.is_neutral() { [1.0, 0.9, 0.1, 1.0] } else { [0.1, 1.0, 0.1, 1.0] };
                 Some(Label { text: c.mob.def.name.clone(), color, x, y })
             })
             .collect()
@@ -2338,6 +2585,20 @@ mod tests {
         assert_eq!(wolf.loot, rolled);
         run(&mut wolf, def().respawn + 1.0, Vec3::new(500.0, 0.0, 0.0));
         assert!(wolf.loot.is_none() && !wolf.is_dead());
+    }
+
+    #[test]
+    fn a_corpse_out_of_reach_still_counts_down_to_the_day_it_is_back_and_only_what_changed_is_saved() {
+        let mut mob = Mob::new(content::creature_index("c299"), Vec3::new(5.0, 0.0, 5.0), 0.0);
+        assert!(!mob.worth_saving(), "one at rest starts afresh");
+        mob.health -= 1.0;
+        assert!(mob.worth_saving());
+        (mob.state, mob.pos) = (State::Dead(0.0), Vec3::new(9.0, 0.0, 9.0));
+        mob.tick_dead(mob.respawn - 1.0);
+        assert!(matches!(mob.state, State::Dead(_)) && mob.worth_saving());
+        mob.tick_dead(2.0);
+        assert_eq!((mob.state, mob.pos, mob.health), (State::Idle, Vec3::new(5.0, 0.0, 5.0), mob.def.health));
+        assert!(!mob.worth_saving());
     }
 
     #[test]

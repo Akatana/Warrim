@@ -475,7 +475,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             spawns.extend([(wolf, feet + ahead * 4.0 + aside * 1.5, yaw + std::f32::consts::PI, 5.0), (wolf, feet + ahead * 30.0, yaw, 5.0)]);
         }
         if args.spawns {
-            spawns.extend(crate::content::get().spawns.iter().map(|s| (crate::content::creature_index(&s.creature), crate::coords::wow_to_render([s.at.0, s.at.1, s.height.unwrap_or(0.0)]), s.facing.to_radians(), s.wander)));
+            spawns.extend(crate::content::get().spawns.iter().filter(|s| s.map.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(&args.map))).map(|s| (crate::content::creature_index(&s.creature), crate::coords::wow_to_render([s.at.0, s.at.1, s.height.unwrap_or(0.0)]), s.facing.to_radians(), s.wander)));
         }
         // Any creatures of the content, standing in a row ahead (`--creature kobold_miner,garrick_thorne`).
         for (i, id) in args.creatures.iter().enumerate() {
@@ -485,6 +485,9 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             spawns.push((guard, feet + ahead * 5.0 - aside * 2.0, yaw + std::f32::consts::PI, 5.0));
         }
         let mut wolves = if spawns.is_empty() { None } else { Some(crate::creature::Creatures::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &spawns)?) };
+        if let Some(wolves) = &mut wolves {
+            wolves.set_budget(usize::MAX);
+        }
         // The chests of the world, shut or open.
         if let Some(state) = &args.chests {
             let mut chests = crate::chest::Chests::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu)?;
@@ -599,6 +602,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
         }
         log::info!("fires: {} burning of {} in the loaded tiles", fires.burning(), world.fires().count());
         if let Some(wolves) = &wolves {
+            log::info!("creatures in the world: {} made, {} with a model", wolves.counts().0, wolves.counts().1);
             wolves.draw_plates(&mut renderer.ui, &render_camera, (w, h));
             if let Some(panels) = &mut panels {
                 panels.draw_labels(&mut renderer.ui, &gpu, (w, h), &wolves.labels(&render_camera, (w, h)));
@@ -799,7 +803,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
         let mut editor = crate::editor::Editor::new(&mut renderer, &gpu, &font, player_mount.clone())?;
         editor.show(tab, *n);
         editor.mouse_moved((-1.0, -1.0));
-        let place = crate::editor::Place { north: -8949.0, west: -132.0, height: 85.0, yaw: 0.0 };
+        let place = crate::editor::Place { north: -8949.0, west: -132.0, height: 85.0, yaw: 0.0, map: "Azeroth" };
         // Each step is a frame: a click is taken by the frame after it.
         for step in steps {
             editor.draw(&mut renderer.ui, (w, h), place, crate::propedit::Eye::of(&render_camera, (w, h)), &|x, z| world.height_at(x, z));
@@ -812,7 +816,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 Some(("press", xy)) => {
                     let (x, y) = xy.split_once('/').context("press:x/y")?;
                     editor.mouse_moved((x.parse()?, y.parse()?));
-                    editor.world_press(&|x, z| world.height_at(x, z));
+                    editor.world_press(&|x, z| world.height_at(x, z), &[]);
                 }
                 // `back:n`: n times Backspace.
                 Some(("back", n)) => (0..n.parse::<usize>()?).for_each(|_| editor.key(crate::editor::Key::Backspace)),

@@ -69,6 +69,22 @@ pub struct Place {
     pub west: f32,
     pub height: f32,
     pub yaw: f32,
+    /// The map being played ("Azeroth", a dungeon).
+    pub map: &'static str,
+}
+
+/// A map name that lives as long as the program (there are few of them), for a `Place`.
+pub fn interned(name: &str) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    match names.iter().find(|n| **n == name) {
+        Some(n) => n,
+        None => {
+            let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+            names.push(leaked);
+            leaked
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -108,6 +124,8 @@ struct Pick {
     /// What the list is narrowed by, and a number that tells its field from those of the other lists.
     find: String,
     salt: usize,
+    /// The list is to scroll to the selected line when it is next drawn (a click in the world chose it).
+    reveal: bool,
 }
 
 struct Data {
@@ -166,6 +184,10 @@ pub struct Editor {
     /// What the places tab lists: 0 the creatures, 1 the chests, 2 the places to discover, 3 the props.
     sub: usize,
     pick: [Pick; 8],
+    /// The map being played, as of the last picture: what the creatures put down are made for.
+    map: &'static str,
+    /// Where the editor's eye was at the last picture.
+    around: Place,
     data: Option<Data>,
     placer: Placer,
     /// The props the world shows now.
@@ -495,6 +517,13 @@ fn switch_row(g: &mut Gui, y: &mut f32, x: f32, label: &str, value: &mut bool) -
 
 /// A list of lines to choose one of, scrolled by the wheel, with a field above it that narrows it to the lines that have all the words
 /// typed (the first two of its `rows` are for the field); true when the choice changed. `pick.selected` is a line of `lines`.
+/// How far from the editor's eye the creatures are that it lists and can pick in the world, yards.
+const LISTED_RANGE: f32 = 300.0;
+
+fn near_here(at: (f32, f32), me: Place) -> bool {
+    (at.0 - me.north).hypot(at.1 - me.west) <= LISTED_RANGE
+}
+
 fn list(g: &mut Gui, x: f32, y: f32, w: f32, rows: usize, lines: &[String], pick: &mut Pick) -> bool {
     let find_id = fid("listfind", pick.salt);
     g.field("listfind", pick.salt, x, y, w - 6.0, &mut pick.find);
@@ -504,12 +533,17 @@ fn list(g: &mut Gui, x: f32, y: f32, w: f32, rows: usize, lines: &[String], pick
     }
     let (y, rows) = (y + ROW + 3.0, rows.saturating_sub(2));
     let words: Vec<String> = typed.split_whitespace().map(str::to_ascii_lowercase).collect();
-    let shown: Vec<usize> = (0..lines.len()).filter(|&i| words.iter().all(|word| lines[i].to_ascii_lowercase().contains(word))).collect();
+    let shown: Vec<usize> = (0..lines.len()).filter(|&i| !lines[i].is_empty() && words.iter().all(|word| lines[i].to_ascii_lowercase().contains(word))).collect();
     let h = rows as f32 * ROW;
     g.fill(x, y, w, h, [0.0, 0.0, 0.0, 0.4]);
     if g.inside(x, y, w, h) {
         let wheel = std::mem::take(&mut g.input.wheel);
         pick.scroll = (pick.scroll as f32 - wheel * 3.0).clamp(0.0, shown.len().saturating_sub(rows) as f32) as usize;
+    }
+    if std::mem::take(&mut pick.reveal) {
+        if let Some(at) = shown.iter().position(|&i| i == pick.selected) {
+            pick.scroll = at.saturating_sub(rows / 2);
+        }
     }
     pick.scroll = pick.scroll.min(shown.len().saturating_sub(rows));
     let mut changed = false;
@@ -551,7 +585,7 @@ impl Editor {
         let mut salt = 0;
         let mut pick = || {
             salt += 1;
-            Pick { selected: 0, scroll: 0, form_scroll: 0.0, find: String::new(), salt }
+            Pick { selected: 0, scroll: 0, form_scroll: 0.0, find: String::new(), salt, reveal: false }
         };
         Ok(Editor {
             open: false,
@@ -563,6 +597,8 @@ impl Editor {
             tab: Tab::World,
             sub: 0,
             pick: [pick(), pick(), pick(), pick(), pick(), pick(), pick(), pick()],
+            map: "Azeroth",
+            around: Place { north: 0.0, west: 0.0, height: 0.0, yaw: 0.0, map: "Azeroth" },
             data: None,
             placer: {
                 let models = Models::new(mount.clone());
@@ -780,7 +816,9 @@ impl Editor {
     /// The left button went down in the world, outside the window: it takes hold of the part of the gizmo under the pointer, or else
     /// selects the prop, creature or chest that the pointer is over (and shows its tab and its place in the list). True when it did
     /// something.
-    pub fn world_press(&mut self, ground: Ground) -> bool {
+    /// `standing` is where the creatures of the world are now: (kind id, north and west of the place each stands at, where it is, render space); one that has
+    /// strolled off is picked where it is, not where its place is.
+    pub fn world_press(&mut self, ground: Ground, standing: &[(String, f32, f32, Vec3)]) -> bool {
         if !self.open || self.placer.placing || self.placer.view.is_some() {
             return false;
         }
@@ -817,15 +855,18 @@ impl Editor {
             consider(t, Sel::Prop(i));
         }
         for (i, s) in d.cur.spawns.iter().enumerate() {
-            // The size of the creature: an animal by its scale, a person as tall as a man.
-            let (height, radius) = match d.cur.creatures.iter().find(|c| c.id == s.creature).map(|c| &c.body) {
-                Some(RawBody::Beast { scale, .. }) => (1.9 * scale, 0.85 * scale),
-                _ => (2.2, 0.6),
-            };
             if let Some(&Some(y)) = self.spawn_ground.get(i) {
-                let at = Vec3::new(-s.at.1, y, -s.at.0);
-                if let Some(t) = propedit::hit_standing(origin, dir, at - Vec3::new(radius, 0.0, radius), at + Vec3::new(radius, height, radius)) {
-                    consider(t, Sel::Creature(i));
+                // The size of the creature: an animal by its scale, a person as tall as a man.
+                let (height, radius) = match d.cur.creatures.iter().find(|c| c.id == s.creature).map(|c| &c.body) {
+                    Some(RawBody::Beast { scale, .. }) => (1.9 * scale, 0.85 * scale),
+                    _ => (2.2, 0.6),
+                };
+                let home = Vec3::new(-s.at.1, y, -s.at.0);
+                let here = standing.iter().find(|(id, n, w, _)| *id == s.creature && (n - s.at.0).abs() < 0.6 && (w - s.at.1).abs() < 0.6).map_or(home, |(.., pos)| *pos);
+                for at in [home, here] {
+                    if let Some(t) = propedit::hit_standing(origin, dir, at - Vec3::new(radius, 0.0, radius), at + Vec3::new(radius, height, radius)) {
+                        consider(t, Sel::Creature(i));
+                    }
                 }
             }
         }
@@ -845,7 +886,8 @@ impl Editor {
         };
         (self.tab, self.sub) = (Tab::World, sub);
         self.pick[pick].selected = i;
-        self.pick[pick].scroll = i.saturating_sub(5);
+        self.pick[pick].find.clear();
+        self.pick[pick].reveal = true;
         true
     }
 
@@ -989,10 +1031,10 @@ impl Editor {
                 p.scroll = d.cur.props.len().saturating_sub(10);
             }
             Aim::Creature => {
-                d.cur.spawns.push(Spawn { creature: self.placer.creature.clone(), at: (north, west), facing: turn, wander: crate::content::DEFAULT_WANDER, height: None, respawn: None, path: Vec::new() });
+                d.cur.spawns.push(Spawn { creature: self.placer.creature.clone(), map: Some(self.map.to_string()), at: (north, west), facing: turn, wander: crate::content::DEFAULT_WANDER, height: None, respawn: None, path: Vec::new() });
                 let p = &mut self.pick[0];
                 p.selected = d.cur.spawns.len() - 1;
-                p.scroll = d.cur.spawns.len().saturating_sub(10);
+                p.reveal = true;
             }
             Aim::Stop => {
                 if let Some(s) = d.cur.spawns.get_mut(self.pick[0].selected) {
@@ -1045,8 +1087,13 @@ impl Editor {
             return actions;
         }
         self.eye = Some(eye);
+        self.map = player.map;
+        // Near the editor's eye (it flies free of the player), not the player, is what is listed and can be picked.
+        let around = Place { north: -eye.position().z, west: -eye.position().x, ..player };
+        self.around = around;
         if let Some(d) = &self.data {
-            self.spawn_ground = d.cur.spawns.iter().map(|s| ground(-s.at.1, -s.at.0)).collect();
+            // The ground under the creatures near the editor's eye (the world has tens of thousands; the others cannot be picked in the world).
+            self.spawn_ground = d.cur.spawns.iter().map(|s| if near_here(s.at, around) { ground(-s.at.1, -s.at.0) } else { None }).collect();
             self.chest_ground = d.cur.chests.iter().map(|c| ground(-c.at.1, -c.at.0)).collect();
         }
         self.gizmo(ui, eye, size.1, ground);
@@ -1082,9 +1129,9 @@ impl Editor {
             g.text(WIDTH - 150.0, 10.0, 140.0, "Editor (F1 closes)", DIM);
             let (top, bottom) = (36.0, UI_HEIGHT - 52.0);
             match *tab {
-                Tab::World => world(&mut g, data, pick, sub, kind, placer, player, &mut actions, top, bottom),
+                Tab::World => world(&mut g, data, pick, sub, kind, placer, player, around, &mut actions, top, bottom),
                 Tab::Creatures => creatures(&mut g, data, &mut pick[2], preview, top, bottom),
-                Tab::Quests => quests(&mut g, data, &mut pick[3], top, bottom),
+                Tab::Quests => quests(&mut g, data, &mut pick[3], player, top, bottom),
                 Tab::Items => items(&mut g, data, &mut pick[4], preview, top, bottom),
                 Tab::Loot => loot(&mut g, data, &mut pick[5], top, bottom),
             }
@@ -1144,7 +1191,7 @@ impl Editor {
 
 /// The places tab: where creatures and chests stand, and the places the compass shows.
 #[allow(clippy::too_many_arguments)]
-fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind: &mut usize, placer: &mut Placer, me: Place, actions: &mut Vec<Action>, top: f32, bottom: f32) {
+fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind: &mut usize, placer: &mut Placer, me: Place, around: Place, actions: &mut Vec<Action>, top: f32, bottom: f32) {
     let rows = ((bottom - top - 28.0) / ROW) as usize;
     for (i, name) in ["Creatures", "Chests", "Discoveries", "Props"].into_iter().enumerate() {
         if g.button(8.0 + i as f32 * 114.0, top, 108.0, name) {
@@ -1155,7 +1202,8 @@ fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind:
     let (x, w) = (LIST_WIDTH + 24.0, WIDTH - LIST_WIDTH - 32.0);
     let near = |n: f32, west: f32| ((n - me.north).powi(2) + (west - me.west).powi(2)).sqrt();
     if *sub == 0 {
-        let lines: Vec<String> = d.cur.spawns.iter().map(|s| format!("{} {:.0}yd  ({:.0}, {:.0})", s.creature, near(s.at.0, s.at.1), s.at.0, s.at.1)).collect();
+        // Of the world's tens of thousands only those near are listed (a line left empty is not shown).
+        let lines: Vec<String> = d.cur.spawns.iter().map(|s| if near_here(s.at, around) { format!("{} {:.0}yd  ({:.0}, {:.0})", s.creature, near(s.at.0, s.at.1), s.at.0, s.at.1) } else { String::new() }).collect();
         let p = &mut pick[0];
         list(g, 8.0, top + 28.0, LIST_WIDTH, rows, &lines, p);
         let kinds: Vec<String> = d.cur.creatures.iter().map(|c| c.id.clone()).collect();
@@ -1179,8 +1227,10 @@ fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind:
                 s.wander = s.wander.max(0.0);
                 option_value_row(g, y, x, w, "Back after (s)", 5, &mut s.respawn);
                 hint(g, y, x, "Seconds from its death until it is back; empty: as long as its kind says.");
+                option_row(g, y, x, w, "Map", 6, &mut s.map);
+                hint(g, y, x, "The map it stands in (Azeroth, Kalimdor, a dungeon's name); empty: in every map.");
                 if g.button(x, *y, 150.0, "Here (where I stand)") {
-                    (s.at, s.facing, s.height) = ((me.north, me.west), me.yaw, None);
+                    (s.at, s.facing, s.height, s.map) = ((me.north, me.west), me.yaw, None, Some(me.map.to_string()));
                 }
                 if g.button(x + 156.0, *y, 90.0, "Go to it") {
                     actions.push(Action::Teleport(s.at.0, s.at.1));
@@ -1215,7 +1265,7 @@ fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind:
             }
             *y += ROW + 6.0;
             if g.button(x, *y, 220.0, "New here, facing as I do") {
-                d.cur.spawns.push(Spawn { creature: current, at: (me.north, me.west), facing: me.yaw, wander: crate::content::DEFAULT_WANDER, height: None, respawn: None, path: Vec::new() });
+                d.cur.spawns.push(Spawn { creature: current, map: Some(me.map.to_string()), at: (me.north, me.west), facing: me.yaw, wander: crate::content::DEFAULT_WANDER, height: None, respawn: None, path: Vec::new() });
                 added = true;
             }
             *y += ROW + 12.0;
@@ -1226,7 +1276,7 @@ fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind:
         }
         if added {
             p.selected = d.cur.spawns.len() - 1;
-            p.scroll = d.cur.spawns.len().saturating_sub(rows);
+            p.reveal = true;
         }
     } else if *sub == 1 {
         let lines: Vec<String> = d.cur.chests.iter().map(|c| format!("{} {:.0}yd  ({:.0}, {:.0})", c.id, near(c.at.0, c.at.1), c.at.0, c.at.1)).collect();
@@ -1464,7 +1514,7 @@ struct GalleryEntry {
 impl View {
     fn of_entries(tag: u64, title: &'static str, list: Vec<GalleryEntry>, keep_open: bool, current: &str) -> View {
         let selected = Some(current.to_string()).filter(|c| list.iter().any(|e| e.value == *c));
-        View { find: String::new(), lines: Vec::new(), folders: Pick { selected: 0, scroll: 0, form_scroll: 0.0, find: String::new(), salt: 91 }, index: Vec::new(), scroll: 0, selected, entries: Some(Entries { tag, title, list, keep_open }) }
+        View { find: String::new(), lines: Vec::new(), folders: Pick { selected: 0, scroll: 0, form_scroll: 0.0, find: String::new(), salt: 91, reveal: false }, index: Vec::new(), scroll: 0, selected, entries: Some(Entries { tag, title, list, keep_open }) }
     }
 
     fn new(files: &[String], current: &str) -> View {
@@ -1487,7 +1537,7 @@ impl View {
         let selected = Some(current.to_string()).filter(|c| files.iter().any(|f| f.eq_ignore_ascii_case(c)));
         // The folder of the model that is chosen now, if there is one.
         let at = selected.as_deref().map_or(0, position);
-        View { find: String::new(), lines, folders: Pick { selected: at, scroll: at.saturating_sub(8), form_scroll: 0.0, find: String::new(), salt: 90 }, index, scroll: 0, selected, entries: None, }
+        View { find: String::new(), lines, folders: Pick { selected: at, scroll: at.saturating_sub(8), form_scroll: 0.0, find: String::new(), salt: 90, reveal: false }, index, scroll: 0, selected, entries: None, }
     }
 }
 
@@ -2160,13 +2210,14 @@ fn look_panel(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature, pv:
         }
         RawBody::Humanoid { outfit, look } => {
             // The race and sex; what the tables have for a race and sex limits the rest, so a change takes the rest back into them.
-            let races: Vec<String> = Race::ALL.iter().map(|r| r.name().to_string()).collect();
+            let all: Vec<Race> = Race::ALL.iter().copied().chain([Race::Goblin]).collect();
+            let races: Vec<String> = all.iter().map(|r| r.name().to_string()).collect();
             let mut race = look.race.name().to_string();
             g.text(rx, ry + 3.0, TAG + 20.0, "Race", DIM);
             let by = g.arrows(rx + TAG + 20.0, ry, rw - TAG - 20.0, &race);
             if by != 0 {
                 race = step(&races, &race, by).to_string();
-                look.race = Race::ALL[races.iter().position(|r| *r == race).unwrap_or(0)];
+                look.race = all[races.iter().position(|r| *r == race).unwrap_or(0)];
             }
             ry += ROW + 3.0;
             g.text(rx, ry + 3.0, TAG + 20.0, "Sex", DIM);
@@ -2279,6 +2330,16 @@ fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature, 
     hint(g, y, x, "What the bonuses of gear \"versus\" name.");
     switch_row(g, y, x, "Enemy", &mut c.hostile);
     switch_row(g, y, x, "Neutral", &mut c.neutral);
+    // How a player of the Horde finds it, when that is not how the Alliance does.
+    let mut differs = c.horde.is_some();
+    if switch_row(g, y, x, "Horde differs", &mut differs) {
+        c.horde = differs.then_some((c.hostile, c.neutral));
+    }
+    if let Some((hostile, neutral)) = &mut c.horde {
+        switch_row(g, y, x, "  Enemy to Horde", hostile);
+        switch_row(g, y, x, "  Neutral to Horde", neutral);
+    }
+    hint(g, y, x, "Enemy and Neutral above are what the Alliance finds; the Horde's own view is kept only when it differs.");
     value_row(g, y, x, w, "Health", 104, &mut c.health);
     value_row(g, y, x, w, "Bite damage", 105, &mut c.bite_damage);
     value_row(g, y, x, w, "Respawn (s)", 106, &mut c.respawn);
@@ -2367,8 +2428,22 @@ fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature, 
     }
 }
 
+/// A line of switches for the races a quest is for (none marked: all of them).
+fn races_row(g: &mut Gui, y: &mut f32, x: f32, mask: &mut u32) {
+    g.text(x, *y + 3.0, LABEL_WIDTH, "Races", DIM);
+    for (i, race) in Race::ALL.iter().enumerate() {
+        let on = *mask & race.mask() != 0;
+        let short = ["Hu", "Or", "Dw", "Ni", "Un", "Ta", "Gn", "Tr"][i].to_string();
+        if g.button(x + LABEL_WIDTH + i as f32 * 42.0, *y, 38.0, &if on { format!("[{short}]") } else { short }) {
+            *mask ^= race.mask();
+        }
+    }
+    *y += ROW + 3.0;
+    hint(g, y, x, "Hu Or Dw Ni Un Ta Gn Tr; none marked: every race may take it.");
+}
+
 /// The quests tab.
-fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: f32) {
+fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, me: Place, top: f32, bottom: f32) {
     let rows = ((bottom - top - 26.0) / ROW) as usize;
     let lines: Vec<String> = d.cur.quests.iter().map(|q| q.title.clone()).collect();
     let ids: Vec<String> = d.cur.quests.iter().map(|q| q.id.clone()).collect();
@@ -2397,6 +2472,10 @@ fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: f32) {
         option_ref_row(g, y, x, w, "Needs quest", 204, &mut q.requires, Ref::Quest);
         value_row(g, y, x, w, "Level", 213, &mut q.level);
         hint(g, y, x, "0 for none; the experience falls as the character outgrows the quest.");
+        value_row(g, y, x, w, "Lowest level", 215, &mut q.min_level);
+        races_row(g, y, x, &mut q.races);
+        option_ref_row(g, y, x, w, "Begun by item", 216, &mut q.begins_with, Ref::Item);
+        hint(g, y, x, "Using the item (a letter, a note) opens the quest, and nobody offers it; empty: the one who gives it offers it.");
         text_row(g, y, x, w, "Offer says", 205, &mut q.details);
         text_row(g, y, x, w, "Objective", 206, &mut q.objective);
         text_row(g, y, x, w, "Waiting says", 207, &mut q.progress);
@@ -2415,6 +2494,29 @@ fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: f32) {
             let (kill, target, count) = match goal {
                 RawGoal::Kill(t, c) => (true, t.clone(), *c),
                 RawGoal::Collect(t, c) => (false, t.clone(), *c),
+                RawGoal::Reach(map, at, radius) => {
+                    // A walk to a place: the map, north, west and how close, yards.
+                    g.text(x, *y + 3.0, 56.0, "Walk to", DIM);
+                    g.field("walkmap", 340 + i, x + 60.0, *y, 130.0, map);
+                    let mut numbers = [at.0, at.1, *radius].map(|v| format!("{v}"));
+                    for (k, (label, width)) in [("walkn", 80.0), ("walkw", 80.0), ("walkr", 50.0)].into_iter().enumerate() {
+                        let at_x = x + 196.0 + [0.0, 86.0, 172.0][k];
+                        if g.field(label, 360 + i, at_x, *y, width, &mut numbers[k]) {
+                            if let Ok(v) = numbers[k].trim().parse::<f32>() {
+                                match k {
+                                    0 => at.0 = v,
+                                    1 => at.1 = v,
+                                    _ => *radius = v.max(1.0),
+                                }
+                            }
+                        }
+                    }
+                    if g.button(x + w - 78.0, *y, 70.0, "Remove") {
+                        remove = Some(i);
+                    }
+                    *y += ROW + 3.0;
+                    continue;
+                }
             };
             let mut kind = if kill { "Kill".to_string() } else { "Collect".to_string() };
             let by = g.arrows(x, *y, 110.0, &kind);
@@ -2444,6 +2546,9 @@ fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: f32) {
         }
         if g.button(x, *y, 120.0, "Add a goal") {
             q.goals.push(RawGoal::Kill(String::new(), 1));
+        }
+        if g.button(x + 126.0, *y, 190.0, "Add a walk to here") {
+            q.goals.push(RawGoal::Reach(me.map.to_string(), (me.north, me.west), 10.0));
         }
         *y += ROW + 3.0;
     });
@@ -3151,7 +3256,7 @@ mod tests {
         cur.quests[0].reward.xp += 5;
         cur.chests.pop();
         cur.spawns[0].at.0 += 3.0;
-        cur.spawns.push(Spawn { creature: "wolf_pup".into(), at: (-8900.0, -100.0), facing: 12.0, wander: 0.0, height: None, respawn: None, path: Vec::new() });
+        cur.spawns.push(Spawn { creature: "wolf_pup".into(), map: None, at: (-8900.0, -100.0), facing: 12.0, wander: 0.0, height: None, respawn: None, path: Vec::new() });
         // A loot table made and one changed, a place moved and a place made.
         cur.loot.insert("pup".into(), content::RawTable { copper: (1, 2), items: vec![("linen_cloth".into(), (1, 1), 30.0)], also: Vec::new() });
         cur.loot.get_mut("wolf").unwrap().copper.1 += 4;
@@ -3182,7 +3287,7 @@ mod tests {
         content::check(&again).unwrap();
         // And a change that breaks a reference is caught before it is saved.
         let mut broken = cur.clone();
-        broken.spawns.push(Spawn { creature: "nobody".into(), at: (0.0, 0.0), facing: 0.0, wander: 5.0, height: None, respawn: None, path: Vec::new() });
+        broken.spawns.push(Spawn { creature: "nobody".into(), map: None, at: (0.0, 0.0), facing: 0.0, wander: 5.0, height: None, respawn: None, path: Vec::new() });
         assert!(content::check(&broken).is_err());
         let mut broken = cur.clone();
         broken.props[0].model = r"World\Generic\Thing.blp".into();

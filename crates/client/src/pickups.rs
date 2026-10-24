@@ -2,12 +2,15 @@
 //! world like any prop, but only while a quest being worked on still wants their item can they be used; taking one hides it, and it is
 //! there again after its time (those that are gone are in the saved game, with the time left).
 
-use crate::content::{self, Prop};
+use crate::content::Prop;
 use crate::models::{placement_matrix, ModelCache};
 use crate::renderer::{Gpu, Renderer};
 use anyhow::{Context, Result};
 use glam::{Mat4, Vec3};
 use mpq::Mount;
+
+/// How far from the viewer a pickup is shown, yards.
+const SHOWN_RANGE: f32 = 250.0;
 
 struct Pickup {
     item: usize,
@@ -56,10 +59,11 @@ impl Pickups {
     }
 
     /// Count the time of those that are gone, and show or hide each as it should be (hidden where the ground is not there yet).
-    pub fn update(&mut self, dt: f32, ground: impl Fn(f32, f32) -> Option<f32>, renderer: &mut Renderer) {
+    pub fn update(&mut self, dt: f32, viewer: Vec3, ground: impl Fn(f32, f32) -> Option<f32>, renderer: &mut Renderer) {
         self.count_down(dt);
         for p in &mut self.list {
-            let show = p.gone.is_none() && ground(p.pos.x, p.pos.z).is_some();
+            // The world has thousands of them: those far from the viewer are not looked at (and are not shown).
+            let show = p.gone.is_none() && (p.pos.x - viewer.x).hypot(p.pos.z - viewer.z) <= SHOWN_RANGE && ground(p.pos.x, p.pos.z).is_some();
             if p.shown != Some(show) {
                 p.shown = Some(show);
                 renderer.set_entity(p.entity, p.pos, p.orient, show);

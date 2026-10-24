@@ -91,6 +91,8 @@ pub fn race_code_of(race: Race, sex: Sex) -> String {
         Race::Tauren => "Ta",
         Race::Gnome => "Gn",
         Race::Troll => "Tr",
+        // Helmets have no models for goblins: a gnome's are the nearest in size.
+        Race::Goblin => "Gn",
     };
     format!("{race}{}", if sex == Sex::Male { "M" } else { "F" })
 }

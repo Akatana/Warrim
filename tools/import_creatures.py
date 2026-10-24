@@ -22,7 +22,7 @@ import import_items
 import import_loot
 from import_items import q
 
-RACES = {1: "Human", 2: "Orc", 3: "Dwarf", 4: "NightElf", 5: "Undead", 6: "Tauren", 7: "Gnome", 8: "Troll"}
+RACES = {1: "Human", 2: "Orc", 3: "Dwarf", 4: "NightElf", 5: "Undead", 6: "Tauren", 7: "Gnome", 8: "Troll", 9: "Goblin"}
 # Creatures that are not creatures: markers, triggers, test dummies, unused entries.
 NOT_REAL = re.compile(r"\bdnd\b|^npc |invisible|waypoint|trigger|\(visual\)|\bunused\b|\bdummy\b|\bplaceholder\b|\bbunny\b|^spirit of |^\w+ visual$", re.I)
 # The pieces of a person's outfit in CreatureDisplayInfoExtra (fields 8-17): where each is worn.
@@ -31,6 +31,8 @@ RACE_CODES = [r + s for r in ("Hu", "Or", "Dw", "Ni", "Sc", "Ta", "Gn", "Tr") fo
 # The skin textures of a creature model are slots 11, 12, 13.
 FIRST_SKIN = 11
 PLAYER_FACTION, PLAYER_GROUP = 1, 3
+# The same for an orc, who is on the Horde's side: its faction template and the group of the player and the Horde.
+HORDE_FACTION, HORDE_GROUP = 2, 5
 # The least chance (percent) of a drop that is kept. The tables of the original reach the thousand pieces of random armor and weapons through references,
 # each at 0.01-0.2%; they would make the file 14 MB. shortcut: those long tails are cut, lower it for the full tables.
 LEAST_CHANCE = 0.2
@@ -70,6 +72,9 @@ class Tables:
     def looks(self, race, sex, skin, face, style, color, beard):
         """The look the game can make that is nearest to the one the extra names (what it has no texture or mesh for is left out)."""
         has = lambda *key: (race, sex) + key in self.sections
+        # The goblins have skins and no faces, hair or beards: the rest is the picture painted for the person.
+        if not any(k[0] == race and k[2] == 1 for k in self.sections):
+            return (skin if has(0, 0, skin) else 0), 0, 0, 0, 0
         faces = lambda skin: [f for f in [face] + list(range(12)) if has(1, f, skin)]
         skin = skin if has(0, 0, skin) and faces(skin) else 0
         face = faces(skin)[0]
@@ -79,29 +84,29 @@ class Tables:
             beard = 0
         return min(skin, 9), min(face, 11), min(style, 11), min(color, 9), min(beard, 8)
 
-    def hostile(self, template):
-        """Whether a creature of this FactionTemplate attacks a human player (as MaNGOS decides it: the lists first, then the groups)."""
+    def hostile(self, template, player=(PLAYER_FACTION, PLAYER_GROUP)):
+        """Whether a creature of this FactionTemplate attacks a human player (as MaNGOS decides it: the lists first, then the groups); `player` is another one's."""
         r = self.faction_row.get(template)
         if r is None:
             return False
         f = self.factions
         enemies = [f.u32(r, n) for n in range(6, 10)]
         friends = [f.u32(r, n) for n in range(10, 14)]
-        if PLAYER_FACTION in enemies:
+        if player[0] in enemies:
             return True
-        if PLAYER_FACTION in friends:
+        if player[0] in friends:
             return False
-        if f.u32(r, 5) & PLAYER_GROUP:
+        if f.u32(r, 5) & player[1]:
             return True
         return False
 
-    def neutral(self, template):
+    def neutral(self, template, player=(PLAYER_FACTION, PLAYER_GROUP)):
         """Whether a creature of this FactionTemplate neither attacks a human player nor is his friend: the yellow ones (it fights back when hit)."""
         r = self.faction_row.get(template)
-        if r is None or self.hostile(template):
+        if r is None or self.hostile(template, player):
             return False
         f = self.factions
-        return not (PLAYER_FACTION in [f.u32(r, n) for n in range(10, 14)] or f.u32(r, 4) & PLAYER_GROUP)
+        return not (player[0] in [f.u32(r, n) for n in range(10, 14)] or f.u32(r, 4) & player[1])
 
     def body(self, display, scale, piece, held):
         """The RON of the look of display row `display`, or None when the game cannot draw it."""
@@ -203,6 +208,10 @@ def main():
             out.append("hostile: true")
         elif neutral:
             out.append("neutral: true")
+        # How the Horde's side sees it, where that is another thing.
+        horde = (tables.hostile(c["Faction"], (HORDE_FACTION, HORDE_GROUP)), tables.neutral(c["Faction"], (HORDE_FACTION, HORDE_GROUP)))
+        if horde != (hostile, neutral):
+            out.append("horde: Some((%s, %s))" % (str(horde[0]).lower(), str(horde[1]).lower()))
         out.append("health: %s" % import_items.f(max(1, (c["MinLevelHealth"] + c["MaxLevelHealth"]) / 2.0)))
         damage = (c["MinMeleeDmg"] + c["MaxMeleeDmg"]) / 2.0 * (c["DamageMultiplier"] or 1)
         if damage > 0:

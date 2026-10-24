@@ -84,7 +84,7 @@ struct Scene {
 /// The scene of a race (the gnomes have the dwarves' mountains, the trolls the orcs' valley).
 fn scene_of(race: Race) -> &'static str {
     match race {
-        Race::Human => r"Interface\Glues\Models\UI_Human\UI_Human.m2",
+        Race::Human | Race::Goblin => r"Interface\Glues\Models\UI_Human\UI_Human.m2",
         Race::Dwarf | Race::Gnome => r"Interface\Glues\Models\UI_Dwarf\UI_Dwarf.m2",
         Race::NightElf => r"Interface\Glues\Models\UI_NightElf\UI_NightElf.m2",
         Race::Orc | Race::Troll => r"Interface\Glues\Models\UI_Orc\UI_Orc.m2",
@@ -184,7 +184,7 @@ fn race_icon(race: Race, sex: Sex) -> [f32; 4] {
         Race::Tauren => (0, 1),
         Race::Undead => (1, 1),
         Race::Troll => (2, 1),
-        Race::Orc => (3, 1),
+        Race::Orc | Race::Goblin => (3, 1),
     };
     let row = row + if sex == Sex::Female { 2 } else { 0 };
     [col as f32 * 0.25, (col + 1) as f32 * 0.25, row as f32 * 0.25, (row + 1) as f32 * 0.25]
