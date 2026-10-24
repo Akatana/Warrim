@@ -985,6 +985,13 @@ impl Tree {
         }
     }
 
+    /// The font of a font string whose template is not a font (`BuffButtonDurationTemplate`, a font string itself) is set by hand.
+    pub fn set_region_font(&mut self, region: &str, font: &str) {
+        if let Some(Region { kind: Kind::Text { font: f, .. }, .. }) = self.region_mut(region) {
+            *f = Some(font.to_string());
+        }
+    }
+
     pub fn set_text_color(&mut self, region: &str, color: [f32; 4]) {
         if let Some(Region { kind: Kind::Text { color: c, .. }, .. }) = self.region_mut(region) {
             *c = Some(color);

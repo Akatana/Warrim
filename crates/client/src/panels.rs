@@ -313,8 +313,11 @@ impl Panels {
         tree.instantiate("BuffFrame")?;
         tree.show("BuffFrame", false);
         // The durations under the icons are an option of the original that is off unless it is turned on (`SHOW_BUFF_DURATIONS`).
+        // BuffFrame.lua puts each one under its icon (`BuffFrame_OnLoad`), which XML alone does not.
         for i in 0..24 {
             tree.set_region_hidden(&format!("BuffButton{i}Duration"), true);
+            tree.set_region_font(&format!("BuffButton{i}Duration"), "GameFontNormalSmall");
+            tree.set_region_point(&format!("BuffButton{i}Duration"), Point::Top, Some(&format!("BuffButton{i}")), Some(Point::Bottom), 0.0, 0.0);
         }
         // The target frame: hidden until something is targeted, its bars under the frame's art and a picture for the portrait.
         tree.instantiate("TargetFrame")?;

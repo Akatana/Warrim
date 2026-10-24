@@ -289,7 +289,9 @@ impl State {
             // Flying is not walking: no footsteps, the jump pose.
             let airborne = self.controller.airborne() || self.controller.mode == Mode::Fly;
             let swimming = self.controller.swimming();
-            let motion = Motion { speed: flat.length(), forward_speed: flat.dot(Vec3::new(sy, 0.0, -cy)), side_speed: flat.dot(Vec3::new(cy, 0.0, sy)), airborne, swimming, ..Default::default() };
+            // Food and drink (a buff that needs calm; bandages need a skill) are eaten with the eating animation.
+            let eating = self.panels.as_ref().is_some_and(|p| p.consumed.buffs.iter().any(|b| b.needs_calm && crate::items::get(b.item).skill.0 == 0));
+            let motion = Motion { speed: flat.length(), forward_speed: flat.dot(Vec3::new(sy, 0.0, -cy)), side_speed: flat.dot(Vec3::new(cy, 0.0, sy)), airborne, swimming, emote: eating.then_some(crate::animator::EAT), ..Default::default() };
             let world = &self.world;
             *render_camera = player.update(dt, &self.camera, motion, |from, to| world.camera_distance(from, to), &mut self.renderer, &self.gpu);
             self.moving = motion.speed > 0.5 || airborne;

@@ -1025,7 +1025,8 @@ impl Player {
                 self.events.extend(sheath_sound(self.sheath_kind, self.sheathed));
             }
         }
-        self.worn.stowed = self.steed.is_some() || self.stowed;
+        // EmoteEat puts the weapons away for as long as it plays.
+        self.worn.stowed = self.steed.is_some() || self.stowed || motion.emote == Some(crate::animator::EAT);
         self.worn.place(renderer, &self.character, feet, body, !third, self.ranged.drawn.is_some());
         self.worn.animate(dt, eye.forward(), eye.pos, renderer, gpu, &self.character, feet, body, !third, self.ranged.drawn.is_some());
         // The sneaking character is see-through (the original's stealth look); every frame while it is, since `animate` resets the parts' looks.

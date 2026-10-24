@@ -54,6 +54,8 @@ pub const SWIM_RIGHT: u16 = 44;
 pub const SWIM_BACK: u16 = 45;
 /// The pose of a rider in the saddle.
 pub const MOUNT: u16 = 91;
+/// The character eating or drinking (EmoteEat; 199 is the same without sheathing), held while the food or drink works, with the weapons put away.
+pub const EAT: u16 = 61;
 /// Putting the weapons away or drawing them: the hand goes to the hip (the other, 89, to the back).
 pub const HIP_SHEATH: u16 = 90;
 
