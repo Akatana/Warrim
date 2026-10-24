@@ -14,7 +14,9 @@ impl State {
     fn frame_body(&mut self) {
         use crate::profile::scope;
         let now = Instant::now();
-        let dt = (now - self.last_frame).as_secs_f32().min(0.1);
+        // The game stands still while the Esc menu (or one of its option windows) is open.
+        let paused = self.panels.as_ref().is_some_and(|p| p.menu_open() || p.options_open());
+        let dt = if paused { 0.0 } else { (now - self.last_frame).as_secs_f32().min(0.1) };
         self.last_frame = now;
         // The game saves itself now and then (and when it ends).
         if self.last_save.elapsed() >= Duration::from_secs(SAVE_SECONDS) {

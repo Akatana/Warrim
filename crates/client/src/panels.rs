@@ -2561,8 +2561,12 @@ impl Panels {
         for tab in 1..=3 {
             self.tree.resize_tab(ui, gpu, &mount, &format!("TalentFrameTab{tab}"), 0.0);
         }
+        if self.menu_open() || self.options_open() {
+            // The world dims behind the menu, as behind the map and the level-up panel.
+            levelup::quad(ui, crate::ui::WHITE, [0.0, 0.0, screen.0 as f32, screen.1 as f32], [0.0, 0.0, 0.0, 0.38], false);
+        }
         self.tree.draw(ui, gpu, &mount, screen);
-                let s = screen.1 as f32 / ui_height();
+                let s =screen.1 as f32 / ui_height();
         // The carried item hangs off the mouse.
         if let (Some(c), Some((x, y))) = (self.inv.cursor, self.cursor) {
             let size = 37.0 * s;
