@@ -1,8 +1,8 @@
 use super::*;
 
 /// A creature of `creature` standing at `at` (north, west) and facing `facing` degrees, as a new spawn.
-pub(super) fn new_spawn(creature: String, at: (f32, f32), facing: f32) -> Spawn {
-    Spawn { creature, at, facing, wander: crate::content::DEFAULT_WANDER, height: None, respawn: None, path: Vec::new() }
+pub(super) fn new_spawn(creature: String, map: &str, at: (f32, f32), facing: f32) -> Spawn {
+    Spawn { creature, map: Some(map.to_string()), at, facing, wander: crate::content::DEFAULT_WANDER, height: None, respawn: None, path: Vec::new() }
 }
 
 /// A new chest like the one selected (its lock and what it holds), else like the first, else a plain one that holds something.
@@ -15,7 +15,7 @@ pub(super) fn chest_like(d: &Data, selected: usize) -> content::ChestDef {
 
 /// The places tab: where creatures and chests stand, the places the compass shows and the props.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind: &mut usize, placer: &mut Placer, me: Place, actions: &mut Vec<Action>, top: f32, bottom: f32) {
+pub(super) fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind: &mut usize, placer: &mut Placer, me: Place, around: Place, actions: &mut Vec<Action>, top: f32, bottom: f32) {
     for (i, name) in ["Creatures", "Chests", "Discoveries", "Props"].into_iter().enumerate() {
         if g.button(8.0 + i as f32 * 114.0, top, 108.0, name) {
             *sub = i;
@@ -25,7 +25,7 @@ pub(super) fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut u
     let body = top + 28.0;
     let rows = ((bottom - body - 26.0) / ROW) as usize;
     match *sub {
-        0 => spawns(g, d, &mut pick[0], kind, placer, me, actions, body, bottom, rows),
+        0 => spawns(g, d, &mut pick[0], kind, placer, me, around, actions, body, bottom, rows),
         1 => chests(g, d, &mut pick[1], placer, me, actions, body, bottom, rows),
         2 => pois(g, d, &mut pick[6], me, actions, body, bottom, rows),
         _ => props(g, d, &mut pick[7], placer, me, actions, body, bottom, rows),
@@ -56,16 +56,17 @@ fn put_down_button(g: &mut Gui, y: &mut f32, x: f32, placer: &mut Placer, aim: A
 
 /// The creatures standing in the world.
 #[allow(clippy::too_many_arguments)]
-fn spawns(g: &mut Gui, d: &mut Data, p: &mut Pick, kind: &mut usize, placer: &mut Placer, me: Place, actions: &mut Vec<Action>, body: f32, bottom: f32, rows: usize) {
-    let lines: Vec<String> = d.cur.spawns.iter().map(|s| format!("{} {:.0}yd  ({:.0}, {:.0})", s.creature, yards_from(me, s.at.0, s.at.1), s.at.0, s.at.1)).collect();
+fn spawns(g: &mut Gui, d: &mut Data, p: &mut Pick, kind: &mut usize, placer: &mut Placer, me: Place, around: Place, actions: &mut Vec<Action>, body: f32, bottom: f32, rows: usize) {
+    // Of the world's tens of thousands only those near the editor's eye are listed (a line left empty is not shown).
+    let lines: Vec<String> = d.cur.spawns.iter().map(|s| if near_here(s.at, around) { format!("{} {:.0}yd  ({:.0}, {:.0})", s.creature, yards_from(me, s.at.0, s.at.1), s.at.0, s.at.1) } else { String::new() }).collect();
     let kinds: Vec<String> = d.cur.creatures.iter().map(|c| c.id.clone()).collect();
     *kind = (*kind).min(kinds.len().saturating_sub(1));
     let (made, gone) = list_header(g, body, "delete-spawn", "New here", !d.cur.spawns.is_empty());
     if made {
         if let Some(creature) = kinds.get(*kind) {
-            d.cur.spawns.push(new_spawn(creature.clone(), (me.north, me.west), me.yaw));
+            d.cur.spawns.push(new_spawn(creature.clone(), me.map, (me.north, me.west), me.yaw));
             p.selected = d.cur.spawns.len() - 1;
-            p.scroll = d.cur.spawns.len().saturating_sub(rows);
+            p.reveal = true;
         }
     }
     list(g, 8.0, body + 26.0, LIST_WIDTH, rows, &lines, p);
@@ -87,8 +88,10 @@ fn spawns(g: &mut Gui, d: &mut Data, p: &mut Pick, kind: &mut usize, placer: &mu
             hint(g, y, x, "How far from its spot it strolls; 0: it stands still.");
             option_value_row(g, y, x, w, "Back after (s)", 5, &mut s.respawn);
             hint(g, y, x, "Seconds from its death until it is back; empty: as long as its kind says.");
+            option_row(g, y, x, w, "Map", 6, &mut s.map);
+            hint(g, y, x, "The map it stands in (Azeroth, Kalimdor, a dungeon's name); empty: in every map.");
             if here_and_go(g, y, x, s.at, actions) {
-                (s.at, s.facing, s.height) = ((me.north, me.west), me.yaw, None);
+                (s.at, s.facing, s.height, s.map) = ((me.north, me.west), me.yaw, None, Some(me.map.to_string()));
             }
             patrol_form(g, y, x, w, s, me, actions, placer);
             gizmo_row(g, y, x, placer, false);

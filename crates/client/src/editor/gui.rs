@@ -475,6 +475,13 @@ pub(super) fn empty_pane(g: &mut Gui, x: f32, top: f32, w: f32, text: &str) {
     g.text(x, top + 4.0, w, text, DIM);
 }
 
+/// How far from the editor's eye the creatures are that it lists and can pick in the world, yards.
+const LISTED_RANGE: f32 = 300.0;
+
+pub(super) fn near_here(at: (f32, f32), me: Place) -> bool {
+    (at.0 - me.north).hypot(at.1 - me.west) <= LISTED_RANGE
+}
+
 /// A list of lines to choose one of, scrolled by the wheel, with a field above it that narrows it to the lines that have all the words
 /// typed (the first two of its `rows` are for the field); true when the choice changed. `pick.selected` is a line of `lines`.
 pub(super) fn list(g: &mut Gui, x: f32, y: f32, w: f32, rows: usize, lines: &[String], pick: &mut Pick) -> bool {
@@ -486,12 +493,17 @@ pub(super) fn list(g: &mut Gui, x: f32, y: f32, w: f32, rows: usize, lines: &[St
     }
     let (y, rows) = (y + ROW + 3.0, rows.saturating_sub(2));
     let words: Vec<String> = typed.split_whitespace().map(str::to_ascii_lowercase).collect();
-    let shown: Vec<usize> = (0..lines.len()).filter(|&i| words.iter().all(|word| lines[i].to_ascii_lowercase().contains(word))).collect();
+    let shown: Vec<usize> = (0..lines.len()).filter(|&i| !lines[i].is_empty() && words.iter().all(|word| lines[i].to_ascii_lowercase().contains(word))).collect();
     let h = rows as f32 * ROW;
     g.fill(x, y, w, h, [0.0, 0.0, 0.0, 0.4]);
     if g.inside(x, y, w, h) {
         let wheel = std::mem::take(&mut g.input.wheel);
         pick.scroll = (pick.scroll as f32 - wheel * 3.0).clamp(0.0, shown.len().saturating_sub(rows) as f32) as usize;
+    }
+    if std::mem::take(&mut pick.reveal) {
+        if let Some(at) = shown.iter().position(|&i| i == pick.selected) {
+            pick.scroll = at.saturating_sub(rows / 2);
+        }
     }
     pick.scroll = pick.scroll.min(shown.len().saturating_sub(rows));
     let mut changed = false;

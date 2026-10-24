@@ -1,7 +1,21 @@
 use super::*;
 
+/// A line of switches for the races a quest is for (none marked: all of them).
+fn races_row(g: &mut Gui, y: &mut f32, x: f32, mask: &mut u32) {
+    g.text(x, *y + 3.0, LABEL_WIDTH, "Races", DIM);
+    for (i, race) in Race::ALL.iter().enumerate() {
+        let on = *mask & race.mask() != 0;
+        let short = ["Hu", "Or", "Dw", "Ni", "Un", "Ta", "Gn", "Tr"][i].to_string();
+        if g.button(x + LABEL_WIDTH + i as f32 * 42.0, *y, 38.0, &if on { format!("[{short}]") } else { short }) {
+            *mask ^= race.mask();
+        }
+    }
+    *y += ROW + 3.0;
+    hint(g, y, x, "Hu Or Dw Ni Un Ta Gn Tr; none marked: every race may take it.");
+}
+
 /// The quests tab.
-pub(super) fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: f32) {
+pub(super) fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, me: Place, top: f32, bottom: f32) {
     let rows = ((bottom - top - 26.0) / ROW) as usize;
     let lines: Vec<String> = d.cur.quests.iter().map(|q| q.title.clone()).collect();
     let ids: Vec<String> = d.cur.quests.iter().map(|q| q.id.clone()).collect();
@@ -36,6 +50,10 @@ pub(super) fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: 
         hint(g, y, x, "Another quest that has to be done first; empty: none.");
         value_row(g, y, x, w, "Level", 213, &mut q.level);
         hint(g, y, x, "0 for none; the experience falls as the character outgrows the quest.");
+        value_row(g, y, x, w, "Lowest level", 215, &mut q.min_level);
+        races_row(g, y, x, &mut q.races);
+        option_ref_row(g, y, x, w, "Begun by item", 216, &mut q.begins_with, Ref::Item);
+        hint(g, y, x, "Using the item (a letter, a note) opens the quest, and nobody offers it; empty: the one who gives it offers it.");
         *y += 4.0;
         g.text(x, *y, w, "What is said", GOLD);
         *y += ROW + 4.0;
@@ -70,6 +88,29 @@ pub(super) fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: 
             let (kill, target, count) = match goal {
                 RawGoal::Kill(t, c) => (true, t.clone(), *c),
                 RawGoal::Collect(t, c) => (false, t.clone(), *c),
+                RawGoal::Reach(map, at, radius) => {
+                    // A walk to a place: the map, north, west and how close, yards.
+                    g.text(x, *y + 3.0, 56.0, "Walk to", DIM);
+                    g.field("walkmap", 340 + i, x + 60.0, *y, 130.0, map);
+                    let mut numbers = [at.0, at.1, *radius].map(|v| format!("{v}"));
+                    for (k, (label, width)) in [("walkn", 80.0), ("walkw", 80.0), ("walkr", 50.0)].into_iter().enumerate() {
+                        let at_x = x + 196.0 + [0.0, 86.0, 172.0][k];
+                        if g.field(label, 360 + i, at_x, *y, width, &mut numbers[k]) {
+                            if let Ok(v) = numbers[k].trim().parse::<f32>() {
+                                match k {
+                                    0 => at.0 = v,
+                                    1 => at.1 = v,
+                                    _ => *radius = v.max(1.0),
+                                }
+                            }
+                        }
+                    }
+                    if g.button(x + w - 78.0, *y, 70.0, "Remove") {
+                        remove = Some(i);
+                    }
+                    *y += ROW + 3.0;
+                    continue;
+                }
             };
             let mut kind = if kill { "Kill".to_string() } else { "Collect".to_string() };
             let by = g.arrows(x, *y, 110.0, &kind);
@@ -99,6 +140,9 @@ pub(super) fn quests(g: &mut Gui, d: &mut Data, p: &mut Pick, top: f32, bottom: 
         }
         if g.button(x, *y, 120.0, "Add a goal") {
             q.goals.push(RawGoal::Kill(String::new(), 1));
+        }
+        if g.button(x + 126.0, *y, 190.0, "Add a walk to here") {
+            q.goals.push(RawGoal::Reach(me.map.to_string(), (me.north, me.west), 10.0));
         }
         *y += ROW + 3.0;
         hint(g, y, x, "A name in red is not a creature or item that exists.");

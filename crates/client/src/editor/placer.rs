@@ -148,7 +148,7 @@ pub(super) struct GalleryEntry {
 impl View {
     pub(super) fn of_entries(tag: u64, title: &'static str, list: Vec<GalleryEntry>, keep_open: bool, current: &str) -> View {
         let selected = Some(current.to_string()).filter(|c| list.iter().any(|e| e.value == *c));
-        View { find: String::new(), lines: Vec::new(), folders: Pick { selected: 0, scroll: 0, form_scroll: 0.0, find: String::new(), salt: 91 }, index: Vec::new(), scroll: 0, selected, entries: Some(Entries { tag, title, list, keep_open }), answer: None }
+        View { find: String::new(), lines: Vec::new(), folders: Pick { selected: 0, scroll: 0, form_scroll: 0.0, find: String::new(), salt: 91, reveal: false }, index: Vec::new(), scroll: 0, selected, entries: Some(Entries { tag, title, list, keep_open }), answer: None }
     }
 
     pub(super) fn new(files: &[String], current: &str) -> View {
@@ -171,7 +171,7 @@ impl View {
         let selected = Some(current.to_string()).filter(|c| files.iter().any(|f| f.eq_ignore_ascii_case(c)));
         // The folder of the model that is chosen now, if there is one.
         let at = selected.as_deref().map_or(0, position);
-        View { find: String::new(), lines, folders: Pick { selected: at, scroll: at.saturating_sub(8), form_scroll: 0.0, find: String::new(), salt: 90 }, index, scroll: 0, selected, entries: None, answer: None }
+        View { find: String::new(), lines, folders: Pick { selected: at, scroll: at.saturating_sub(8), form_scroll: 0.0, find: String::new(), salt: 90, reveal: false }, index, scroll: 0, selected, entries: None, answer: None }
     }
 }
 

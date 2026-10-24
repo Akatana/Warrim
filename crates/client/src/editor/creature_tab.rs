@@ -86,13 +86,14 @@ pub(super) fn look_panel(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCr
         }
         RawBody::Humanoid { outfit, look } => {
             // The race and sex; what the tables have for a race and sex limits the rest, so a change takes the rest back into them.
-            let races: Vec<String> = Race::ALL.iter().map(|r| r.name().to_string()).collect();
+            let all: Vec<Race> = Race::ALL.iter().copied().chain([Race::Goblin]).collect();
+            let races: Vec<String> = all.iter().map(|r| r.name().to_string()).collect();
             let mut race = look.race.name().to_string();
             g.text(rx, ry + 3.0, TAG + 20.0, "Race", DIM);
             let by = g.arrows(rx + TAG + 20.0, ry, rw - TAG - 20.0, &race);
             if by != 0 {
                 race = step(&races, &race, by).to_string();
-                look.race = Race::ALL[races.iter().position(|r| *r == race).unwrap_or(0)];
+                look.race = all[races.iter().position(|r| *r == race).unwrap_or(0)];
             }
             ry += ROW + 3.0;
             g.text(rx, ry + 3.0, TAG + 20.0, "Sex", DIM);
@@ -270,6 +271,16 @@ pub(super) fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut Ra
         (c.hostile, c.neutral) = (attitude == "Enemy", attitude == "Neutral");
     }
     hint(g, y, x, ["Can be talked to and cannot be fought.", "Leaves the player alone (yellow name) until hit, then fights back.", "Attacks the player when he comes near (red name)."][if c.hostile { 2 } else if c.neutral { 1 } else { 0 }]);
+    // How a player of the Horde finds it, when that is not how the Alliance does.
+    let mut differs = c.horde.is_some();
+    if switch_row(g, y, x, "Horde differs", &mut differs) {
+        c.horde = differs.then_some((c.hostile, c.neutral));
+    }
+    if let Some((hostile, neutral)) = &mut c.horde {
+        switch_row(g, y, x, "  Enemy to Horde", hostile);
+        switch_row(g, y, x, "  Neutral to Horde", neutral);
+    }
+    hint(g, y, x, "The attitude above is what the Alliance finds; the Horde's own view is kept only when it differs.");
     value_row(g, y, x, w, "Health", 104, &mut c.health);
     value_row(g, y, x, w, "Damage per hit", 105, &mut c.bite_damage);
     value_row(g, y, x, w, "Back after death (s)", 106, &mut c.respawn);

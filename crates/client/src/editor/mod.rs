@@ -92,6 +92,22 @@ pub struct Place {
     pub west: f32,
     pub height: f32,
     pub yaw: f32,
+    /// The map being played ("Azeroth", a dungeon).
+    pub map: &'static str,
+}
+
+/// A map name that lives as long as the program (there are few of them), for a `Place`.
+pub fn interned(name: &str) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    match names.iter().find(|n| **n == name) {
+        Some(n) => n,
+        None => {
+            let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+            names.push(leaked);
+            leaked
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -133,6 +149,8 @@ struct Pick {
     /// What the list is narrowed by, and a number that tells its field from those of the other lists.
     find: String,
     salt: usize,
+    /// The list is to scroll to the selected line when it is next drawn (a click in the world chose it).
+    reveal: bool,
 }
 
 struct Data {
@@ -191,6 +209,10 @@ pub struct Editor {
     /// What the places tab lists: 0 the creatures, 1 the chests, 2 the places to discover, 3 the props.
     sub: usize,
     pick: [Pick; 8],
+    /// The map being played, as of the last picture: what the creatures put down are made for.
+    map: &'static str,
+    /// Where the editor's eye was at the last picture.
+    around: Place,
     data: Option<Data>,
     placer: Placer,
     /// The props the world shows now.
@@ -222,7 +244,7 @@ impl Editor {
         let mut salt = 0;
         let mut pick = || {
             salt += 1;
-            Pick { selected: 0, scroll: 0, form_scroll: 0.0, find: String::new(), salt }
+            Pick { selected: 0, scroll: 0, form_scroll: 0.0, find: String::new(), salt, reveal: false }
         };
         Ok(Editor {
             open: false,
@@ -234,6 +256,8 @@ impl Editor {
             tab: Tab::World,
             sub: 0,
             pick: [pick(), pick(), pick(), pick(), pick(), pick(), pick(), pick()],
+            map: "Azeroth",
+            around: Place { north: 0.0, west: 0.0, height: 0.0, yaw: 0.0, map: "Azeroth" },
             data: None,
             placer: {
                 let models = Models::new(mount.clone());
@@ -452,7 +476,9 @@ impl Editor {
     /// The left button went down in the world, outside the window: it takes hold of the part of the gizmo under the pointer, or else
     /// selects the prop, creature or chest that the pointer is over (and shows its tab and its place in the list). True when it did
     /// something.
-    pub fn world_press(&mut self, ground: Ground) -> bool {
+    /// `standing` is where the creatures of the world are now: (kind id, north and west of the place each stands at, where it is, render space); one that has
+    /// strolled off is picked where it is, not where its place is.
+    pub fn world_press(&mut self, ground: Ground, standing: &[(String, f32, f32, Vec3)]) -> bool {
         if !self.open || self.placer.placing || self.placer.view.is_some() {
             return false;
         }
@@ -489,15 +515,18 @@ impl Editor {
             consider(t, Sel::Prop(i));
         }
         for (i, s) in d.cur.spawns.iter().enumerate() {
-            // The size of the creature: an animal by its scale, a person as tall as a man.
-            let (height, radius) = match d.cur.creatures.iter().find(|c| c.id == s.creature).map(|c| &c.body) {
-                Some(RawBody::Beast { scale, .. }) => (1.9 * scale, 0.85 * scale),
-                _ => (2.2, 0.6),
-            };
             if let Some(&Some(y)) = self.spawn_ground.get(i) {
-                let at = Vec3::new(-s.at.1, y, -s.at.0);
-                if let Some(t) = propedit::hit_standing(origin, dir, at - Vec3::new(radius, 0.0, radius), at + Vec3::new(radius, height, radius)) {
-                    consider(t, Sel::Creature(i));
+                // The size of the creature: an animal by its scale, a person as tall as a man.
+                let (height, radius) = match d.cur.creatures.iter().find(|c| c.id == s.creature).map(|c| &c.body) {
+                    Some(RawBody::Beast { scale, .. }) => (1.9 * scale, 0.85 * scale),
+                    _ => (2.2, 0.6),
+                };
+                let home = Vec3::new(-s.at.1, y, -s.at.0);
+                let here = standing.iter().find(|(id, n, w, _)| *id == s.creature && (n - s.at.0).abs() < 0.6 && (w - s.at.1).abs() < 0.6).map_or(home, |(.., pos)| *pos);
+                for at in [home, here] {
+                    if let Some(t) = propedit::hit_standing(origin, dir, at - Vec3::new(radius, 0.0, radius), at + Vec3::new(radius, height, radius)) {
+                        consider(t, Sel::Creature(i));
+                    }
                 }
             }
         }
@@ -517,7 +546,8 @@ impl Editor {
         };
         (self.tab, self.sub) = (Tab::World, sub);
         self.pick[pick].selected = i;
-        self.pick[pick].scroll = i.saturating_sub(5);
+        self.pick[pick].find.clear();
+        self.pick[pick].reveal = true;
         true
     }
 
@@ -661,10 +691,10 @@ impl Editor {
                 p.scroll = d.cur.props.len().saturating_sub(10);
             }
             Aim::Creature => {
-                d.cur.spawns.push(new_spawn(self.placer.creature.clone(), (north, west), turn));
+                d.cur.spawns.push(new_spawn(self.placer.creature.clone(), self.map, (north, west), turn));
                 let p = &mut self.pick[0];
                 p.selected = d.cur.spawns.len() - 1;
-                p.scroll = d.cur.spawns.len().saturating_sub(10);
+                p.reveal = true;
             }
             Aim::Stop => {
                 if let Some(s) = d.cur.spawns.get_mut(self.pick[0].selected) {
@@ -714,8 +744,13 @@ impl Editor {
             return actions;
         }
         self.eye = Some(eye);
+        self.map = player.map;
+        // Near the editor's eye (it flies free of the player), not the player, is what is listed and can be picked.
+        let around = Place { north: -eye.position().z, west: -eye.position().x, ..player };
+        self.around = around;
         if let Some(d) = &self.data {
-            self.spawn_ground = d.cur.spawns.iter().map(|s| ground(-s.at.1, -s.at.0)).collect();
+            // The ground under the creatures near the editor's eye (the world has tens of thousands; the others cannot be picked in the world).
+            self.spawn_ground = d.cur.spawns.iter().map(|s| if near_here(s.at, around) { ground(-s.at.1, -s.at.0) } else { None }).collect();
             self.chest_ground = d.cur.chests.iter().map(|c| ground(-c.at.1, -c.at.0)).collect();
         }
         self.gizmo(ui, eye, size.1, ground);
@@ -751,9 +786,9 @@ impl Editor {
             g.text(WIDTH - 150.0, 10.0, 140.0, "Editor (F1 closes)", DIM);
             let (top, bottom) = (36.0, UI_HEIGHT - 64.0);
             match *tab {
-                Tab::World => world(&mut g, data, pick, sub, kind, placer, player, &mut actions, top, bottom),
+                Tab::World => world(&mut g, data, pick, sub, kind, placer, player, around, &mut actions, top, bottom),
                 Tab::Creatures => creatures(&mut g, data, &mut pick[2], preview, top, bottom),
-                Tab::Quests => quests(&mut g, data, &mut pick[3], top, bottom),
+                Tab::Quests => quests(&mut g, data, &mut pick[3], player, top, bottom),
                 Tab::Items => items(&mut g, data, &mut pick[4], preview, top, bottom),
                 Tab::Loot => loot(&mut g, data, &mut pick[5], top, bottom),
             }
@@ -879,7 +914,7 @@ mod tests {
         cur.quests[0].reward.xp += 5;
         cur.chests.pop();
         cur.spawns[0].at.0 += 3.0;
-        cur.spawns.push(Spawn { creature: "wolf_pup".into(), at: (-8900.0, -100.0), facing: 12.0, wander: 0.0, height: None, respawn: None, path: Vec::new() });
+        cur.spawns.push(Spawn { creature: "wolf_pup".into(), map: None, at: (-8900.0, -100.0), facing: 12.0, wander: 0.0, height: None, respawn: None, path: Vec::new() });
         // A loot table made and one changed, a place moved and a place made.
         cur.loot.insert("pup".into(), content::RawTable { copper: (1, 2), items: vec![("linen_cloth".into(), (1, 1), 30.0)], also: Vec::new() });
         cur.loot.get_mut("wolf").unwrap().copper.1 += 4;
@@ -910,7 +945,7 @@ mod tests {
         content::check(&again).unwrap();
         // And a change that breaks a reference is caught before it is saved.
         let mut broken = cur.clone();
-        broken.spawns.push(Spawn { creature: "nobody".into(), at: (0.0, 0.0), facing: 0.0, wander: 5.0, height: None, respawn: None, path: Vec::new() });
+        broken.spawns.push(Spawn { creature: "nobody".into(), map: None, at: (0.0, 0.0), facing: 0.0, wander: 5.0, height: None, respawn: None, path: Vec::new() });
         assert!(content::check(&broken).is_err());
         let mut broken = cur.clone();
         broken.props[0].model = r"World\Generic\Thing.blp".into();
