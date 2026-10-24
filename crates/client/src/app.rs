@@ -279,6 +279,8 @@ struct State {
     frames: u32,
     /// Time spent in `Renderer::render` since the title was last updated.
     render_time: Duration,
+    /// What the creatures (their steps, poses and models) took since the last report.
+    creature_time: Duration,
 }
 
 impl State {

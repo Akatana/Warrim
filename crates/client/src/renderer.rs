@@ -282,6 +282,10 @@ struct EntityGpu {
     visible: bool,
     /// Opacity of the whole model: below 1 its opaque batches are drawn blended (a sneaking character).
     fade: f32,
+    /// How far from its origin the model reaches (as it is made), and whether this frame's view and the sun's view may see it.
+    radius: f32,
+    in_view: bool,
+    in_light: bool,
 }
 
 /// A placed building. `visible[g]` says whether group `g` is drawn this frame.
@@ -932,6 +936,7 @@ impl Renderer {
     pub fn add_entity(&mut self, gpu: &Gpu, model: &ModelCpu) -> usize {
         // Every entity gets vertex buffers of its own: they are re-skinned per entity (two wolves must not share a pose).
         self.models.remove(&model.key);
+        let model_cpu_radius = model.vertices.iter().map(|v| Vec3::from(v.pos).length()).fold(0.0, f32::max);
         let model = self.model_gpu(gpu, model);
         let instance = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("entity instance"),
@@ -939,7 +944,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let entity = EntityGpu { light: None, room_lit: false, room_target: None, room_sampled: Vec3::splat(f32::MAX), model, instance, pos: Vec3::ZERO, orient: Mat4::IDENTITY, visible: false, fade: 1.0 };
+        let entity = EntityGpu { light: None, room_lit: false, room_target: None, room_sampled: Vec3::splat(f32::MAX), model, instance, pos: Vec3::ZERO, orient: Mat4::IDENTITY, visible: false, fade: 1.0, radius: model_cpu_radius, in_view: true, in_light: true };
         match self.free.pop() {
             Some(id) => {
                 self.entities[id] = entity;
@@ -1423,7 +1428,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             for (pipeline, blends) in [(0, &[Blend::Opaque, Blend::AlphaKey][..]), (1, &[Blend::Alpha]), (2, &[Blend::Additive]), (3, &[Blend::Modulate]), (4, &[Blend::Modulate2x])] {
-                draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[pipeline], &tiles, cam_tile, self.stage.as_ref().map(|s| &s.1), &self.entities, Some(ids), blends);
+                draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[pipeline], &tiles, cam_tile, self.stage.as_ref().map(|s| &s.1), &self.entities, Some(ids), blends, Cull::No);
             }
         }
         gpu.queue.submit(Some(encoder.finish()));
@@ -1503,11 +1508,6 @@ impl Renderer {
 
         // Entities are placed relative to the camera's tile, whose uniform they are drawn with.
         let origin = tile_origin(cam_tile);
-        for e in self.entities.iter().filter(|e| e.visible) {
-            let local = Vec3::new((e.pos.x as f64 - origin.0) as f32, e.pos.y, (e.pos.z as f64 - origin.1) as f32);
-            gpu.queue.write_buffer(&e.instance, 0, bytemuck::cast_slice(&instance_floats(&(Mat4::from_translation(local) * e.orient), e.light)));
-        }
-
         if let Some(sky) = &mut self.sky {
             sky.prepare(gpu, &view_proj, &self.atmosphere, time);
         }
@@ -1519,6 +1519,17 @@ impl Renderer {
         let mut seen = Frustum::new(&view_proj, camera.pos);
         seen.reach = self.prop_reach;
         let lit = Frustum::new(&light, camera.pos);
+        // What neither the view nor the sun's view may see is not drawn (nor sent to the graphics card): the world has hundreds of creatures near.
+        for e in self.entities.iter_mut().filter(|e| e.visible) {
+            let centre = e.pos + e.orient.w_axis.truncate();
+            let reach = e.radius * e.orient.x_axis.truncate().length().max(e.orient.y_axis.truncate().length()).max(e.orient.z_axis.truncate().length()) + 2.0;
+            let bounds = (centre - Vec3::splat(reach), centre + Vec3::splat(reach));
+            (e.in_view, e.in_light) = (seen.sees((0.0, 0.0), bounds), shadows && lit.sees((0.0, 0.0), bounds));
+            if e.in_view || e.in_light {
+                let local = Vec3::new((e.pos.x as f64 - origin.0) as f32, e.pos.y, (e.pos.z as f64 - origin.1) as f32);
+                gpu.queue.write_buffer(&e.instance, 0, bytemuck::cast_slice(&instance_floats(&(Mat4::from_translation(local) * e.orient), e.light)));
+            }
+        }
         let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         if shadows {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1545,7 +1556,7 @@ impl Renderer {
             // shortcut: translucent models cast nothing; upgrade if their missing shadows show.
             let casts = [Blend::Opaque, Blend::AlphaKey];
             draw_doodads(&mut pass, &self.shadow_bg, &self.shadow_model, &near, cam_tile, &casts, true, &lit);
-            draw_entities(&mut pass, &self.shadow_bg, &self.shadow_model, &tiles, cam_tile, None, &self.entities, None, &casts);
+            draw_entities(&mut pass, &self.shadow_bg, &self.shadow_model, &tiles, cam_tile, None, &self.entities, None, &casts, Cull::Light);
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1581,7 +1592,7 @@ impl Renderer {
             }
 
             draw_doodads(&mut pass, &self.globals_bg, &self.model_pipelines[0], &tiles, cam_tile, &[Blend::Opaque, Blend::AlphaKey], false, &seen);
-            draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[0], &tiles, cam_tile, None, &self.entities, None, &[Blend::Opaque, Blend::AlphaKey]);
+            draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[0], &tiles, cam_tile, None, &self.entities, None, &[Blend::Opaque, Blend::AlphaKey], Cull::View);
 
             // Translucent liquids after all opaque geometry.
             if let Some(water_bg) = &self.water_bg {
@@ -1598,13 +1609,13 @@ impl Renderer {
             }
 
             draw_doodads(&mut pass, &self.globals_bg, &self.model_pipelines[1], &tiles, cam_tile, &[Blend::Alpha], false, &seen);
-            draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[1], &tiles, cam_tile, None, &self.entities, None, &[Blend::Alpha]);
+            draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[1], &tiles, cam_tile, None, &self.entities, None, &[Blend::Alpha], Cull::View);
             draw_doodads(&mut pass, &self.globals_bg, &self.model_pipelines[2], &tiles, cam_tile, &[Blend::Additive], false, &seen);
-            draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[2], &tiles, cam_tile, None, &self.entities, None, &[Blend::Additive]);
+            draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[2], &tiles, cam_tile, None, &self.entities, None, &[Blend::Additive], Cull::View);
             draw_doodads(&mut pass, &self.globals_bg, &self.model_pipelines[3], &tiles, cam_tile, &[Blend::Modulate], false, &seen);
-            draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[3], &tiles, cam_tile, None, &self.entities, None, &[Blend::Modulate]);
+            draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[3], &tiles, cam_tile, None, &self.entities, None, &[Blend::Modulate], Cull::View);
             draw_doodads(&mut pass, &self.globals_bg, &self.model_pipelines[4], &tiles, cam_tile, &[Blend::Modulate2x], false, &seen);
-            draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[4], &tiles, cam_tile, None, &self.entities, None, &[Blend::Modulate2x]);
+            draw_entities(&mut pass, &self.globals_bg, &self.model_pipelines[4], &tiles, cam_tile, None, &self.entities, None, &[Blend::Modulate2x], Cull::View);
             if let Some(weather) = &self.weather {
                 weather.draw(&mut pass);
             }
@@ -1621,6 +1632,14 @@ impl Renderer {
     }
 }
 
+/// Which of the entities are drawn: all that are visible, those the view may see, or those the sun's view may.
+#[derive(Clone, Copy)]
+enum Cull {
+    No,
+    View,
+    Light,
+}
+
 /// Draw the visible entities with the uniform of the tile they are placed in.
 #[allow(clippy::too_many_arguments)]
 fn draw_entities(
@@ -1634,12 +1653,13 @@ fn draw_entities(
     entities: &[EntityGpu],
     only: Option<&[usize]>,
     blends: &[Blend],
+    cull: Cull,
 ) {
     let Some(ground) = tiles.iter().find(|t| t.coord == cam_tile).map(|t| &t.bind_group).or(stage) else { return };
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, globals_bg, &[]);
     pass.set_bind_group(1, ground, &[]);
-    for (_, e) in entities.iter().enumerate().filter(|(i, e)| e.visible && only.is_none_or(|o| o.contains(i))) {
+    for (_, e) in entities.iter().enumerate().filter(|(i, e)| e.visible && only.is_none_or(|o| o.contains(i)) && match cull { Cull::No => true, Cull::View => e.in_view, Cull::Light => e.in_light }) {
         pass.set_vertex_buffer(0, e.model.vertex_buf.slice(..));
         pass.set_vertex_buffer(1, e.instance.slice(..));
         pass.set_index_buffer(e.model.index_buf.slice(..), wgpu::IndexFormat::Uint16);

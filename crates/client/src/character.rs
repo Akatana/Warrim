@@ -220,10 +220,32 @@ struct Parts {
     baked: bool,
 }
 
+/// A table of the client, read and parsed once (every person made would read these again).
+fn table(mount: &Mount, name: &str) -> Result<Arc<Dbc>> {
+    static TABLES: std::sync::Mutex<Vec<(String, Arc<Dbc>)>> = std::sync::Mutex::new(Vec::new());
+    if let Some((_, t)) = TABLES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(n, _)| n == name) {
+        return Ok(t.clone());
+    }
+    let parsed = Arc::new(Dbc::parse(&mount.read(&format!(r"DBFilesClient\{name}.dbc"))?)?);
+    TABLES.lock().unwrap_or_else(|e| e.into_inner()).push((name.to_string(), parsed.clone()));
+    Ok(parsed)
+}
+
+/// The model of a race and sex, read and parsed once.
+fn model_of(mount: &Mount, path: &str) -> Result<Arc<M2>> {
+    static MODELS: std::sync::Mutex<Vec<(String, Arc<M2>)>> = std::sync::Mutex::new(Vec::new());
+    if let Some((_, m)) = MODELS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(n, _)| n == path) {
+        return Ok(m.clone());
+    }
+    let parsed = Arc::new(M2::parse(&mount.read(path)?).context("character model")?);
+    MODELS.lock().unwrap_or_else(|e| e.into_inner()).push((path.to_string(), parsed.clone()));
+    Ok(parsed)
+}
+
 impl Parts {
     /// Look the textures and geosets of an appearance up in the original's tables.
     fn of(mount: &Mount, a: &Appearance) -> Result<Parts> {
-        let dbc = |name: &str| -> Result<Dbc> { Ok(Dbc::parse(&mount.read(&format!(r"DBFilesClient\{name}.dbc"))?)?) };
+        let dbc = |name: &str| -> Result<Arc<Dbc>> { table(mount, name) };
         // CharSections: 1 race, 2 sex, 3 kind (0 skin, 1 face, 2 facial hair, 3 hair, 4 underwear), 4 variation, 5 colour,
         // 6-8 textures.
         let sections = dbc("CharSections")?;
@@ -284,7 +306,7 @@ struct Arm {
 }
 
 pub struct Character {
-    pub m2: M2,
+    pub m2: Arc<M2>,
     /// Bind-pose model with the geosets and textures shown; its vertices are re-skinned every frame.
     pub model: ModelCpu,
     pub vertices: Vec<ModelVertex>,
@@ -457,7 +479,7 @@ fn arm_of(m2: &M2, grip_bone: usize) -> Arm {
 
 impl Character {
     pub fn load(mount: &Mount, cache: &ModelCache, key: &str, look: &Appearance) -> Result<Character> {
-        let m2 = M2::parse(&mount.read(&look.model())?).context("character model")?;
+        let m2 = model_of(mount, &look.model())?;
         let parts = Parts::of(mount, look)?;
         let hair = parts.hair.as_ref().and_then(|path| cache.texture(mount, path));
         let extra = parts.skin_extra.as_ref().and_then(|path| cache.texture(mount, path));

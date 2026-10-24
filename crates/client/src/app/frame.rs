@@ -391,7 +391,9 @@ impl State {
                 sneaking: player.is_sneaking().then(|| self.panels.as_ref().map_or(1.0, |p| p.skills.notice_factor())),
             };
             wolves.ragdolls = self.ragdolls;
+            let timing = Instant::now();
             let (acts, mut cries) = wolves.update(dt, &watch, |x, z, y| crate::collision::Collider::floor(world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), self.bodies.as_mut(), &mut self.renderer, &self.gpu);
+            self.creature_time += timing.elapsed();
             // What they did: the swings that landed, the spells begun and gone off, and the auras that hold the player.
             let mut effects = Vec::new();
             for act in acts {
@@ -805,8 +807,10 @@ impl State {
         if self.title_timer.elapsed() >= Duration::from_millis(500) {
             let fps = self.frames as f32 / self.title_timer.elapsed().as_secs_f32();
             let render_ms = self.render_time.as_secs_f32() * 1000.0 / self.frames.max(1) as f32;
-            log::info!("{fps:.0} fps, render {render_ms:.2} ms on the CPU");
+            let creature_ms = self.creature_time.as_secs_f32() * 1000.0 / self.frames.max(1) as f32;
+            log::info!("{fps:.0} fps, render {render_ms:.2} ms on the CPU, creatures {creature_ms:.2} ms");
             self.render_time = Duration::ZERO;
+            self.creature_time = Duration::ZERO;
             let [wx, wy, wz] = render_to_wow(self.camera.pos);
             let area = self
                 .world

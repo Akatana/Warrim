@@ -105,9 +105,9 @@ const CELL: f32 = 128.0;
 const SCAN: f32 = 0.25;
 const MAKE_PER_FRAME: usize = 3;
 /// Creatures nearer than the first are posed every frame, nearer than the second every other frame, the rest every fourth.
-const POSE_NEAR: f32 = 45.0;
-const POSE_FAR: f32 = 90.0;
-const MAKE_TIME: Duration = Duration::from_millis(12);
+const POSE_NEAR: f32 = 30.0;
+const POSE_FAR: f32 = 70.0;
+const MAKE_TIME: Duration = Duration::from_millis(6);
 /// The most places the compass and the map are told of for a kind of creature (the nearest).
 const MOST_LEADS: usize = 40;
 /// The models of the quest marks floating over a creature's head, by `Marker` (the original's own: they spin).
@@ -1340,10 +1340,12 @@ impl Person {
 
     /// A character of this look in what is worn.
     pub(crate) fn dress(equipment: &[Option<&'static items::ItemDef>; SLOTS], look: &Appearance, mount: &Mount, renderer: &mut Renderer, gpu: &Gpu, key: &str) -> Result<Person> {
-        let cache = ModelCache::default();
-        let mut character = Character::load(mount, &cache, key, look)?;
+        // The textures and models of the people made so far are kept: most of them wear what others wear.
+        static CACHE: std::sync::LazyLock<ModelCache> = std::sync::LazyLock::new(ModelCache::default);
+        let cache = &*CACHE;
+        let mut character = Character::load(mount, cache, key, look)?;
         let mut worn = Worn::new(&character, renderer, gpu);
-        worn.dress(&mut character, look, mount, &cache, renderer, gpu, equipment)?;
+        worn.dress(&mut character, look, mount, cache, renderer, gpu, equipment)?;
         let height = character.model.vertices.iter().map(|v| v.pos[1]).fold(0.0, f32::max).max(0.5);
         Ok(Person { character, worn, swinging: false, casting: false, released: false, height, emote: None, run: false })
     }
@@ -1720,7 +1722,10 @@ impl Creatures {
             if n >= self.budget || (n > 0 && started.elapsed() > MAKE_TIME) {
                 break;
             }
-            if let Err(e) = self.make(i, renderer, gpu) {
+            let began = Instant::now();
+            let made = self.make(i, renderer, gpu);
+            log::debug!("model of {} made in {:?}", self.creatures[i].mob.def.name, began.elapsed());
+            if let Err(e) = made {
                 // It is not in the world then (and is not tried again).
                 log::warn!("{}: {e:#}", self.creatures[i].mob.def.name);
                 self.creatures[i].mob.state = State::Unborn;
@@ -1847,12 +1852,16 @@ impl Creatures {
             self.stream(player, renderer);
         }
         self.make_visible(player, renderer, gpu);
+        let ahead = Vec3::new(watch.yaw.sin(), 0.0, -watch.yaw.cos());
         let (mut foes, mut cries) = (Vec::new(), Vec::new());
         // Who is about, for the creatures that look after friends, call them and run to them.
+        // (Only a creature that looks after friends and is in a fight reads it: nobody else, nobody makes it.)
+        let needed = self.creatures.iter().any(|c| c.mob.social && c.mob.state.fights());
         let roster: Vec<Friend> = self
             .creatures
             .iter()
             .enumerate()
+            .filter(|_| needed)
             .filter(|(_, c)| c.mob.def.attackable() && !c.mob.is_dead() && flat(c.mob.pos - player).length() <= DRAW_RANGE)
             .map(|(index, c)| Friend { index, pos: c.mob.pos, faction: c.mob.def.brain.faction, dist: 0.0, health: c.mob.health, max: c.mob.def.health, auras: c.mob.aura_ids() })
             .collect();
@@ -1933,10 +1942,11 @@ impl Creatures {
             let push = flat(c.mob.pos - player).normalize_or_zero() * RAGDOLL_PUSH + Vec3::Y * 1.5;
             let spawn_here = fresh && self.ragdolls && flat(c.mob.pos - player).length() < RAGDOLL_REACH;
             // Far from the player a creature is posed less often (its model is skinned and sent to the graphics card each time): every second frame
-            // beyond 45 yards, every fourth beyond 90. One that fights, lies dead or falls is posed at once.
-            let away = flat(c.mob.pos - player).length();
+            // beyond 30 yards, every fourth beyond 70, every sixth beyond 110, and rarely one that is behind him. One that fights, lies dead or falls is posed at once.
+            let (to, away) = (flat(c.mob.pos - player), flat(c.mob.pos - player).length());
+            let behind = away > 12.0 && to.dot(ahead) < -0.2 * away;
             c.owed += dt;
-            c.beat = (c.beat + 1) % if away < POSE_NEAR { 1 } else if away < POSE_FAR { 2 } else { 4 };
+            c.beat = (c.beat + 1) % if behind { 8 } else if away < POSE_NEAR { 1 } else if away < POSE_FAR { 2 } else if away < 110.0 { 4 } else { 6 };
             if c.beat != 0 && c.ragdoll.is_none() && !dead && !c.mob.state.fights() && !spawn_here {
                 continue;
             }

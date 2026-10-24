@@ -259,6 +259,7 @@ impl State {
             title_timer: Instant::now(),
             frames: 0,
             render_time: Duration::ZERO,
+            creature_time: Duration::ZERO,
         })
     }
 }
