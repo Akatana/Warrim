@@ -281,6 +281,10 @@ struct State {
     render_time: Duration,
     /// What the creatures (their steps, poses and models) took since the last report.
     creature_time: Duration,
+    /// The area and the room the camera is in, looked up ten times a second (the sound and the places found go by them), and the seconds to the next look.
+    area_now: Option<u32>,
+    room_now: Option<crate::world::Room>,
+    place_look: f32,
 }
 
 impl State {

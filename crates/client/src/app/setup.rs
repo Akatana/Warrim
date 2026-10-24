@@ -260,6 +260,9 @@ impl State {
             frames: 0,
             render_time: Duration::ZERO,
             creature_time: Duration::ZERO,
+            area_now: None,
+            room_now: None,
+            place_look: 0.0,
         })
     }
 }

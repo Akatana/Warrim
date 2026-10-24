@@ -35,6 +35,7 @@ mod physics;
 mod ragdoll;
 mod pickups;
 mod procs;
+mod profile;
 mod preview;
 mod propedit;
 mod lockpick;
@@ -132,6 +133,7 @@ USAGE: rsworld [options]
   --wear a,b         headless: put on the items with these ids (all levels), for the player previews
   --kill             headless, with --creature: the creature straight ahead dies
   --spawns           headless: every creature of content/spawns.ron
+  --profile          show the profiler (F3 toggles it) and write its table to the log every second
   --creature a,b     headless: these creatures (ids of content/creatures.ron) stand in a row ahead
   --compass          headless: the compass at the top (with --discover N places already found)
   --sneak            headless, with --view: the character sneaks (crouched, with the sneaking icon)
@@ -367,6 +369,10 @@ fn parse_args() -> Result<Args> {
             }
             "--compass" => a.compass = true,
             "--spawns" => a.spawns = true,
+            "--profile" => {
+                profile::set_enabled(true);
+                profile::log_to_file(true);
+            }
             "--kill" => a.kill = true,
             "--apply-after" => a.apply_after = Some(value("--apply-after")?.parse()?),
             "--editor" => {

@@ -4,6 +4,15 @@ use super::*;
 
 impl State {
     pub(super) fn frame(&mut self) {
+        {
+            let _t = crate::profile::scope("frame");
+            self.frame_body();
+        }
+        crate::profile::end_frame();
+    }
+
+    fn frame_body(&mut self) {
+        use crate::profile::scope;
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
@@ -21,7 +30,10 @@ impl State {
             self.free = Some(FreeCam { camera: Camera { pos: self.camera.pos - forward * 5.0 + Vec3::Y * 1.5, ..self.camera }, controller });
         }
         let watching = self.free.as_ref().map_or(self.camera.pos, |f| f.camera.pos);
+        let t = scope("world.update (streaming)");
         self.world.update(watching.x, watching.z, &self.gpu, &mut self.renderer);
+        drop(t);
+        let t = scope("weather, sky, steer");
         if !self.fixed_time {
             // One game minute per second, like the original.
             self.hour = (self.hour + dt / 60.0) % 24.0;
@@ -32,6 +44,7 @@ impl State {
         }
 
         self.steer(dt);
+        drop(t);
 
         if let Some(loading) = &mut self.loading {
             let pending = self.world.pending_count();
@@ -46,6 +59,7 @@ impl State {
                 return;
             }
         }
+        let t = scope("acquire frame");
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -57,17 +71,31 @@ impl State {
                 return;
             }
         };
+        drop(t);
         let view = frame.texture.create_view(&Default::default());
         let mut render_camera = Camera { pos: self.camera.pos, ..self.camera };
+        let t = scope("audio");
+        let t2 = scope("area, room lookup");
+        self.place_look -= dt;
+        if self.place_look <= 0.0 {
+            self.place_look = 0.1;
+            (self.area_now, self.room_now) = self.world.place_at(self.camera.pos);
+        }
+        drop(t2);
+        let t2 = scope("audio.update, weather");
         if let Some(audio) = &mut self.audio {
-            audio.update(dt, self.world.area_at(self.camera.pos), self.world.room_at(self.camera.pos), self.hour);
+            audio.update(dt, self.area_now, self.room_now, self.hour);
             audio.set_weather(self.weather.sound(), self.indoors, dt);
         }
+        drop(t2);
+        let t2 = scope("look_for_sounds");
         self.sound_look -= dt;
         if self.sound_look <= 0.0 {
             self.sound_look = 0.1;
             self.look_for_sounds();
         }
+        drop(t2);
+        let t2 = scope("set_places");
         if let Some(audio) = &mut self.audio {
             audio.set_listener(self.camera.pos, self.camera.yaw);
             // The lifts that go sound from where they are, which changes with every frame.
@@ -77,12 +105,17 @@ impl State {
             }
             audio.set_wading(self.wading);
         }
+        drop(t2);
+        drop(t);
+        let t = scope("animate player");
         self.animate_player(dt, &mut render_camera);
         if let Some(free) = &self.free {
             render_camera = Camera { pos: free.camera.pos, ..free.camera };
         }
         self.last_eye = self.camera.pos;
         self.eye = Some(crate::propedit::Eye::of(&render_camera, (self.config.width, self.config.height)));
+        drop(t);
+        let t = scope("water effects, panels, spells");
         self.water_effects(dt, render_camera.pos);
         let size = (self.config.width, self.config.height);
         if let Some(panels) = &mut self.panels {
@@ -120,9 +153,15 @@ impl State {
             let airtime = 2.0 * up / crate::movement::GRAVITY;
             self.controller.knock_back(to.normalize_or_zero(), (reach / airtime).min(45.0), up);
         }
+        drop(t);
+        let t = scope("fires, effects");
         self.fires.update(&self.world, render_camera.pos, &mut self.effects, &mut self.renderer, &self.gpu);
         self.effects.update(dt, &render_camera, &mut self.renderer, &self.gpu);
+        drop(t);
+        let t = scope("fight (creatures, foes, labels)");
         self.fight(dt, &render_camera, size);
+        drop(t);
+        let t = scope("chests, pickups, bodies");
         if let Some(chests) = &mut self.chests {
             let world = &self.world;
             chests.update(dt, |x, z| world.height_at(x, z), &mut self.renderer, &self.gpu);
@@ -140,17 +179,25 @@ impl State {
             let forward = Vec3::new(self.camera.yaw.sin(), 0.0, -self.camera.yaw.cos());
             bodies.update(dt, feet, forward, &self.world, &mut self.renderer);
         }
+        drop(t);
+        let t = scope("cursor, lock");
         self.step_lock(dt);
         (self.pointer, self.hover) = {
             let (kind, hover) = self.cursor_context(&render_camera, size);
             (kind, hover)
         };
+        drop(t);
+        let t = scope("upkeep");
         self.upkeep(dt);
+        drop(t);
+        let t = scope("draw interface");
         let discovered = self.draw_interface(dt, &render_camera, size);
+        drop(t);
         if discovered {
             self.save_game();
         }
         let drawing = Instant::now();
+        let t = scope("renderer.render");
         self.renderer.prepare_weather(&self.gpu, &self.weather, &render_camera, (self.config.width, self.config.height));
         self.renderer.render(
             &self.gpu,
@@ -160,7 +207,9 @@ impl State {
             self.start.elapsed().as_secs_f32(),
             self.world.tiles(),
         );
+        drop(t);
         self.render_time += drawing.elapsed();
+        let _t = scope("present");
         self.window.pre_present_notify();
         frame.present();
         if std::mem::take(&mut self.reconfigure) {
@@ -394,8 +443,11 @@ impl State {
             };
             wolves.ragdolls = self.ragdolls;
             let timing = Instant::now();
+            let t = crate::profile::scope("creatures.update");
             let (acts, mut cries) = wolves.update(dt, &watch, |x, z, y| crate::collision::Collider::floor(world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), self.bodies.as_mut(), &mut self.renderer, &self.gpu);
+            drop(t);
             self.creature_time += timing.elapsed();
+            let t = crate::profile::scope("foes, effects, damage");
             // What they did: the swings that landed, the spells begun and gone off, and the auras that hold the player.
             let mut effects = Vec::new();
             for act in acts {
@@ -520,6 +572,7 @@ impl State {
                 }
                 self.low_health &= low;
             }
+            drop(t);
             cries.retain(|&(sfx, _)| !(blocked && matches!(sfx, Sfx::Cry(Cry::Bite, _))));
             // The wolves' sounds come from where they are, heard from the camera.
             if let Some(audio) = &mut self.audio {
@@ -528,6 +581,7 @@ impl State {
                     audio.play_3d(sfx, world.surface_under(at - Vec3::Y * 0.8) as u32, at);
                 }
             }
+            let t = crate::profile::scope("plates, loot, hints");
             wolves.draw_plates(&mut self.renderer.ui, &render_camera, size);
             // Looting: the window closes when the player walks away, and what is left stays on the corpse.
             if let Some(panels) = &mut self.panels {
@@ -570,8 +624,10 @@ impl State {
                 panels.arrive(&self.map, north, west);
                 wolves.set_wanted(panels.quests.wanted(&panels.inv));
                 panels.update_quests();
+                let _t = crate::profile::scope("name labels");
                 panels.draw_labels(&mut self.renderer.ui, &self.gpu, size, &wolves.labels(&render_camera, size, self.names, |from, to| self.world.ray_hit(from, to).is_some()));
             }
+            drop(t);
             if let Some(text) = &mut self.combat_text {
                 text.update(dt);
                 text.draw(&mut self.renderer.ui, &render_camera, size);
@@ -670,6 +726,7 @@ impl State {
             if panels.take_equipment_change() {
                 player.set_equipment(&mut self.renderer, &self.gpu, &panels.inv.equipment, &panels.stats);
             }
+            let _t = crate::profile::scope("portraits, paper doll");
             panels.render_pictures(&mut self.renderer, &self.gpu, player, &self.world);
             if let Some(wolves) = &self.wolves {
                 panels.render_target(&mut self.renderer, &self.gpu, wolves, &self.world);
@@ -687,8 +744,10 @@ impl State {
         }
         let mut discovered = false;
         if let Some(panels) = &mut self.panels {
+            let t = crate::profile::scope("windows");
             panels.draw(&mut self.renderer.ui, &self.gpu, size);
             panels.draw_overlay(&mut self.renderer.ui, &self.gpu, size, dt, self.hint);
+            drop(t);
             panels.set_quest_targets(self.wolves.as_ref(), self.chests.as_ref(), self.pickups.as_ref());
             if self.lock.is_none() {
                 panels.draw_compass(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw);
@@ -706,7 +765,7 @@ impl State {
             }
             if self.lock.is_none() {
                 discovered = panels.discover(self.camera.pos - Vec3::Y * EYE_HEIGHT);
-                discovered |= panels.explore(self.world.area_at(self.camera.pos));
+                discovered |= panels.explore(self.area_now);
             }
             if self.grabbed && self.lock.is_none() {
                 let alert = self.player.as_ref().is_some_and(|p| p.is_sneaking()).then(|| self.wolves.as_ref().map_or(0.0, |w| w.alert(self.camera.pos - Vec3::Y * EYE_HEIGHT, panels.progress.level)));
@@ -719,6 +778,7 @@ impl State {
                 let (origin, dir) = self.eye?.ray(glam::Vec2::new(p.0, p.1));
                 self.world.ray_hit(origin, origin + dir * 400.0)
             });
+            let editor_scope = crate::profile::scope("editor");
             if let Some(editor) = &mut self.editor {
                 let [north, west, eye] = render_to_wow(self.camera.pos);
                 editor.set_hover(hover);
@@ -754,8 +814,13 @@ impl State {
                 editor.render_gallery(&mut self.renderer, &self.gpu, &self.world, self.camera.pos, false);
                 editor.update_ghosts(&mut self.renderer, &self.gpu, self.world.refreshing(), dt);
             }
+            drop(editor_scope);
             if let Some(console) = &self.console {
                 console.draw(&mut self.renderer.ui, size);
+                if crate::profile::enabled() {
+                    let (fps, rows) = crate::profile::report();
+                    console.draw_profile(&mut self.renderer.ui, size, fps, &rows);
+                }
             }
             // The pointer, over everything; what the mouse carries is drawn instead of it.
             if let (Some(cursors), Some(pos), false) = (&self.cursors, self.cursor, panels.carrying()) {

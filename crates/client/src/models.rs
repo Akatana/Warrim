@@ -243,6 +243,8 @@ pub struct WmoGroupCpu {
     pub model: Option<Arc<ModelCpu>>,
     /// For each triangle, whether it is lit by the sun (`MOPY` flag 1).
     pub sunlit: Vec<bool>,
+    /// Which solid triangles lie over each square of the ground (made when first asked for: `wmovis::camera_group`).
+    pub floor_grid: std::sync::OnceLock<crate::wmovis::FloorGrid>,
 }
 
 /// One placed building: cache entry plus a tile-local transform.
@@ -490,6 +492,7 @@ impl ModelCache {
                 portals: (group.portal_start, group.portal_count),
                 model: None,
                 sunlit: group.tri_info.iter().map(|&(flags, _)| flags & 1 != 0).collect(),
+                floor_grid: Default::default(),
             });
             if group.indices.is_empty() || group.batches.is_empty() {
                 continue;

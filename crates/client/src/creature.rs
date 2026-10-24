@@ -1388,13 +1388,20 @@ impl Person {
             State::Wander(_) => WALK_SPEED,
             _ => 0.0,
         };
+        let t = crate::profile::scope("character.update (bones, skin)");
         match state {
             State::Dead(seconds) => self.character.lie(seconds * 1000.0),
             _ => self.character.update(dt, &Motion { speed, forward_speed: speed, emote: self.emote.filter(|_| state == State::Idle), ..Motion::default() }, true),
         }
+        drop(t);
+        let t = crate::profile::scope("body vertex upload");
         renderer.update_entity_vertices(gpu, self.worn.body, &self.character.vertices);
+        drop(t);
         let orient = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - yaw);
+        let t = crate::profile::scope("worn.place");
         self.worn.place(renderer, &self.character, pos, orient, false, false);
+        drop(t);
+        let _t = crate::profile::scope("worn.animate");
         self.worn.animate(dt, forward, viewer, renderer, gpu, &self.character, pos, orient, false, false);
     }
 
@@ -1866,11 +1873,18 @@ impl Creatures {
         self.clock_ms += dt * 1000.0;
         let player = watch.feet;
         self.scan += dt;
+        let t = crate::profile::scope("stream (spawns near)");
         if self.scan >= SCAN {
             self.scan = 0.0;
             self.stream(player, renderer);
         }
+        drop(t);
+        let t = crate::profile::scope("make_visible (models)");
         self.make_visible(player, renderer, gpu);
+        drop(t);
+        let (mut step_time, mut pose_time) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+        let (mut bones_time, mut skin_time, mut upload_time, mut person_time) = (std::time::Duration::ZERO, std::time::Duration::ZERO, std::time::Duration::ZERO, std::time::Duration::ZERO);
+        let t = crate::profile::scope("creature loop");
         let ahead = Vec3::new(watch.yaw.sin(), 0.0, -watch.yaw.cos());
         let (mut foes, mut cries) = (Vec::new(), Vec::new());
         // Who is about, for the creatures that look after friends, call them and run to them.
@@ -1931,7 +1945,10 @@ impl Creatures {
             }
             (c.mob.hidden, c.mob.notice) = (watch.sneaking.is_some(), watch.sneaking.unwrap_or(1.0));
             let height = Self::height_of(c);
-            let acts = c.mob.step(dt, watch, i, &roster, &ground, &blocked);
+            let acts = {
+                let _p = crate::profile::sum(&mut step_time);
+                c.mob.step(dt, watch, i, &roster, &ground, &blocked)
+            };
             // What the damage over time slew is a kill of the player's.
             if std::mem::take(&mut c.mob.slain_over) {
                 self.deaths.push(kind);
@@ -1970,6 +1987,7 @@ impl Creatures {
                 continue;
             }
             let dt = std::mem::take(&mut c.owed);
+            let _p = crate::profile::sum(&mut pose_time);
             match &mut c.visual {
                 Visual::Beast { entity, anim, last_seq, shown } => {
                     // A script changed how it looks: the model of the new kind takes the place of the old.
@@ -2008,9 +2026,18 @@ impl Creatures {
                         cries.push((Sfx::Cry(Cry::Fidget, kind), mouth));
                     }
                     *last_seq = anim.seq();
-                    let bones = anim::bone_matrices_with(&rig.m2, anim.mix(&rig.m2), self.clock_ms, &[], &[]);
-                    anim::skin(&rig.m2, &bones, &rig.template.vertices, &mut self.vertices);
-                    renderer.update_entity_vertices(gpu, *entity, &self.vertices);
+                    let bones = {
+                        let _p = crate::profile::sum(&mut bones_time);
+                        anim::bone_matrices_with(&rig.m2, anim.mix(&rig.m2), self.clock_ms, &[], &[])
+                    };
+                    {
+                        let _p = crate::profile::sum(&mut skin_time);
+                        anim::skin(&rig.m2, &bones, &rig.template.vertices, &mut self.vertices);
+                    }
+                    {
+                        let _p = crate::profile::sum(&mut upload_time);
+                        renderer.update_entity_vertices(gpu, *entity, &self.vertices);
+                    }
                     c.name_at = name_offset(&rig.m2, &bones, orient, rig.scale);
                     // Batches that the model shows only in some animations (the logs a peasant carries) fade in and out by its tracks.
                     if let Some(tracks) = &rig.template.tracks {
@@ -2041,12 +2068,20 @@ impl Creatures {
                     }
                     let anims = if let State::Cast(spell, ..) = c.mob.state { c.mob.spell_anims(spell, &self.anims) } else { (READY_SPELL, CAST_SPELL) };
                     (person.emote, person.run) = (c.mob.emote, c.mob.run);
+                    let _q = crate::profile::sum(&mut person_time);
                     person.pose(dt, c.mob.pos, c.mob.yaw, c.mob.state, c.mob.moving, anims, (c.mob.pos + Vec3::Y - self.viewer).normalize_or_zero(), self.viewer, renderer, gpu);
                     c.name_at = name_offset(&person.character.m2, &person.character.bones, orient, 1.0);
                 }
                 Visual::None => {}
             }
         }
+        crate::profile::add("mob.step (AI, movement)", step_time);
+        crate::profile::add("pose (skin, upload)", pose_time);
+        crate::profile::add("  beasts: bone matrices", bones_time);
+        crate::profile::add("  beasts: skinning", skin_time);
+        crate::profile::add("  beasts: vertex upload", upload_time);
+        crate::profile::add("  people: pose", person_time);
+        drop(t);
         // Summoned creatures come out of the pool, round whoever summoned them.
         for (parent, entry, ms) in summons {
             let id = format!("c{entry}");

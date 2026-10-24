@@ -294,22 +294,27 @@ impl World {
 
     /// The room of a building a point (render space) is in.
     pub fn room_at(&self, at: glam::Vec3) -> Option<Room> {
-        let tile = self.tiles.get(&tile_of(at.x, at.z))?;
-        self.areas.room(tile.gpu.room_at(at)?)
+        self.place_at(at).1
     }
 
     /// The area at a point (render space): the room of a building when it is an area of its own, else the terrain's.
     pub fn area_at(&self, at: glam::Vec3) -> Option<u32> {
+        self.place_at(at).0
+    }
+
+    /// The area and the room at a point, from one look for the room (which is the costly part: it tests the floors of the buildings).
+    pub fn place_at(&self, at: glam::Vec3) -> (Option<u32>, Option<Room>) {
         let (x, z) = (at.x, at.z);
         let coord = tile_of(x, z);
-        let tile = self.tiles.get(&coord)?;
-        if let Some(room) = self.room_at(at).filter(|r| r.area != 0) {
-            return Some(room.area);
+        let Some(tile) = self.tiles.get(&coord) else { return (None, None) };
+        let room = tile.gpu.room_at(at).and_then(|r| self.areas.room(r));
+        if let Some(r) = room.filter(|r| r.area != 0) {
+            return (Some(r.area), room);
         }
         let (ox, oz) = tile_origin(coord);
         let (lx, lz) = ((x as f64 - ox) as f32, (z as f64 - oz) as f32);
         let (cx, cz) = (((lx / CHUNK_SIZE) as usize).min(15), ((lz / CHUNK_SIZE) as usize).min(15));
-        tile.areas.get(cz * 16 + cx).copied()
+        (tile.areas.get(cz * 16 + cx).copied(), room)
     }
 }
 

@@ -94,6 +94,35 @@ fn bbox_rect(b: &([f32; 3], [f32; 3]), to_clip: &Mat4) -> Option<Rect> {
     }
 }
 
+const FLOOR_CELL: f32 = 4.0;
+
+/// The solid triangles of a group by the squares of the ground (x, z of the collision mesh) their bounds touch, so that a point looks at the few
+/// triangles over it and not at all of them.
+#[derive(Default)]
+pub struct FloorGrid(std::collections::HashMap<(i32, i32), Vec<u32>>);
+
+impl FloorGrid {
+    fn of(model: &crate::models::ModelCpu) -> FloorGrid {
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<u32>> = std::collections::HashMap::new();
+        let cell = |v: f32| (v / FLOOR_CELL).floor() as i32;
+        for (n, t) in model.col_indices.chunks_exact(3).enumerate() {
+            let p: [[f32; 3]; 3] = [0, 1, 2].map(|i| model.col_vertices[t[i] as usize]);
+            let (x0, x1) = (p.iter().map(|v| v[0]).fold(f32::MAX, f32::min), p.iter().map(|v| v[0]).fold(f32::MIN, f32::max));
+            let (z0, z1) = (p.iter().map(|v| v[2]).fold(f32::MAX, f32::min), p.iter().map(|v| v[2]).fold(f32::MIN, f32::max));
+            for cz in cell(z0)..=cell(z1) {
+                for cx in cell(x0)..=cell(x1) {
+                    grid.entry((cx, cz)).or_default().push(n as u32);
+                }
+            }
+        }
+        FloorGrid(grid)
+    }
+
+    fn over(&self, x: f32, z: f32) -> &[u32] {
+        self.0.get(&((x / FLOOR_CELL).floor() as i32, (z / FLOOR_CELL).floor() as i32)).map_or(&[], Vec::as_slice)
+    }
+}
+
 /// The group the camera is standing in: of the groups whose bounds contain it, the one with the
 /// highest solid floor below it (within `FLOOR_REACH`). Model space, like the portals.
 fn camera_group(wmo: &WmoCpu, cam: Vec3) -> Option<usize> {
@@ -106,7 +135,9 @@ fn camera_group(wmo: &WmoCpu, cam: Vec3) -> Option<usize> {
         if cam.cmplt(lo).any() || cam.cmpgt(hi).any() {
             continue;
         }
-        for t in model.col_indices.chunks_exact(3) {
+        let grid = group.floor_grid.get_or_init(|| FloorGrid::of(model));
+        for &n in grid.over(c.x, c.z) {
+            let t = &model.col_indices[n as usize * 3..n as usize * 3 + 3];
             let p = |i: u32| model.col_vertices[i as usize];
             let (a, b, d) = (p(t[0]), p(t[1]), p(t[2]));
             // Barycentric coordinates in the xz plane.
@@ -258,7 +289,10 @@ pub fn visible_groups(wmo: &WmoCpu, cam: Vec3, to_clip: &Mat4) -> Vec<bool> {
     if !wmo.groups.iter().any(|g| g.flags & OUTDOOR != 0) {
         return vec![true; n];
     }
+    let t = crate::profile::scope("camera_group");
     let inside = camera_group(wmo, cam);
+    drop(t);
+    let _t = crate::profile::scope("portal walk");
     let mut walk = Walk {
         wmo,
         cam,

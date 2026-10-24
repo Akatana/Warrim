@@ -36,6 +36,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("respec", "respec", "take back every talent point (and the spells talents taught)"),
     ("time", "time <0-24|auto>", "set the hour of the day, or let it run"),
     ("pos", "pos", "say where the character stands"),
+    ("prof", "prof", "show or hide the profiler (F3)"),
     ("logout", "logout", "save and go back to the list of characters"),
     ("clear", "clear", "empty the console"),
 ];
@@ -58,6 +59,7 @@ pub enum Command {
     Respec,
     Time(Option<f32>),
     Pos,
+    Profile,
     Logout,
 }
 
@@ -137,6 +139,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "heal" => Command::Heal,
         "respec" => Command::Respec,
         "pos" => Command::Pos,
+        "prof" => Command::Profile,
         "logout" => Command::Logout,
         "level" => Command::Level(number(args.first(), "level")?.clamp(1, MAX_LEVEL as i64) as u32),
         "xp" => Command::Xp(number(args.first(), "amount")?.clamp(0, u32::MAX as i64) as u32),
@@ -197,6 +200,29 @@ impl Console {
         match result {
             Ok(text) => self.say(&text, OK),
             Err(text) => self.say(&text, BAD),
+        }
+    }
+
+    /// The profiler's last second over the top right corner: each scope with its average and worst milliseconds per frame.
+    pub fn draw_profile(&self, ui: &mut Ui, size: (u32, u32), fps: f32, rows: &[crate::profile::Row]) {
+        let s = size.1 as f32 / UI_HEIGHT;
+        let (name_w, col_w) = (200.0, 44.0);
+        let width = (name_w + 2.0 * col_w + 16.0) * s;
+        let height = (rows.len() + 1) as f32 * LINE * s + 12.0 * s;
+        let left = size.0 as f32 - width - 6.0 * s;
+        ui.quad(Quad { texture: WHITE, rect: [left, 6.0 * s, width, height], uv: FULL_UV, color: [0.0, 0.0, 0.0, 0.75], additive: false });
+        let right = |text: &str, edge: f32| edge - self.font.width(text) * s;
+        let mut y = 10.0 * s;
+        self.font.draw(ui, &format!("{fps:.0} fps (CPU ms per frame)"), left + 8.0 * s, y, s, OK);
+        self.font.draw(ui, "avg", right("avg", left + (8.0 + name_w + col_w) * s), y, s, DIM);
+        self.font.draw(ui, "worst", right("worst", left + (8.0 + name_w + 2.0 * col_w) * s), y, s, DIM);
+        for r in rows {
+            y += LINE * s;
+            let color = if r.avg >= 4.0 { BAD } else if r.avg >= 1.0 { [1.0, 0.9, 0.4, 1.0] } else { TEXT };
+            self.font.draw(ui, r.name, left + (8.0 + 8.0 * r.depth as f32) * s, y, s, color);
+            let (avg, worst) = (format!("{:.2}", r.avg), format!("{:.2}", r.worst));
+            self.font.draw(ui, &avg, right(&avg, left + (8.0 + name_w + col_w) * s), y, s, color);
+            self.font.draw(ui, &worst, right(&worst, left + (8.0 + name_w + 2.0 * col_w) * s), y, s, DIM);
         }
     }
 

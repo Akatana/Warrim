@@ -18,6 +18,11 @@ impl State {
             }
             return;
         }
+        // F3 shows and hides the profiler.
+        if let (KeyCode::F3, true) = (code, pressed) {
+            crate::profile::set_enabled(!crate::profile::enabled());
+            return;
+        }
         // F2 opens and closes the console; the mouse is free while it is open and the keys held down are let go.
         if let (KeyCode::F2, true, Some(console)) = (code, pressed, &self.console) {
             self.set_console(!console.open);

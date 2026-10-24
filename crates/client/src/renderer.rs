@@ -1464,6 +1464,7 @@ impl Renderer {
             light_view_proj: light.to_cols_array_2d(),
             shadow: [if shadows { 1.0 } else { 0.0 }, 2.0 * texel, 1.0 / SHADOW_SIZE as f32, 0.2 / SHADOW_DEPTH],
         };
+        let mut t = crate::profile::scope("uniforms, animated looks");
         gpu.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
         gpu.queue.write_buffer(&self.shadow_buf, 0, bytemuck::bytes_of(&Globals { view_proj: light.to_cols_array_2d(), ..globals }));
 
@@ -1486,6 +1487,7 @@ impl Renderer {
             gpu.queue.write_buffer(&t.uniform, 0, bytemuck::cast_slice(&off));
         }
 
+        t.lap("building group visibility");
         // Which building groups show from here.
         for t in &tiles {
             if (t.coord.0 - cam_tile.0).abs() > DOODAD_TILE_RADIUS || (t.coord.1 - cam_tile.1).abs() > DOODAD_TILE_RADIUS {
@@ -1504,6 +1506,7 @@ impl Renderer {
             }
         }
 
+        t.lap("room lights, sky");
         self.ease_room_lights(&tiles, time);
 
         // Entities are placed relative to the camera's tile, whose uniform they are drawn with.
@@ -1519,6 +1522,7 @@ impl Renderer {
         let mut seen = Frustum::new(&view_proj, camera.pos);
         seen.reach = self.prop_reach;
         let lit = Frustum::new(&light, camera.pos);
+        t.lap("entity culling, instance upload");
         // What neither the view nor the sun's view may see is not drawn (nor sent to the graphics card): the world has hundreds of creatures near.
         for e in self.entities.iter_mut().filter(|e| e.visible) {
             let centre = e.pos + e.orient.w_axis.truncate();
@@ -1531,6 +1535,7 @@ impl Renderer {
             }
         }
         let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+        t.lap("shadow pass (encode)");
         if shadows {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow pass"),
@@ -1558,6 +1563,7 @@ impl Renderer {
             draw_doodads(&mut pass, &self.shadow_bg, &self.shadow_model, &near, cam_tile, &casts, true, &lit);
             draw_entities(&mut pass, &self.shadow_bg, &self.shadow_model, &tiles, cam_tile, None, &self.entities, None, &casts, Cull::Light);
         }
+        t.lap("main pass (encode)");
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main pass"),
@@ -1627,7 +1633,9 @@ impl Renderer {
         } else if g < 0.0 {
             self.ui.quad_first(Quad { texture: crate::ui::WHITE, rect: [0.0, 0.0, w, h], uv: FULL_UV, color: [0.0, 0.0, 0.0, -g * 0.6], additive: false });
         }
+        t.lap("ui pass (encode)");
         self.ui.draw(gpu, &mut encoder, target, size);
+        t.lap("submit");
         gpu.queue.submit(Some(encoder.finish()));
     }
 }

@@ -112,6 +112,10 @@ impl State {
                 self.hour = hour.unwrap_or(self.hour);
                 format!("it is {:02}:{:02}{}", self.hour as u32, (self.hour.fract() * 60.0) as u32, if self.fixed_time { "" } else { ", and time runs" })
             }
+            Command::Profile => {
+                crate::profile::set_enabled(!crate::profile::enabled());
+                format!("profiler {}", if crate::profile::enabled() { "on" } else { "off" })
+            }
             Command::Pos => {
                 let [north, west, _] = render_to_wow(self.camera.pos);
                 format!("north {north:.1}, west {west:.1}, height {:.1}", self.camera.pos.y)
