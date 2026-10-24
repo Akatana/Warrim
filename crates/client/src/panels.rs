@@ -25,8 +25,10 @@ mod levelup;
 mod map;
 mod menu;
 mod sleep;
+mod talents;
 pub use menu::MenuAction;
 use magic::SPELLBOOK;
+use talents::TALENTS;
 use std::sync::Arc;
 
 const CLASS: &str = "Paladin";
@@ -73,6 +75,8 @@ pub struct Panels {
     pub skills: crate::skills::Skills,
     pub known: Vec<usize>,
     learned: Vec<usize>,
+    /// Spells a talent taught that were given back, for the action bar to drop (`take_forgotten`).
+    forgotten: Vec<usize>,
     /// Seconds left before each spell can be cast again.
     pub cooldowns: Vec<f32>,
     /// The spellbook's page, the spell a click on it asked to cast, and the skills tab's list.
@@ -84,6 +88,9 @@ pub struct Panels {
     /// The action picked up from the spellbook, until the mouse button comes up.
     drag: Option<crate::actionbar::Action>,
     skill_list: magic::SkillList,
+    /// The talents learned and the tree whose tab shows (`talents.rs`, `panels/talents.rs`).
+    talents: crate::talents::Ranks,
+    talent_tab: usize,
     doll: (usize, usize),
     portrait: (usize, usize),
     doll_turn: f32,
@@ -180,7 +187,7 @@ const QUEST: &str = "QuestFrame";
 const QUESTLOG: &str = "QuestLogFrame";
 const POPUP: &str = "StaticPopup1";
 /// The scroll frames of the windows: each shows its scroll bar (arrows and knob) when there is more to see.
-const SCROLL_FRAMES: [&str; 5] = ["GossipGreetingScrollFrame", "QuestDetailScrollFrame", "QuestProgressScrollFrame", "QuestRewardScrollFrame", "QuestLogDetailScrollFrame"];
+const SCROLL_FRAMES: [&str; 6] = ["TalentFrameScrollFrame", "GossipGreetingScrollFrame", "QuestDetailScrollFrame", "QuestProgressScrollFrame", "QuestRewardScrollFrame", "QuestLogDetailScrollFrame"];
 /// Quests listed at once, and goals shown for a quest, in the log.
 const LOG_LINES: usize = 6;
 const LOG_GOALS: usize = 10;
@@ -343,6 +350,8 @@ impl Panels {
         // The pet frame is only shown with a pet; the ammunition slot hides when the ranged slot is a relic slot.
         tree.show("PetPaperDollFrame", false);
         magic::setup(&mut tree)?;
+        talents::setup(&mut tree)?;
+        tree.set_region_texture("TalentFramePortrait", Some(portrait.1));
         menu::setup(&mut tree)?;
 
         // The backpack, as `ContainerFrame_GenerateFrame` lays out bag 0: its own picture, 16 slots in 4 columns
@@ -372,7 +381,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), forgotten: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default() };
         panels.refresh();
         Ok(panels)
     }
@@ -425,7 +434,7 @@ impl Panels {
 
     /// Whether a window of the original's interface is open (the level-up panel is not one: it gives way to them).
     fn windows_open(&self) -> bool {
-        self.popup_open() || self.character_open() || self.backpack_open() || self.loot_open() || self.gossip_open() || self.merchant_open() || self.quest_open() || self.quest_log_open() || self.spellbook_open() || self.map_open || self.menu_open() || self.options_open()
+        self.popup_open() || self.character_open() || self.backpack_open() || self.loot_open() || self.gossip_open() || self.merchant_open() || self.quest_open() || self.quest_log_open() || self.spellbook_open() || self.talents_open() || self.map_open || self.menu_open() || self.options_open()
     }
 
     // ---- the question
@@ -468,6 +477,7 @@ impl Panels {
         if on {
             self.tree.show(CHARACTER, false);
         self.tree.show(SPELLBOOK, false);
+        self.tree.show(TALENTS, false);
             self.close_loot();
             self.hide_gossip();
             self.close_merchant();
@@ -736,6 +746,7 @@ impl Panels {
     pub fn open_gossip(&mut self, creature: usize, def: &'static CreatureDef) {
         self.tree.show(CHARACTER, false);
         self.tree.show(SPELLBOOK, false);
+        self.tree.show(TALENTS, false);
         self.close_loot();
         self.close_merchant();
         self.hide_quest();
@@ -855,6 +866,7 @@ impl Panels {
     pub fn open_quest(&mut self, creature: usize, def: &'static CreatureDef, quest: usize, screen: QuestScreen) {
         self.tree.show(CHARACTER, false);
         self.tree.show(SPELLBOOK, false);
+        self.tree.show(TALENTS, false);
         self.hide_log();
         self.hide_gossip();
         self.questing = Some((creature, def, quest, screen));
@@ -1080,6 +1092,7 @@ impl Panels {
             log::warn!("saved game: {note}");
         }
         self.spent = saved.spent;
+        self.talents = crate::talents::Ranks::from_saved(&saved.talents);
         self.sync_points();
         self.found = content::get().pois.iter().map(|p| saved.discovered.contains(&p.id)).collect();
         self.explored = saved.explored.clone();
@@ -1170,6 +1183,9 @@ impl Panels {
             self.notice(&self.string("LEVEL_UP").replacen("%d", &level.to_string(), 1));
             self.events.push(Sfx::Named("LEVELUPSOUND"));
             self.level_ups += 1;
+            if level >= crate::talents::FIRST_LEVEL {
+                self.notice("You have a new talent point. Press N to spend it.");
+            }
         }
         let gained = (self.stats.max_health - health).round() as i32;
         if gained > 0 {
@@ -1216,6 +1232,7 @@ impl Panels {
         self.show_skills_tab(self.skill_list.shown);
         if on {
             self.tree.show(SPELLBOOK, false);
+            self.tree.show(TALENTS, false);
         }
         // The character sheet and the loot window are both left panels: only one of them is open.
         if on {
@@ -1245,7 +1262,9 @@ impl Panels {
         self.tree.show("UIOptionsFrame", false);
         self.tree.show(CHARACTER, false);
         self.tree.show(SPELLBOOK, false);
+        self.tree.show(TALENTS, false);
         self.tree.show(SPELLBOOK, false);
+        self.tree.show(TALENTS, false);
         self.tree.show(BACKPACK, false);
         self.close_loot();
         self.close_gossip();
@@ -1426,6 +1445,19 @@ impl Panels {
         self.known.push(spell);
         self.learned.push(spell);
         true
+    }
+
+    /// Give a spell back (a talent was unlearned): it is no longer known, and the action bar loses it.
+    pub fn forget(&mut self, spell: usize) {
+        if let Some(at) = self.known.iter().position(|&s| s == spell) {
+            self.known.remove(at);
+            self.forgotten.push(spell);
+        }
+    }
+
+    /// The spells given back since the last call.
+    pub fn take_forgotten(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.forgotten)
     }
 
     /// The spells learned since the last call.
@@ -1654,6 +1686,7 @@ impl Panels {
     pub fn open_loot(&mut self, corpse: usize, loot: Loot) {
         self.tree.show(CHARACTER, false);
         self.tree.show(SPELLBOOK, false);
+        self.tree.show(TALENTS, false);
         self.loot = Some((corpse, loot));
         self.tree.show(LOOT, true);
         self.fill_loot();
@@ -1779,7 +1812,7 @@ impl Panels {
 
     /// Set everything the frames show from the inventory and the stats.
     pub fn refresh(&mut self) {
-        self.stats = Stats::of(&self.inv.equipment, self.progress.level, &self.consumed.boosts(), &self.consumed.timed_effects());
+        self.stats = Stats::of_with(&self.inv.equipment, self.progress.level, &self.consumed.boosts(), &self.consumed.timed_effects(), &self.talents.perks());
         self.stats.armor += self.skills.armor_bonus(&self.inv.equipment);
         let [health, mana, stamina] = self.spent_bonus();
         (self.stats.max_health, self.stats.max_mana, self.stats.max_stamina) = (self.stats.max_health + health, self.stats.max_mana + mana, self.stats.max_stamina + stamina);
@@ -1926,10 +1959,11 @@ impl Panels {
         let Some(hit) = self.tree.hit_test(pos, screen).filter(|h| Some(*h) == down) else { return };
         let name = self.tree.name(hit).to_string();
         match name.as_str() {
-            n if self.magic_click(n) || self.menu_click(n) => {}
+            n if self.magic_click(n) || self.menu_click(n) || self.talent_click(n, left) => {}
             "CharacterFrameCloseButton" => {
                 self.tree.show(CHARACTER, false);
         self.tree.show(SPELLBOOK, false);
+        self.tree.show(TALENTS, false);
                 self.events.push(Sfx::Named("igCharacterInfoClose"));
                 self.after_close();
             }
@@ -2208,6 +2242,9 @@ impl Panels {
         if let Some(action) = self.book_entry_of(name) {
             return Some(self.action_lines(action));
         }
+        if let Some(lines) = self.talent_lines(name) {
+            return Some(lines);
+        }
         if let Some(slot) = SLOT_BUTTONS.iter().position(|b| *b == name) {
             return Some(match self.inv.equipment[slot] {
                 Some(stack) => self.item_lines(stack),
@@ -2265,7 +2302,7 @@ impl Panels {
 
     /// Aim the doll and portrait cameras at the player and draw the character's model into them.
     pub fn render_pictures(&mut self, renderer: &mut Renderer, gpu: &Gpu, player: &Player, world: &World) {
-        if !self.character_open() {
+        if !self.character_open() && !self.talents_open() {
             return;
         }
         let (feet, facing) = (player.feet(), player.facing());
@@ -2492,6 +2529,9 @@ impl Panels {
         self.tree.resize_tab(ui, gpu, &mount, "CharacterFrameTab1", 0.0);
         self.tree.resize_tab(ui, gpu, &mount, "CharacterFrameTab4", 0.0);
         self.tree.resize_tab(ui, gpu, &mount, "MerchantFrameTab1", 0.0);
+        for tab in 1..=3 {
+            self.tree.resize_tab(ui, gpu, &mount, &format!("TalentFrameTab{tab}"), 0.0);
+        }
         self.tree.draw(ui, gpu, &mount, screen);
                 let s = screen.1 as f32 / ui_height();
         // The carried item hangs off the mouse.

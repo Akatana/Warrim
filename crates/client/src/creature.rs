@@ -43,9 +43,6 @@ const CAST_SPELL: u16 = 53;
 
 /// How far in front of the player his sword reaches, yards.
 pub const SWORD_REACH: f32 = 3.5;
-/// How far an arrow flies, and how straight ahead (the cosine of the angle) a creature must be for it to be hit.
-pub const ARROW_RANGE: f32 = 35.0;
-const ARROW_LINE: f32 = 0.95;
 /// How far from a creature of the same level as the player he is noticed, yards; each level the creature is above him adds a yard (up to 45, at 25 levels
 /// above) and each level below takes one away, down to the 5 yards of a blow's reach (MaNGOS `Creature::GetAttackDistance`).
 const AGGRO_RANGE: f32 = 20.0;
@@ -1850,19 +1847,30 @@ impl Creatures {
         hits
     }
 
-    /// What the player's arrow from `from` facing `yaw` would hit: the creature that is selected if it is in line and within `range` yards, else the
-    /// nearest hostile one in line. Returns it and where it stands.
-    pub fn aim(&self, from: Vec3, yaw: f32, range: f32) -> Option<(usize, Vec3)> {
-        let ahead = Vec3::new(yaw.sin(), 0.0, -yaw.cos());
-        let in_line = |c: &Creature| {
-            let to = flat(c.mob.pos - from);
-            c.mob.def.attackable() && !c.mob.is_dead() && to.length() <= range && to.normalize_or_zero().dot(ahead) > ARROW_LINE
+    /// The first living hostile creature that the flight of a missile from `a` to `b` passes through (its body is a cylinder as tall as it is and as wide as a
+    /// third of that, at least 0.4 yd): it and where the missile enters it.
+    pub fn arrow_hit(&self, a: Vec3, b: Vec3) -> Option<(usize, Vec3)> {
+        let d = b - a;
+        let hit = |i: usize| {
+            let (c, pos) = (&self.creatures[i], self.creatures[i].mob.pos);
+            let (h, r) = (Self::height_of(c), (Self::height_of(c) * 0.33).clamp(0.4, 2.0));
+            let (f, dd) = ((a.x - pos.x, a.z - pos.z), (d.x, d.z));
+            let (qa, qb, qc) = (dd.0 * dd.0 + dd.1 * dd.1, 2.0 * (f.0 * dd.0 + f.1 * dd.1), f.0 * f.0 + f.1 * f.1 - r * r);
+            // Where the segment is inside the circle on the ground, as a share of its length; straight up or down it is there all along or never.
+            let (t0, t1) = if qa < 1e-9 {
+                if qc > 0.0 { return None } else { (0.0, 1.0) }
+            } else {
+                let disc = qb * qb - 4.0 * qa * qc;
+                if disc < 0.0 { return None }
+                ((-qb - disc.sqrt()) / (2.0 * qa), (-qb + disc.sqrt()) / (2.0 * qa))
+            };
+            let (t0, t1) = (t0.max(0.0), t1.min(1.0));
+            // And at that height: the share of the way where it is between the feet and the head.
+            let (lo, hi) = (pos.y - 0.1, pos.y + h);
+            let (ya, yb) = (a.y + d.y * t0, a.y + d.y * t1);
+            (t0 <= t1 && ya.max(yb) >= lo && ya.min(yb) <= hi).then(|| (t0, a + d * t0))
         };
-        let near = |c: &Creature| flat(c.mob.pos - from).length();
-        let hit = self.target.filter(|&t| self.creatures.get(t).is_some_and(in_line)).or_else(|| {
-            (0..self.creatures.len()).filter(|&i| in_line(&self.creatures[i])).min_by(|&a, &b| near(&self.creatures[a]).total_cmp(&near(&self.creatures[b])))
-        })?;
-        Some((hit, self.creatures[hit].mob.pos))
+        (0..self.creatures.len()).filter(|&i| self.enemy_at(i).is_some_and(|p| flat(p - self.viewer).length() <= DRAW_RANGE)).filter_map(|i| hit(i).map(|(t, at)| (t, i, at))).min_by(|x, y| x.0.total_cmp(&y.0)).map(|(_, i, at)| (i, at))
     }
 
     pub fn target(&self) -> Option<usize> {
@@ -1886,6 +1894,15 @@ impl Creatures {
         }
         self.target = Some(i);
         Some(c.mob.pos + Vec3::Y * 0.9)
+    }
+
+    /// Put something on every hostile creature within `radius` yards of `centre`.
+    pub fn afflict_area(&mut self, centre: Vec3, radius: f32, status: Status) {
+        for i in 0..self.creatures.len() {
+            if self.enemy_at(i).is_some_and(|p| flat(p - centre).length() <= radius) {
+                self.afflict(i, status);
+            }
+        }
     }
 
     /// Put something on creature `i`.

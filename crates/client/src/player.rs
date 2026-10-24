@@ -220,18 +220,26 @@ pub struct Player {
     no_shot: bool,
 }
 
+/// The speed of a missile at full draw, yards per second.
+const BOW_SPEED: f32 = 55.0;
+const CROSSBOW_SPEED: f32 = 80.0;
+const GUN_SPEED: f32 = 160.0;
+
 /// The bow, crossbow or gun in the ranged slot: its damage, the seconds it takes to draw (its speed), and the item subclass of the ammo it takes.
 #[derive(Clone, Copy)]
 struct Launcher {
     damage: (f32, f32),
     draw: f32,
     ammo_kind: u8,
+    /// How fast what it shoots leaves it at full draw, yards per second (a bow throws an arrow slowest, a gun a bullet fastest).
+    speed: f32,
 }
 
 /// A shot let go: the share of its damage it does, how it looks (the visual of the weapon: animation, sounds, impact) and the model of the
 /// ammo that flies (the model and the texture of the ammo item's second model).
 pub struct Shot {
     pub power: f32,
+    pub speed: f32,
     pub visual: crate::visuals::Visual,
     pub projectile: Option<(String, String)>,
 }
@@ -423,7 +431,7 @@ impl Player {
     pub fn shoot_release(&mut self) {
         if let (Some(drawn), Some(l)) = (self.ranged.drawn.take(), self.ranged.launcher) {
             let power = (drawn / l.draw.max(0.1)).clamp(MIN_POWER, 1.0);
-            self.ranged.shot = Some(Shot { power, visual: self.ranged.visual.clone(), projectile: self.ranged.projectile.clone() });
+            self.ranged.shot = Some(Shot { power, speed: l.speed, visual: self.ranged.visual.clone(), projectile: self.ranged.projectile.clone() });
             self.character.loose();
             self.events.push(Sfx::Release);
             self.events.extend(self.ranged.visual.cast.sound.map(Sfx::Entry));
@@ -550,7 +558,7 @@ impl Player {
         self.off_dagger = equipment[items::OFF_HAND].is_some_and(|s| items::get(s.item).class == 2 && items::get(s.item).subclass == 15);
         self.ranged.launcher = equipment[items::RANGED].map(|s| items::get(s.item)).filter(|i| i.class == 2 && matches!(i.subclass, 2 | 3 | 18)).and_then(|i| {
             let (min, max, speed) = stats.ranged?;
-            Some(Launcher { damage: (min, max), draw: speed, ammo_kind: if i.subclass == 3 { 3 } else { 2 } })
+            Some(Launcher { damage: (min, max), draw: speed, ammo_kind: if i.subclass == 3 { 3 } else { 2 }, speed: match i.subclass { 3 => GUN_SPEED, 18 => CROSSBOW_SPEED, _ => BOW_SPEED } })
         });
         self.ranged.visual = self.ranged.launcher.zip(equipment[items::RANGED]).map_or_else(Default::default, |(_, s)| crate::visuals::of_shot(&self.mount, items::get(s.item).visual.shot as u32));
         // What flies is the second model of the ammo's display: ArrowFlight_01 painted with Arrow_A_01Brown, BulletFlight_01 with bullet.
@@ -1132,7 +1140,7 @@ mod tests {
     #[test]
     fn a_bow_takes_its_speed_to_draw_and_letting_go_earlier_does_part_of_the_damage() {
         let mut p = player_for_tests();
-        let bow = Launcher { damage: (10.0, 10.0), draw: 2.0, ammo_kind: 2 };
+        let bow = Launcher { damage: (10.0, 10.0), draw: 2.0, ammo_kind: 2, speed: BOW_SPEED };
         // Without a bow, or without arrows, it is refused.
         p.shoot_press();
         assert_eq!((p.take_refusal(), p.is_drawing()), (Some("You have no ranged weapon equipped."), false));

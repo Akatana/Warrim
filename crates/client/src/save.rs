@@ -121,6 +121,9 @@ pub struct Save {
     /// The level-up points spent on health, mana and stamina (what is unspent follows from the level).
     #[serde(default)]
     pub spent: [u32; 3],
+    /// The talents learned: the id and the rank of each.
+    #[serde(default)]
+    pub talents: Vec<(String, u8)>,
     /// The rest of the world: the hour is held (the console's `time`); the weather of the zones (zone, kind, grade, seconds to the next roll); the
     /// props to pick up that are gone (place, seconds until they are back); the physics props that were moved; the seconds on the lifts' and ships' clock.
     #[serde(default)]
@@ -193,6 +196,7 @@ impl Save {
             look: Appearance::default(),
             map: None,
             spent: [0; 3],
+            talents: Vec::new(),
             time_fixed: false,
             weather: Vec::new(),
             gone: Vec::new(),

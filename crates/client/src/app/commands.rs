@@ -103,6 +103,10 @@ impl State {
                 }
                 "healed".into()
             }
+            Command::Respec => {
+                panels.respec();
+                "talent points taken back".into()
+            }
             Command::Time(hour) => {
                 self.fixed_time = hour.is_some();
                 self.hour = hour.unwrap_or(self.hour);

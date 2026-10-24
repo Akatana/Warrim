@@ -194,6 +194,13 @@ impl ActionBar {
         Ok(ActionBar { slots, held: [false; SLOTS], cursor: None, dragging: None, white, status_bar, bar, end_cap, slot_filled, slot_empty, pushed, highlight, checked, icons, item_icons, item_use: None, labels, bar_text })
     }
 
+    /// Take a spell off every button it is on.
+    pub fn forget(&mut self, spell: usize) {
+        for slot in self.slots.iter_mut().filter(|s| **s == Some(Action::Spell(spell))) {
+            *slot = None;
+        }
+    }
+
     /// Put a spell in the first free button.
     pub fn learn(&mut self, spell: usize) {
         if let Some(free) = self.slots.iter().position(Option::is_none) {

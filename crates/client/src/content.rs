@@ -463,6 +463,25 @@ pub enum Effect {
     Area { min: f32, max: f32, radius: f32 },
     /// Heals the caster.
     Heal { min: f32, max: f32 },
+    /// Gives the caster back mana: `min` to `max` percent of the most.
+    Mana { min: f32, max: f32 },
+    /// Does nothing by itself: what it puts on the caster is its `then`.
+    Buff,
+}
+
+/// What a spell does besides its damage, to what it hurts (the creature it hits, or every one it catches) or to the caster. Seconds are game seconds.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub enum Rider {
+    /// A wound that bleeds: the damage of a tick (times the spell's power) every 3 seconds, for `seconds`.
+    Bleed { amount: f32, seconds: f32 },
+    Stun(f32),
+    /// Leaves it with this share of its pace.
+    Slow { share: f32, seconds: f32 },
+    /// The caster leaps at the target (a spell that hurts one creature) and arrives in a moment.
+    Leap,
+    /// For `seconds` the caster has `amount` more of what the aura gives: aura 0 to 4 an attribute (`amount` per level of the character), else an
+    /// equipment aura of `procs.rs` (99 attack power, 52 critical blows, 71 critical spells of the schools in `misc`).
+    Gain { aura: u16, misc: i32, amount: f32, seconds: f32 },
 }
 
 /// A spell of a class (`content/spells.ron`). `level` is the rank of the class skill that its tome asks for to be learned: 1, the
@@ -481,6 +500,11 @@ pub struct SpellDef {
     pub cost: Cost,
     pub cooldown: f32,
     pub effect: Effect,
+    #[serde(default)]
+    pub then: Vec<Rider>,
+    /// Taught by a talent (`talents.ron`) instead of a tome.
+    #[serde(default)]
+    pub talent: bool,
     pub description: String,
 }
 
@@ -922,7 +946,7 @@ impl<'a> Displays<'a> {
 }
 
 /// The names of the kinds of weapons and armor of the original (`ItemSubClass.dbc`).
-fn subclass_name(class: u8, sub: u8) -> &'static str {
+pub(crate) fn subclass_name(class: u8, sub: u8) -> &'static str {
     match (class, sub) {
         (2, 0) => "Axe",
         (2, 1) => "Axe",

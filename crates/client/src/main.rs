@@ -48,6 +48,7 @@ mod renderer;
 mod ripples;
 mod save;
 mod skills;
+mod talents;
 mod steed;
 mod interface;
 mod video;
@@ -190,6 +191,8 @@ pub struct Args {
     pub mount: Option<(u32, i32)>,
     pub compass: bool,
     pub creatures: Vec<String>,
+    /// How far ahead `--creature` stands, yards.
+    pub creature_at: f32,
     pub spawns: bool,
     pub kill: bool,
     pub editor: Option<(String, usize, Vec<String>)>,
@@ -264,6 +267,7 @@ fn parse_args() -> Result<Args> {
         mount: None,
         compass: false,
         creatures: Vec::new(),
+        creature_at: 6.0,
         spawns: false,
         kill: false,
         editor: None,
@@ -377,6 +381,7 @@ fn parse_args() -> Result<Args> {
             }
             "--check-spawns" => a.check_spawns = true,
             "--creature" => a.creatures = value("--creature")?.split(',').map(String::from).collect(),
+            "--creature-at" => a.creature_at = value("--creature-at")?.parse()?,
             "--discover" => a.discover = value("--discover")?.parse()?,
             "--reticle" => a.reticle = true,
             "--alert" => a.alert = Some(value("--alert")?.parse::<f32>()?.clamp(0.0, 1.0)),

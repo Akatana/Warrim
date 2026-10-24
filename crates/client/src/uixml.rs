@@ -454,7 +454,10 @@ pub struct Registry {
 impl Registry {
     /// Read the files `FrameXML.toc` lists (the Lua ones only for `GlobalStrings.lua`).
     pub fn load(mount: &Mount) -> Result<Registry> {
-        Registry::load_toc(mount, r"Interface\FrameXML\", "FrameXML.toc", "GlobalStrings.lua")
+        let mut reg = Registry::load_toc(mount, r"Interface\FrameXML\", "FrameXML.toc", "GlobalStrings.lua")?;
+        // The talent window is an addon that loads on demand in the original (`Blizzard_TalentUI.toc`).
+        reg.load_xml(mount, r"Interface\AddOns\Blizzard_TalentUI\Blizzard_TalentUI.xml")?;
+        Ok(reg)
     }
 
     /// The screens before the game (character selection and creation): the files `GlueXML.toc` lists.
@@ -1267,8 +1270,8 @@ impl Tree {
             let (w, h) = n.size.map_or((0.0, 0.0), |(w, h)| (w * k, h * k));
             rect = Rect { x: base.x, y: base.y, w, h };
         }
-        // The child of a scroll frame is moved up as far as the frame is scrolled.
-        if self.nodes[parent].scroll {
+        // The child of a scroll frame is moved up as far as the frame is scrolled (its scroll bar stands beside the content and stays).
+        if self.nodes[parent].scroll && !n.name.ends_with("ScrollBar") {
             rect.y += self.nodes[parent].scrolled * k;
         }
         cache[node] = Some(rect);
@@ -1787,7 +1790,8 @@ impl Tree {
         let mut stack = self.nodes[scroll].children.clone();
         while let Some(n) = stack.pop() {
             let node = &self.nodes[n];
-            if !node.shown {
+            // The scroll bar (and the buttons that hang off it) is no content.
+            if !node.shown || node.name.ends_with("ScrollBar") {
                 continue;
             }
             lowest = lowest.min(self.frame_rect(n, cache, 0).y);
@@ -2013,6 +2017,29 @@ mod tests {
         assert_eq!(tree.hit_test((10.0, 768.0 - 678.0), screen), Some(low));
         tree.scroll_at((50.0, 50.0), screen, 100.0);
         assert_eq!(tree.hit_test((10.0, 768.0 - 678.0), screen), None);
+    }
+
+    #[test]
+    fn the_scroll_bar_beside_a_scroll_frame_does_not_move_or_add_to_how_far_it_scrolls() {
+        let reg = parse(
+            r#"<Ui><ScrollFrame name="Box"><Size><AbsDimension x="100" y="100"/></Size><Anchors><Anchor point="TOPLEFT"/></Anchors>
+            <Frames><Slider name="BoxScrollBar"><Size><AbsDimension x="16" y="0"/></Size><Anchors><Anchor point="TOPLEFT" relativePoint="TOPRIGHT"/><Anchor point="BOTTOMLEFT" relativePoint="BOTTOMRIGHT"><Offset><AbsDimension x="0" y="-16"/></Offset></Anchor></Anchors>
+                <Frames><Button name="BoxScrollBarDown"><Size><AbsDimension x="16" y="16"/></Size><Anchors><Anchor point="TOP" relativePoint="BOTTOM"/></Anchors></Button></Frames></Slider></Frames>
+            <ScrollChild><Frame name="Child"><Size><AbsDimension x="100" y="300"/></Size></Frame></ScrollChild></ScrollFrame></Ui>"#,
+        );
+        let mut tree = Tree::new(Rc::new(reg));
+        tree.instantiate("Box").unwrap();
+        tree.show("Box", true);
+        let screen = (1024, 768);
+        let before = tree.rect_of("BoxScrollBar", screen).unwrap();
+        let (_, max) = tree.scroll_state("Box", screen).unwrap();
+        assert_eq!(max, 200.0, "the bar's button hangs below the frame, which is no content");
+        assert!(tree.scroll_at((50.0, 50.0), screen, -100.0));
+        // However often the wheel turns, the content ends where it ends, and the bar stays where it stood.
+        assert!(tree.scroll_at((50.0, 50.0), screen, -100.0));
+        assert_eq!(tree.scroll_state("Box", screen), Some((200.0, 200.0)));
+        let after = tree.rect_of("BoxScrollBar", screen).unwrap();
+        assert_eq!((before.x, before.y), (after.x, after.y));
     }
 
     #[test]

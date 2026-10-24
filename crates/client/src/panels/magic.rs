@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::actionbar::{Action, BASIC};
-use crate::content::{Cost, Effect};
+use crate::content::{Cost, Effect, Rider};
 use crate::skills::{self, Group, Skill};
 
 pub const SPELLBOOK: &str = "SpellBookFrame";
@@ -68,7 +68,7 @@ fn rows(folded: &[bool; 4]) -> Vec<Row> {
 }
 
 /// `PanelTemplates_SelectTab` and `DeselectTab`: the selected tab shows its raised picture, in white and out of reach of clicks.
-fn select_tab(tree: &mut Tree, tab: &str, selected: bool) {
+pub(super) fn select_tab(tree: &mut Tree, tab: &str, selected: bool) {
     for part in ["Left", "Middle", "Right"] {
         tree.set_region_hidden(&format!("{tab}{part}"), selected);
         tree.set_region_hidden(&format!("{tab}{part}Disabled"), !selected);
@@ -236,6 +236,7 @@ impl Panels {
         let on = !self.spellbook_open();
         if on {
             self.tree.show(CHARACTER, false);
+            self.tree.show(TALENTS, false);
             self.close_loot();
             self.close_gossip();
             self.close_merchant();
@@ -369,15 +370,37 @@ impl Panels {
             Effect::Damage { min, max, range } => (format!("{range:.0} yd range"), format!("Hurts the target for {:.0} to {:.0}.", min * power + bonus, max * power + bonus)),
             Effect::Area { min, max, radius } => (format!("{radius:.0} yd around you"), format!("Hurts every enemy near you for {:.0} to {:.0}.", min * power + bonus, max * power + bonus)),
             Effect::Heal { min, max } => ("Self".to_string(), format!("Heals you for {:.0} to {:.0}.", min * power + bonus, max * power + bonus)),
+            Effect::Mana { min, max } => ("Self".to_string(), format!("Restores {min:.0} to {max:.0}% of your mana.")),
+            Effect::Buff => ("Self".to_string(), String::new()),
         };
-        vec![
+        let mut lines = vec![
             TipLine::new(def.name.clone(), WHITE),
             TipLine::double(cost, range, WHITE, WHITE),
             TipLine::double("Instant cast", format!("{:.0} sec cooldown", def.cooldown), WHITE, WHITE),
-            TipLine::new(effect, GOLD),
-            TipLine::new(def.description.clone(), GOLD),
-            TipLine::new(format!("{} skill: {}", def.class.name(), self.skills.rank(def.class)), GREY),
-        ]
+        ];
+        if !effect.is_empty() {
+            lines.push(TipLine::new(effect, GOLD));
+        }
+        for rider in &def.then {
+            lines.push(TipLine::new(
+                match *rider {
+                    Rider::Bleed { amount, seconds } => format!("Causes a wound that bleeds for {:.0} every 3 seconds, for {seconds:.0} seconds.", amount * power),
+                    Rider::Stun(seconds) => format!("Stuns for {seconds} seconds."),
+                    Rider::Slow { share, seconds } => format!("Slows by {:.0}% for {seconds:.0} seconds.", (1.0 - share) * 100.0),
+                    Rider::Leap => "You leap at the target.".to_string(),
+                    Rider::Gain { aura, amount, seconds, .. } => match aura {
+                        0..=4 => format!("Raises your {} by {:.0} for {seconds:.0} seconds.", ["strength", "agility", "stamina", "intellect", "spirit"][aura as usize], amount * self.progress.level as f32),
+                        52 => format!("Raises your chance to land a critical blow by {amount:.0}% for {seconds:.0} seconds."),
+                        71 => format!("Raises your chance to land a critical spell by {amount:.0}% for {seconds:.0} seconds."),
+                        _ => format!("Lasts {seconds:.0} seconds."),
+                    },
+                },
+                GOLD,
+            ));
+        }
+        lines.push(TipLine::new(def.description.clone(), GOLD));
+        lines.push(TipLine::new(format!("{} skill: {}", def.class.name(), self.skills.rank(def.class)), GREY));
+        lines
     }
 
     // ---- the skills tab

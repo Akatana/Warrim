@@ -2,6 +2,7 @@
 //! the server, so these few items are the game's own; the slot numbers, stat names and formulas are the original's.
 
 use crate::content;
+use crate::talents::Perks;
 
 /// Equipment slot numbers of the original (`INVSLOT_*`); 0 is the ammunition slot.
 pub const HEAD: usize = 1;
@@ -742,6 +743,11 @@ impl Stats {
     /// What the character is at this level in this equipment, and with these boosts (the stats, armor and health that elixirs and the like give for a while) and
     /// these effects (what spells put on it for a while).
     pub fn of(equipment: &[Option<Stack>; SLOTS], level: u32, boosts: &[i32; 7], timed: &[UseEffect]) -> Stats {
+        Stats::of_with(equipment, level, boosts, timed, &Perks::default())
+    }
+
+    /// As `of`, with what the talents learned add (`talents.rs`).
+    pub fn of_with(equipment: &[Option<Stack>; SLOTS], level: u32, boosts: &[i32; 7], timed: &[UseEffect], perks: &Perks) -> Stats {
         let mut attributes = crate::levels::attributes(level);
         for (a, boost) in attributes.iter_mut().zip(boosts) {
             *a += boost;
@@ -770,37 +776,45 @@ impl Stats {
         }
         // Agility adds 2 armor per point; a paladin has 3 attack power per level and 2 per point of strength, less 20.
         armor += attributes[1] * 2;
+        armor = (armor as f32 * (1.0 + perks.armor / 100.0)) as i32;
         resist.iter_mut().zip(gear.resist).for_each(|(r, g)| *r += g);
-        let attack_power = (level as i32 * 3 + attributes[0] * 2 - 20).max(0) + gear.attack_power;
+        // The talents add a share of an attribute to the power, and then a percent of the whole.
+        let from = |shares: &[f32; 5]| attributes.iter().zip(shares).map(|(&a, &s)| a as f32 * s / 100.0).sum::<f32>();
+        let attack_power = (((level as i32 * 3 + attributes[0] * 2 - 20).max(0) + gear.attack_power) as f32 + from(&perks.attack_power_from)) * (1.0 + perks.attack_power / 100.0);
+        let attack_power = attack_power as i32;
+        // (spell power is for the magic schools, not the physical one)
+        let spell_power = from(&perks.spell_power_from) as i32;
+        let mut spell_damage = gear.spell_damage;
+        spell_damage[1..].iter_mut().for_each(|d| *d += spell_power);
         let (min, max, speed) = equipment[MAIN_HAND].and_then(|s| get(s.item).weapon).map_or((1.0, 2.0, 2.0), |w| (w.min, w.max, w.speed));
         // The first 20 points of stamina give 1 health each, the rest 10 each; of intellect 1 mana each, the rest 15 each; on top of the level's base.
         let [str, agi, sta, int, spi] = attributes.map(|a| a as f32);
         let bonus = |points: f32, more: f32| points.min(20.0) + (points - 20.0).max(0.0) * more;
-        let max_health = crate::levels::base_health(level) as f32 + bonus(sta, 10.0) + health as f32;
-        let max_mana = crate::levels::base_mana(level) as f32 + bonus(int, 15.0) + mana as f32;
+        let max_health = (crate::levels::base_health(level) as f32 + bonus(sta, 10.0) + health as f32) * (1.0 + perks.health / 100.0);
+        let max_mana = (crate::levels::base_mana(level) as f32 + bonus(int, 15.0) + mana as f32) * (1.0 + perks.mana / 100.0);
         // CMaNGOS (`GetDodgeFromAgility`, `GetMeleeCritFromAgility`, `GetSpellCritFromIntellect`, `OCTRegenHPPerSpirit`, `OCTRegenMPPerSpirit`) for a paladin.
         let lv = level.clamp(1, 60) as f32;
         let rate = 4.6 * (60.0 - lv) / 59.0 + 20.0 * (lv - 1.0) / 59.0;
-        let dodge = 0.75 + agi / rate + gear.dodge;
-        let crit = agi / rate + gear.crit;
-        let spell_crit = gear.spell_crit.map(|g| 3.70 + int / (14.77 + 0.65 * level as f32) + g);
-        let (health_regen, mana_regen_casting) = (spi * 0.25, gear.mp5 as f32 / 5.0);
-        let mana_regen = (spi / 5.0 + 15.0) / 2.0 + mana_regen_casting;
+        let dodge = 0.75 + agi / rate + gear.dodge + perks.dodge;
+        let crit = agi / rate + gear.crit + perks.crit;
+        let spell_crit = gear.spell_crit.map(|g| 3.70 + int / (14.77 + 0.65 * level as f32) + g + perks.spell_crit);
+        let (health_regen, mana_regen_casting) = (spi * 0.25 * (1.0 + perks.health_regen / 100.0), gear.mp5 as f32 / 5.0);
+        let mana_regen = (spi / 5.0 + 15.0) / 2.0 * (1.0 + perks.mana_regen / 100.0) + mana_regen_casting;
         // 5% to parry, and with a shield 5% to block what the shield and strength hold back (`UpdateParryPercentage`, `UpdateBlockPercentage`, `GetShieldBlockValue`).
         let shield = equipment[OFF_HAND].map(|s| get(s.item)).filter(|i| i.wear == Wear::Shield);
         let block_value = shield.map_or(0.0, |i| (i.block as f32 + gear.block_value as f32 + str / 20.0 - 1.0).max(0.0));
         // Ranged attack power of a paladin: agility less 10.
-        let ranged_attack_power = (agi - 10.0).max(0.0) as i32 + gear.ranged_attack_power;
+        let ranged_attack_power = (((agi - 10.0).max(0.0) + gear.ranged_attack_power as f32 + from(&perks.ranged_attack_power_from)) * (1.0 + perks.ranged_attack_power / 100.0)) as i32;
         let ranged_bonus = |speed: f32| ranged_attack_power as f32 / ATTACK_POWER_PER_DPS * speed;
-        let ranged = equipment[RANGED].map(|s| get(s.item)).filter(|i| i.class == 2 && matches!(i.subclass, 2 | 3 | 18)).and_then(|i| i.weapon).map(|w| (w.min + ranged_bonus(w.speed), w.max + ranged_bonus(w.speed), w.speed / (1.0 + gear.ranged_haste / 100.0)));
+        let ranged = equipment[RANGED].map(|s| get(s.item)).filter(|i| i.class == 2 && matches!(i.subclass, 2 | 3 | 18)).and_then(|i| i.weapon).map(|w| (w.min + ranged_bonus(w.speed), w.max + ranged_bonus(w.speed), w.speed / (1.0 + (gear.ranged_haste + perks.haste) / 100.0)));
         let bonus = attack_power as f32 / ATTACK_POWER_PER_DPS * speed;
-        let speed = speed / (1.0 + gear.haste / 100.0);
+        let speed = speed / (1.0 + (gear.haste + perks.haste) / 100.0);
         let off_damage = equipment[OFF_HAND].map(|s| get(s.item)).filter(|i| i.class == 2 && matches!(i.wear, Wear::OneHand | Wear::OffHand)).and_then(|i| i.weapon).map(|w| {
             let bonus = attack_power as f32 / ATTACK_POWER_PER_DPS * w.speed;
             ((w.min + bonus) / 2.0, (w.max + bonus) / 2.0)
         });
-        Stats { level, attributes, armor, attack_power, damage: (min + bonus, max + bonus), off_damage, speed, max_health, max_mana, max_stamina: 100.0 + agi, attack: 5 * level as i32, resist, dodge, crit, spell_crit, parry: 5.0 + gear.parry, block: if shield.is_some() { 5.0 + gear.block } else { 0.0 }, block_value, health_regen, mana_regen, mana_regen_casting, ranged_attack_power, ranged,
-            spell_damage: gear.spell_damage, healing: gear.healing, hit: gear.hit, spell_hit: gear.spell_hit, health_regen_always: gear.hp5 as f32 / 5.0, run_speed: gear.run / 100.0, ap_versus: gear.ap_versus, ranged_ap_versus: gear.ranged_ap_versus, spell_versus: gear.spell_versus }
+        Stats { level, attributes, armor, attack_power, damage: (min + bonus, max + bonus), off_damage, speed, max_health, max_mana, max_stamina: (100.0 + agi) * (1.0 + perks.stamina / 100.0), attack: 5 * level as i32, resist, dodge, crit, spell_crit, parry: 5.0 + gear.parry + perks.parry, block: if shield.is_some() { 5.0 + gear.block } else { 0.0 }, block_value, health_regen, mana_regen, mana_regen_casting, ranged_attack_power, ranged,
+            spell_damage, healing: gear.healing + spell_power, hit: gear.hit + perks.hit, spell_hit: gear.spell_hit + perks.spell_hit, health_regen_always: gear.hp5 as f32 / 5.0, run_speed: (gear.run + perks.run_speed) / 100.0, ap_versus: gear.ap_versus, ranged_ap_versus: gear.ranged_ap_versus, spell_versus: gear.spell_versus }
     }
 
     /// The share of the damage of a school of magic (the original's number: 1 holy, 2 fire, 3 nature, 4 frost, 5 shadow, 6 arcane) that its resistance stops

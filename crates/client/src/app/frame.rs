@@ -90,6 +90,7 @@ impl State {
             self.cast_request = panels.take_spell_click().or(self.cast_request);
             if let Some(bar) = &mut self.actionbar {
                 panels.take_learned().into_iter().for_each(|spell| bar.learn(spell));
+                panels.take_forgotten().into_iter().for_each(|spell| bar.forget(spell));
                 if let Some(item) = bar.take_item_use() {
                     panels.use_item_of(item);
                 }
@@ -102,14 +103,22 @@ impl State {
         // The spells: one asked for, the one being cast, the missiles in flight, and the effects they are made of.
         if let (Some(player), Some(panels)) = (&mut self.player, &mut self.panels) {
             let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
-            let mut ctx = crate::casting::Ctx { player, panels, wolves: self.wolves.as_mut(), text: self.combat_text.as_mut(), effects: &mut self.effects, renderer: &mut self.renderer, gpu: &self.gpu };
+            let mut ctx = crate::casting::Ctx { player, panels, wolves: self.wolves.as_mut(), text: self.combat_text.as_mut(), effects: &mut self.effects, renderer: &mut self.renderer, gpu: &self.gpu, world: &self.world };
             if let Some(spell) = self.cast_request.take() {
                 self.caster.begin(&mut ctx, spell, feet);
             }
             if let Some(shot) = ctx.player.take_shot() {
-                self.caster.shoot(&mut ctx, shot, feet, self.camera.yaw);
+                self.caster.shoot(&mut ctx, shot, feet, self.camera.forward());
             }
             self.caster.update(&mut ctx, dt, feet, self.moving);
+        }
+        // A charge: the character leaps at the target, arriving in the time a jump of this height takes.
+        if let Some(at) = self.caster.take_leap() {
+            let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
+            let to = Vec3::new(at.x - feet.x, 0.0, at.z - feet.z);
+            let (up, reach) = (5.0, (to.length() - 1.5).max(0.0));
+            let airtime = 2.0 * up / crate::movement::GRAVITY;
+            self.controller.knock_back(to.normalize_or_zero(), (reach / airtime).min(45.0), up);
         }
         self.fires.update(&self.world, render_camera.pos, &mut self.effects, &mut self.renderer, &self.gpu);
         self.effects.update(dt, &render_camera, &mut self.renderer, &self.gpu);

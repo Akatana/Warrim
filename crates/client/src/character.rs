@@ -262,6 +262,8 @@ const EYE: Vec3 = Vec3::new(0.26, 0.0, 1.90);
 struct Arm {
     shoulder: usize,
     hand_bones: Vec<usize>,
+    /// The bone of the grip (the hand attachment): it keeps the animation's own twist while a ranged weapon is aimed.
+    grip: usize,
 }
 
 pub struct Character {
@@ -433,7 +435,7 @@ fn arm_of(m2: &M2, grip_bone: usize) -> Arm {
     let wrist = parent(m2, grip_bone);
     let shoulder = parent(m2, parent(m2, wrist));
     let hand_bones = (0..m2.bones.len()).filter(|&b| b != wrist && is_below(m2, b, wrist)).collect();
-    Arm { shoulder, hand_bones }
+    Arm { shoulder, hand_bones, grip: grip_bone }
 }
 
 impl Character {
@@ -578,8 +580,13 @@ impl Character {
         let (body, upper) = self.animator.mixes(&self.m2);
         let mut poses: Vec<Option<Mix>> = self.upper_body.iter().map(|&u| u.then_some(upper)).collect();
         if let Some((seq, time)) = self.closed {
-            for &b in self.right.hand_bones.iter().chain(&self.left.hand_bones) {
-                poses[b] = Some(Mix::one(seq, time));
+            // The hands that aim a bow, a crossbow or a gun are not shut by the fist pose at the grip: the aiming animations twist the hand there so that the
+            // weapon points along the arm (a gun held in a fist posed like a sword's pointed straight up).
+            let aiming = self.animator.aiming();
+            for arm in [&self.right, &self.left] {
+                for &b in arm.hand_bones.iter().filter(|&&b| !(aiming && b == arm.grip)) {
+                    poses[b] = Some(Mix::one(seq, time));
+                }
             }
         }
         self.bones = anim::bone_matrices_with(&self.m2, body, self.clock_ms, &[], &poses);

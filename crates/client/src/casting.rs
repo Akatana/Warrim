@@ -7,13 +7,17 @@
 
 use crate::audio::Sfx;
 use crate::combattext::CombatText;
-use crate::content::{self, Cost, Effect};
-use crate::creature::{Creatures, ARROW_RANGE};
+use crate::consume::Timed;
+use crate::content::{self, Cost, Effect, Rider};
+use crate::camera::EYE_HEIGHT;
+use crate::creature::{Creatures, Status};
 use crate::effects::Effects;
 use crate::panels::Panels;
 use crate::player::{Player, Shot};
 use crate::renderer::{Gpu, Renderer};
+use crate::skills::Skill;
 use crate::visuals::{Kit, Slot, Visual};
+use crate::world::World;
 use glam::{Mat4, Vec3};
 
 /// A number from `min` to `max` (whole numbers) by the dice `rng`, times `power`, rounded.
@@ -47,6 +51,8 @@ pub struct Ctx<'a> {
     pub effects: &'a mut Effects,
     pub renderer: &'a mut Renderer,
     pub gpu: &'a Gpu,
+    /// What an arrow can strike besides creatures: the ground and the objects.
+    pub world: &'a World,
 }
 
 /// A spell being cast.
@@ -72,16 +78,54 @@ struct Flight {
     duration: f32,
     effect: Option<usize>,
     damage: f32,
+    /// What it puts on the creature if it hits.
+    then: Vec<Status>,
+}
+
+/// How hard the earth pulls a missile down, yards per second per second (9.8 m/s^2; the character falls faster, for the game's sake).
+const SHOT_GRAVITY: f32 = 10.7;
+/// One that struck the ground or a wall stays stuck this long, seconds; one that falls below this height, over ground that is not loaded, is gone.
+const SHOT_STUCK: f32 = 4.0;
+const WORLD_FLOOR: f32 = -1000.0;
+/// A shot leaves the hand for what the cross hairs are on (the first creature, wall or ground within this many yards ahead of the eye, else the end of it),
+/// so that it goes where it is aimed from the hand too, however far; not nearer than `AIM_NEAR`.
+const AIM_FAR: f32 = 600.0;
+const AIM_NEAR: f32 = 6.0;
+
+/// An arrow, bolt or bullet in the air. It flies in an arc, strikes the first creature, wall or ground in its way and, if that is not a creature, stays
+/// stuck there for a while.
+struct Arrow {
+    pos: Vec3,
+    vel: Vec3,
+    effect: Option<usize>,
+    vis: Visual,
+    /// The damage of the draw (the weapon rolled, the skill and the draw), before the gear's share and the dice for a miss, which are cast where it lands.
+    damage: f32,
+    power: f32,
+    skill: Skill,
+    /// Seconds it stays where it stuck (`None` while it flies).
+    stuck: Option<f32>,
+}
+
+/// One step of a missile through the air: where it is and how fast it moves after `dt` seconds.
+fn fly_step(pos: Vec3, vel: Vec3, dt: f32) -> (Vec3, Vec3) {
+    let vel = vel - Vec3::Y * SHOT_GRAVITY * dt;
+    (pos + vel * dt, vel)
 }
 
 pub struct Spellcaster {
     visuals: Vec<Visual>,
     casting: Option<Casting>,
     flights: Vec<Flight>,
+    arrows: Vec<Arrow>,
     rng: u32,
     /// A spell has hold of the character (a silence, a stun, a fear): nothing can be cast. And a creature's blow broke the cast off.
     blocked: bool,
     interrupted: bool,
+    /// Where the character leaps to (a charge), until the game takes it (`take_leap`).
+    leap: Option<Vec3>,
+    /// The sound of an arrow in flight plays (it ends when the last one lands).
+    arrow_sound: bool,
 }
 
 /// How high above the feet a creature's chest is.
@@ -111,11 +155,16 @@ pub(crate) fn attachment(slot: Slot) -> u32 {
 
 impl Spellcaster {
     pub fn new(visuals: Vec<Visual>) -> Spellcaster {
-        Spellcaster { visuals, casting: None, flights: Vec::new(), rng: 0xBEEF_1234, blocked: false, interrupted: false }
+        Spellcaster { visuals, casting: None, flights: Vec::new(), arrows: Vec::new(), rng: 0xBEEF_1234, blocked: false, interrupted: false, leap: None, arrow_sound: false }
     }
 
     pub fn casting(&self) -> bool {
         self.casting.is_some()
+    }
+
+    /// Where a charge sends the character (render space), once.
+    pub fn take_leap(&mut self) -> Option<Vec3> {
+        self.leap.take()
     }
 
     /// Say whether casting is taken away from the character (every frame).
@@ -288,38 +337,93 @@ impl Spellcaster {
             self.land(ctx, f);
         }
         // The sound of the flight ends where the missile does (a later missile in the air keeps its own).
-        if landed_any && self.flights.is_empty() {
+        if landed_any && self.flights.is_empty() && !self.arrows.iter().any(|a| a.stuck.is_none()) {
+            ctx.panels.emit(Sfx::Release);
+        }
+        self.fly_arrows(ctx, dt);
+    }
+
+    /// The arrows move on: each falls a little further, and stops at the first creature (it hurts it), wall or ground it meets.
+    fn fly_arrows(&mut self, ctx: &mut Ctx, dt: f32) {
+        let mut i = 0;
+        while i < self.arrows.len() {
+            let a = &mut self.arrows[i];
+            if let Some(left) = a.stuck.as_mut() {
+                *left -= dt;
+                if *left <= 0.0 {
+                    let a = self.arrows.remove(i);
+                    a.effect.into_iter().for_each(|e| ctx.effects.stop(e));
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+            let (from, (to, vel)) = (a.pos, fly_step(a.pos, a.vel, dt));
+            let wall = ctx.world.ray_hit(from, to);
+            let creature = ctx.wolves.as_ref().and_then(|w| w.arrow_hit(from, wall.unwrap_or(to)));
+            a.vel = vel;
+            a.pos = creature.map(|c| c.1).or(wall).unwrap_or(to);
+            // The arrow points the way it flies, the nose following the arc.
+            if let Some(effect) = a.effect {
+                let heading = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - vel.x.atan2(-vel.z));
+                ctx.effects.set_world(effect, Mat4::from_translation(a.pos) * heading * Mat4::from_rotation_z(vel.y.atan2(vel.x.hypot(vel.z))));
+            }
+            if let Some((who, _)) = creature {
+                let a = self.arrows.remove(i);
+                self.arrow_lands(ctx, a, who);
+                continue;
+            }
+            if wall.is_some() {
+                a.stuck = Some(SHOT_STUCK);
+            } else if a.pos.y < WORLD_FLOOR {
+                let a = self.arrows.remove(i);
+                a.effect.into_iter().for_each(|e| ctx.effects.stop(e));
+                continue;
+            }
+            i += 1;
+        }
+        if self.arrow_sound && self.flights.is_empty() && !self.arrows.iter().any(|a| a.stuck.is_none()) {
+            self.arrow_sound = false;
             ctx.panels.emit(Sfx::Release);
         }
     }
 
-    /// A shot of a ranged weapon is let go (it was drawn for `shot.power` of the full draw): a piece of the ammo is used up, and the arrow (or bullet) flies from
-    /// the hand that holds the weapon to what is in line ahead, where it does its share of the damage; it flies on into the distance if there is nothing.
-    pub fn shoot(&mut self, ctx: &mut Ctx, shot: Shot, feet: Vec3, yaw: f32) {
+    /// An arrow strikes creature `who`: the gear's share of damage is added and the dice say whether it was a miss, as for a blow of a weapon; then it does
+    /// what a missile does where it lands.
+    fn arrow_lands(&mut self, ctx: &mut Ctx, a: Arrow, who: usize) {
+        a.effect.into_iter().for_each(|e| ctx.effects.stop(e));
+        let (mob, kind) = ctx.wolves.as_ref().and_then(|w| w.enemy_info(who)).unwrap_or((ctx.panels.progress.level, 0));
+        let speed = ctx.panels.stats.ranged.map_or(2.0, |r| r.2);
+        let damage = a.damage + ctx.panels.stats.ranged_ap_versus[kind as usize % 11] as f32 / crate::items::ATTACK_POWER_PER_DPS * speed;
+        let missed = dice(&mut self.rng) < crate::levels::melee_miss(ctx.panels.progress.level, mob, ctx.panels.stats.hit);
+        ctx.panels.train(a.skill, a.power);
+        let at = ctx.wolves.as_ref().and_then(|w| w.enemy_at(who)).unwrap_or(a.pos);
+        self.land(ctx, Flight { vis: a.vis, pitched: true, target: who, last_seen: at, from: a.pos, age: 0.0, duration: 0.0, effect: None, damage: if missed { 0.0 } else { damage }, then: Vec::new() });
+    }
+
+    /// A shot of a ranged weapon is let go (it was drawn for `shot.power` of the full draw): a piece of the ammo is used up, and the arrow (or bullet) leaves the
+    /// hand that holds the weapon along the way the character looks (`forward`, up and down as well), falling in an arc as it flies (see `fly_arrows`).
+    pub fn shoot(&mut self, ctx: &mut Ctx, shot: Shot, feet: Vec3, forward: Vec3) {
         let skill = ctx.panels.ranged_skill();
         let damage = (ctx.player.roll_shot() * ctx.panels.skills.damage_factor(skill) * shot.power).round().max(1.0);
         let ammo = &mut ctx.panels.inv.equipment[0];
         *ammo = ammo.and_then(|s| (s.count > 1).then_some(crate::items::Stack { count: s.count - 1, ..s }));
         ctx.player.use_ammo();
         let from = ctx.player.attachment_world(2).map_or(feet + Vec3::Y * 1.3, |m| m.w_axis.truncate());
-        let aimed = ctx.wolves.as_ref().and_then(|w| w.aim(feet, yaw, ARROW_RANGE));
-        // An arrow may miss, as a blow of a weapon does.
-        let (mob, kind) = aimed.and_then(|(t, _)| ctx.wolves.as_ref()?.enemy_info(t)).unwrap_or((ctx.panels.progress.level, 0));
-        let speed = ctx.panels.stats.ranged.map_or(2.0, |r| r.2);
-        let damage = damage + ctx.panels.stats.ranged_ap_versus[kind as usize % 11] as f32 / crate::items::ATTACK_POWER_PER_DPS * speed;
-        let missed = dice(&mut self.rng) < crate::levels::melee_miss(ctx.panels.progress.level, mob, ctx.panels.stats.hit);
-        let damage = if missed { 0.0 } else { damage };
-        let (target, last_seen) = aimed.map_or((usize::MAX, Vec3::new(from.x + yaw.sin() * ARROW_RANGE, feet.y, from.z - yaw.cos() * ARROW_RANGE)), |(t, at)| (t, at));
-        if aimed.is_some() {
-            ctx.panels.train(skill, shot.power);
-        }
-        let to = last_seen + Vec3::Y * CHEST;
+        let eye = feet + Vec3::Y * EYE_HEIGHT;
+        let end = eye + forward * AIM_FAR;
+        let wall = ctx.world.ray_hit(eye, end).map_or(AIM_FAR, |p| p.distance(eye));
+        let creature = ctx.wolves.as_ref().and_then(|w| w.arrow_hit(eye, eye + forward * wall)).map(|(_, at)| at.distance(eye));
+        let aim = eye + forward * creature.unwrap_or(wall).max(AIM_NEAR);
+        let way = (aim - from).try_normalize().unwrap_or(forward);
+        // A string drawn only part of the way throws the arrow slower.
+        let vel = way * shot.speed * (0.6 + 0.4 * shot.power);
         let effect = shot.projectile.as_ref().and_then(|(model, skin)| ctx.effects.spawn_skinned(ctx.renderer, ctx.gpu, model, skin, true, Mat4::from_translation(from)));
         if let Some(entry) = shot.visual.missile_sound {
             ctx.panels.emit(Sfx::Hold(entry));
+            self.arrow_sound = true;
         }
-        let duration = (from.distance(to) / shot.visual.speed.max(1.0)).max(0.05);
-        self.flights.push(Flight { vis: shot.visual, pitched: true, target, last_seen, from, age: 0.0, duration, effect, damage });
+        self.arrows.push(Arrow { pos: from, vel, effect, vis: shot.visual, damage, power: shot.power, skill, stuck: None });
     }
 
     /// A missile arrives: the burst where it hits, its sound and what it does.
@@ -342,6 +446,9 @@ impl Spellcaster {
             let hit = ctx.wolves.as_mut().and_then(|w| w.spell_hit(f.target, f.damage));
             if let (Some(hit), Some(text)) = (hit, ctx.text.as_mut()) {
                 text.damage_dealt(hit, f.damage as u32);
+            }
+            if let Some(wolves) = ctx.wolves.as_mut() {
+                f.then.iter().for_each(|&s| wolves.afflict(f.target, s));
             }
             // The spells of the ranged weapon that go off on a shot that lands.
             if let (true, Some(weapon), Some(wolves)) = (f.pitched, ctx.panels.inv.equipment[crate::items::RANGED], ctx.wolves.as_mut()) {
@@ -391,7 +498,34 @@ impl Spellcaster {
                 Self::show(ctx, &vis.impact, true, feet, yaw, 1.8, false);
                 Self::sound(ctx, vis.impact.sound);
             }
+            Effect::Mana { min, max } => {
+                let mana = &mut ctx.player.vitals.mana;
+                mana.current = (mana.current + mana.max * roll(&mut self.rng, min, max, 1.0) / 100.0).min(mana.max);
+                Self::show(ctx, &vis.impact, true, feet, yaw, 1.8, false);
+                Self::sound(ctx, vis.impact.sound);
+            }
+            Effect::Buff => {
+                Self::show(ctx, &vis.impact, true, feet, yaw, 1.8, false);
+                Self::sound(ctx, vis.impact.sound);
+            }
             Effect::Damage { .. } => {}
+        }
+        // What it puts on the character, on everything it caught, and on the creature it hits (when it lands).
+        let mut then = Vec::new();
+        for rider in &def.then {
+            match *rider {
+                Rider::Gain { aura, misc, amount, seconds } => {
+                    let effect = if aura < 5 { crate::items::UseEffect::Boost(aura as u8, (amount * level as f32) as i32, 0.0) } else { crate::items::UseEffect::Equip(aura, misc, amount as i32) };
+                    ctx.panels.proc_timed(Timed::Gear(effect), seconds);
+                }
+                Rider::Leap => self.leap = victim.map(|(_, at)| at),
+                Rider::Bleed { amount, seconds } => then.push(Status::Over { amount: (amount * power).round().max(1.0), period: 3.0, seconds }),
+                Rider::Stun(seconds) => then.push(Status::Stun(seconds)),
+                Rider::Slow { share, seconds } => then.push(Status::Slow(share, seconds)),
+            }
+        }
+        if let (Effect::Area { radius, .. }, Some(wolves)) = (def.effect, ctx.wolves.as_mut()) {
+            then.iter().for_each(|&s| wolves.afflict_area(feet, radius, s));
         }
         // The cast itself: the animation, the hands, the sound.
         let directed = matches!(def.effect, Effect::Damage { .. });
@@ -413,9 +547,9 @@ impl Spellcaster {
                         ctx.panels.emit(Sfx::Hold(entry));
                     }
                     let duration = (from.distance(to) / vis.speed.max(1.0)).max(0.1);
-                    self.flights.push(Flight { vis: vis.clone(), pitched: false, target, last_seen: at, from, age: 0.0, duration, effect, damage });
+                    self.flights.push(Flight { vis: vis.clone(), pitched: false, target, last_seen: at, from, age: 0.0, duration, effect, damage, then: then.clone() });
                 }
-                None => self.land(ctx, Flight { vis: vis.clone(), pitched: false, target, last_seen: at, from, age: 0.0, duration: 0.0, effect: None, damage }),
+                None => self.land(ctx, Flight { vis: vis.clone(), pitched: false, target, last_seen: at, from, age: 0.0, duration: 0.0, effect: None, damage, then: then.clone() }),
             }
         }
         ctx.panels.cooldowns[spell] = def.cooldown;
@@ -439,6 +573,27 @@ mod tests {
     }
 
     #[test]
+    fn a_missile_falls_in_an_arc_and_one_aimed_up_flies_further() {
+        // Level at the eye: the further it flies the more it has dropped; a bow's arrow has fallen about two yards after 35 yards.
+        let fly = |pitch: f32, speed: f32, until: f32| {
+            let (mut pos, mut vel, mut t) = (Vec3::ZERO, Vec3::new(pitch.cos(), pitch.sin(), 0.0) * speed, 0.0);
+            while pos.x < until && pos.y > -50.0 && t < 20.0 {
+                (pos, vel) = fly_step(pos, vel, 1.0 / 60.0);
+                t += 1.0 / 60.0;
+            }
+            pos
+        };
+        let bow = fly(0.0, 55.0, 35.0);
+        assert!((-3.0..-1.2).contains(&bow.y), "{bow:?}");
+        // A bullet is much faster and drops much less.
+        assert!(fly(0.0, 160.0, 35.0).y > -0.5);
+        // Aimed up, it rises and lands further away than one let go level.
+        let high = fly(0.3, 55.0, 1e9);
+        let level = fly(0.0, 55.0, 1e9);
+        assert!(high.x > level.x * 1.3 && high.y <= -50.0, "{high:?} {level:?}");
+    }
+
+    #[test]
     fn a_model_is_put_where_its_slot_says() {
         let feet = Vec3::new(10.0, 2.0, -5.0);
         let at = |slot| placed(slot, feet, 0.0, 1.8, |_| None).w_axis.truncate();
@@ -452,7 +607,7 @@ mod tests {
     #[test]
     fn every_spell_has_its_tome_somewhere_to_be_found_and_a_basic_one_asks_for_nothing() {
         let c = content::get();
-        for (i, spell) in c.spells.iter().enumerate() {
+        for (i, spell) in c.spells.iter().enumerate().filter(|(_, s)| !s.talent) {
             let tome = c.items.iter().position(|it| it.tome == Some(i));
             let tome = tome.unwrap_or_else(|| panic!("{} has no tome", spell.name));
             // Found: dropped by a creature that stands in the world or in a chest, or known from the start.
@@ -463,7 +618,7 @@ mod tests {
         }
         // Each class has a basic and a greater spell.
         for class in crate::skills::ALL.iter().filter(|s| s.is_class()) {
-            let of = |basic: bool| c.spells.iter().filter(|s| s.class == *class && (s.level == 1) == basic).count();
+            let of = |basic: bool| c.spells.iter().filter(|s| !s.talent && s.class == *class && (s.level == 1) == basic).count();
             assert!(of(true) >= 1 && of(false) >= 1, "{}", class.name());
         }
     }

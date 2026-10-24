@@ -479,7 +479,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
         }
         // Any creatures of the content, standing in a row ahead (`--creature kobold_miner,garrick_thorne`).
         for (i, id) in args.creatures.iter().enumerate() {
-            spawns.push((crate::content::creature_index(id), feet + ahead * 6.0 + aside * (i as f32 * 2.2 - args.creatures.len() as f32 + 1.0), yaw + std::f32::consts::PI, 5.0));
+            spawns.push((crate::content::creature_index(id), feet + ahead * args.creature_at + aside * (i as f32 * 2.2 - args.creatures.len() as f32 + 1.0), yaw + std::f32::consts::PI, 5.0));
         }
         if args.npc {
             spawns.push((guard, feet + ahead * 5.0 - aside * 2.0, yaw + std::f32::consts::PI, 5.0));
@@ -549,14 +549,14 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             render_camera = player.update(1.0 / 60.0, &look, motion, |from, to| world.camera_distance(from, to), &mut renderer, &gpu);
             if let Some(panels) = &mut panels {
                 panels.update_cast_bar(1.0 / 60.0);
-                let mut ctx = crate::casting::Ctx { player: &mut player, panels, wolves: wolves.as_mut(), text: Some(&mut text), effects: &mut effects, renderer: &mut renderer, gpu: &gpu };
+                let mut ctx = crate::casting::Ctx { player: &mut player, panels, wolves: wolves.as_mut(), text: Some(&mut text), effects: &mut effects, renderer: &mut renderer, gpu: &gpu, world: &world };
                 if let (false, Some(spell)) = (caster.casting(), queue.last().copied()) {
                     queue.pop();
                     ctx.panels.cooldowns.iter_mut().for_each(|c| *c = 0.0);
                     caster.begin(&mut ctx, spell, feet);
                 }
                 if let Some(shot) = ctx.player.take_shot() {
-                    caster.shoot(&mut ctx, shot, feet, yaw);
+                    caster.shoot(&mut ctx, shot, feet, look.forward());
                 }
                 caster.update(&mut ctx, 1.0 / 60.0, feet, false);
             }
@@ -641,6 +641,10 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             }
             if args.panel.iter().any(|p| p == "spellbook") {
                 panels.toggle_spellbook();
+            }
+            if args.panel.iter().any(|p| p == "talents") {
+                panels.talents_preview();
+                panels.toggle_talents();
             }
             if args.panel.iter().any(|p| p == "map" || p == "map-zoom") {
                 panels.found.iter_mut().take(args.discover).for_each(|f| *f = true);
