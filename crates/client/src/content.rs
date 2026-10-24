@@ -114,8 +114,7 @@ pub struct CreatureDef {
     pub level: u32,
     /// Its type (1 beast, 2 dragonkin, 3 demon, 4 elemental, 5 giant, 6 undead, 7 humanoid, 8 critter, 9 mechanical; 0 none): what the bonuses of gear "versus" name.
     pub kind: u32,
-    /// The line under the name: `<Stormwind Guard>` (for a tooltip, which the game does not have yet).
-    #[allow(dead_code)]
+    /// The line under the name: `<Stormwind Guard>` (the floating name shows it).
     pub title: Option<String>,
     pub body: Body,
     /// Attacks the player when he comes near.

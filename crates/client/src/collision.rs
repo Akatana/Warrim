@@ -108,7 +108,7 @@ impl CollisionMesh {
     pub fn raycast(&self, from: Vec3, to: Vec3) -> Option<f32> {
         let dir = to - from;
         let mut best: Option<f32> = None;
-        self.for_each_in_box(from.min(to), from.max(to), |t| {
+        self.for_each_along(from, to, |t| {
             // Moeller-Trumbore.
             let (e1, e2) = (t.b - t.a, t.c - t.a);
             let p = dir.cross(e2);
@@ -126,6 +126,42 @@ impl CollisionMesh {
             }
         });
         best
+    }
+
+    /// Call `f` for every triangle in the grid cells that the segment `from -> to` crosses on the ground plane (each once), skipping those
+    /// entirely above or below it. Unlike a box over the segment this stays small for a long diagonal.
+    pub fn for_each_along(&self, from: Vec3, to: Vec3, mut f: impl FnMut(&Tri)) {
+        let (lo, hi) = (from.y.min(to.y), from.y.max(to.y));
+        let (dx, dz) = (to.x - from.x, to.z - from.z);
+        let (mut cx, mut cz) = (cell_of(from.x), cell_of(from.z));
+        let (ex, ez) = (cell_of(to.x), cell_of(to.z));
+        let (sx, sz) = (if dx > 0.0 { 1 } else { -1 }, if dz > 0.0 { 1 } else { -1 });
+        // How far along the segment (0..1) the next cell border is, and the distance between two borders.
+        let border = |from: f32, d: f32, c: i32, s: i32| if d == 0.0 { f32::INFINITY } else { ((c + (s > 0) as i32) as f32 * CELL - from) / d };
+        let (mut tx, mut tz) = (border(from.x, dx, cx, sx), border(from.z, dz, cz, sz));
+        let (ux, uz) = (if dx == 0.0 { f32::INFINITY } else { CELL / dx.abs() }, if dz == 0.0 { f32::INFINITY } else { CELL / dz.abs() });
+        let mut seen: Vec<u32> = Vec::new();
+        for _ in 0..=(ex - cx).abs() + (ez - cz).abs() {
+            if let Some(v) = self.grid.get(&(cx, cz)) {
+                seen.extend_from_slice(v);
+            }
+            if (cx, cz) == (ex, ez) {
+                break;
+            }
+            if tx < tz {
+                (cx, tx) = (cx + sx, tx + ux);
+            } else {
+                (cz, tz) = (cz + sz, tz + uz);
+            }
+        }
+        seen.sort_unstable();
+        seen.dedup();
+        for i in seen {
+            let t = &self.tris[i as usize];
+            if t.max_y >= lo && t.a.y.min(t.b.y).min(t.c.y) <= hi {
+                f(t);
+            }
+        }
     }
 
     /// Call `f` for every triangle whose XZ bounds overlap the box `[min, max]` (each once).
@@ -181,6 +217,43 @@ mod tests {
 
     fn quad(a: Vec3, b: Vec3, c: Vec3, d: Vec3) -> Vec<Tri> {
         [Tri::new(a, b, c), Tri::new(a, c, d)].into_iter().flatten().collect()
+    }
+
+    #[test]
+    fn a_ray_along_the_grid_finds_what_a_box_over_it_finds() {
+        // Small triangles scattered over 200 x 200 yards, and long segments in every direction.
+        let mut seed = 12345u32;
+        let mut rnd = move |range: f32| {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 * range
+        };
+        let tris: Vec<Tri> = (0..600)
+            .filter_map(|_| {
+                let (x, y, z) = (rnd(200.0), rnd(20.0), rnd(200.0));
+                Tri::new(Vec3::new(x, y, z), Vec3::new(x + rnd(6.0), y + rnd(3.0), z), Vec3::new(x, y + rnd(3.0), z + rnd(6.0)))
+            })
+            .collect();
+        let mesh = CollisionMesh::build(tris);
+        for _ in 0..300 {
+            let (from, to) = (Vec3::new(rnd(200.0), rnd(20.0), rnd(200.0)), Vec3::new(rnd(200.0), rnd(20.0), rnd(200.0)));
+            let dir = to - from;
+            let mut want: Option<f32> = None;
+            mesh.for_each_in_box(from.min(to), from.max(to), |t| {
+                let (e1, e2) = (t.b - t.a, t.c - t.a);
+                let p = dir.cross(e2);
+                let det = e1.dot(p);
+                if det.abs() < 1e-9 {
+                    return;
+                }
+                let s = from - t.a;
+                let (u, q) = (s.dot(p) / det, s.cross(e1));
+                let (v, h) = (dir.dot(q) / det, e2.dot(q) / det);
+                if u >= 0.0 && v >= 0.0 && u + v <= 1.0 && (0.0..=1.0).contains(&h) && want.is_none_or(|b| h < b) {
+                    want = Some(h);
+                }
+            });
+            assert_eq!(mesh.raycast(from, to), want, "{from:?} -> {to:?}");
+        }
     }
 
     #[test]

@@ -570,9 +570,7 @@ impl State {
                 panels.arrive(&self.map, north, west);
                 wolves.set_wanted(panels.quests.wanted(&panels.inv));
                 panels.update_quests();
-                if self.names {
-                    panels.draw_labels(&mut self.renderer.ui, &self.gpu, size, &wolves.labels(&render_camera, size));
-                }
+                panels.draw_labels(&mut self.renderer.ui, &self.gpu, size, &wolves.labels(&render_camera, size, self.names, |from, to| self.world.ray_hit(from, to).is_some()));
             }
             if let Some(text) = &mut self.combat_text {
                 text.update(dt);

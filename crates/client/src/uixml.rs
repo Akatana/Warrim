@@ -743,6 +743,8 @@ pub struct Tree {
     font_files: HashMap<String, Option<fontdue::Font>>,
     glyphs: HashMap<(String, u32, usize), Option<GlyphSet>>,
     screen: (u32, u32),
+    /// Multiplies the size of drawn text (floating unit names shrink with distance).
+    text_scale: f32,
     /// The size of the text of each named font string whose size comes from its text (set by `measure_texts` before
     /// drawing), so that regions anchored to it, like the buttons under a greeting, land below its last line.
     text_dims: HashMap<String, (f32, f32)>,
@@ -784,6 +786,7 @@ impl Tree {
             disabled: Default::default(),
             moneys: HashMap::new(),
             screen: (1280, 720),
+            text_scale: 1.0,
         }
     }
 
@@ -1650,7 +1653,7 @@ impl Tree {
 
     /// Draw `text` with the left end of its line at `x` and the top at `top` (interface units, y up).
     fn text_at(&mut self, ui: &mut Ui, gpu: &Gpu, mount: &Mount, style: &FontStyle, text: &str, x: f32, top: f32, tint: [f32; 4]) {
-        let (s, h) = (screen_scale(self.screen), self.screen.1 as f32);
+        let (s, h) = (screen_scale(self.screen) * self.text_scale, self.screen.1 as f32);
         let spans = color_spans(text);
         let Some(glyphs) = self.glyphs(ui, gpu, mount, style) else { return };
         let y_top = h - top * s;
@@ -1702,6 +1705,20 @@ impl Tree {
         let width = self.text_width(ui, gpu, mount, &style, text);
         let s = screen_scale(screen);
         self.text_at(ui, gpu, mount, &style, text, x / s - width * align, (screen.1 as f32 - y) / s, color);
+    }
+
+    /// Draw `text` with its line `line` pixels tall, centred on pixel `x` with the bottom of the line at pixel `y` (y down).
+    pub fn draw_text_world(&mut self, ui: &mut Ui, gpu: &Gpu, mount: &Mount, screen: (u32, u32), font: &str, text: &str, (x, y): (f32, f32), line: f32, color: [f32; 4]) {
+        self.screen = screen;
+        let Some(mut style) = self.registry.font_style(font) else { return };
+        // The original draws a unit name plain: its font has neither an outline nor a shadow.
+        style.shadow = None;
+        let s = screen_scale(screen);
+        self.text_scale = line / (style.height * s);
+        let width = self.text_width(ui, gpu, mount, &style, text);
+        let s = s * self.text_scale;
+        self.text_at(ui, gpu, mount, &style, text, x / s - width / 2.0, (screen.1 as f32 - y + line) / s, color);
+        self.text_scale = 1.0;
     }
 
     /// Draw a texture file at a pixel rectangle.

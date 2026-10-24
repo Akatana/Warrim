@@ -605,7 +605,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             log::info!("creatures in the world: {} made, {} with a model", wolves.counts().0, wolves.counts().1);
             wolves.draw_plates(&mut renderer.ui, &render_camera, (w, h));
             if let Some(panels) = &mut panels {
-                panels.draw_labels(&mut renderer.ui, &gpu, (w, h), &wolves.labels(&render_camera, (w, h)));
+                panels.draw_labels(&mut renderer.ui, &gpu, (w, h), &wolves.labels(&render_camera, (w, h), crate::interface::InterfaceSettings::load().npc_names, |from, to| world.ray_hit(from, to).is_some()));
             }
             text.draw(&mut renderer.ui, &render_camera, (w, h));
         }

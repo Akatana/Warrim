@@ -2528,10 +2528,13 @@ impl Panels {
     /// Queue the names floating over creatures (`UnitName`: the game font, tinted by how the creature feels about you).
     pub fn draw_labels(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32), labels: &[crate::creature::Label]) {
         let mount = self.mount.clone();
-        let s = screen.1 as f32 / ui_height();
         for l in labels {
-            // Centred over the head: the text's top is a line above the point.
-            self.tree.draw_text_at_pixel(ui, gpu, &mount, screen, "GameFontNormalLarge", &l.text, (l.x, l.y - 22.0 * s), l.color);
+            // The name stands one em above the subname, which stands on the point.
+            let name_y = if l.sub.is_some() { l.y - l.line } else { l.y };
+            self.tree.draw_text_world(ui, gpu, &mount, screen, "GameFontNormalLarge", &l.text, (l.x, name_y), l.line, l.color);
+            if let Some(sub) = &l.sub {
+                self.tree.draw_text_world(ui, gpu, &mount, screen, "GameFontNormalLarge", sub, (l.x, l.y), l.line, l.color);
+            }
         }
     }
 

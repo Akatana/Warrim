@@ -5,6 +5,7 @@
 #[serde(default)]
 pub struct InterfaceSettings {
     pub invert_mouse: bool,
+    /// `UnitNameNPC`: names over every creature (off in the original: only the target's name shows).
     pub npc_names: bool,
     pub buff_durations: bool,
     /// Whether dying creatures fall as ragdolls (off: they keep their death animation).
@@ -17,7 +18,7 @@ pub struct InterfaceSettings {
 
 impl Default for InterfaceSettings {
     fn default() -> Self {
-        InterfaceSettings { invert_mouse: false, npc_names: true, buff_durations: false, ragdolls: true, look_speed: 180.0, follow: 1.0 }
+        InterfaceSettings { invert_mouse: false, npc_names: false, buff_durations: false, ragdolls: true, look_speed: 180.0, follow: 1.0 }
     }
 }
 

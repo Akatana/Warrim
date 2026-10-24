@@ -114,9 +114,14 @@ const MOST_LEADS: usize = 40;
 const MARKER_MODELS: [&str; 3] = [r"Interface\Buttons\TalkToMe.m2", r"Interface\Buttons\TalkToMeQuestionMark.m2", r"Interface\Buttons\TalkToMeQuestion_Grey.m2"];
 /// How high above a person's feet the mark's model stands (its own origin; it reaches 0.15 to 0.77 above that), over the name.
 const MARKER_HEIGHT: f32 = 2.65;
-/// Names float over creatures within this distance, yards, and sit this high above the feet (beasts, people).
-const NAME_RANGE: f32 = 35.0;
-const NAME_HEIGHT: (f32, f32) = (1.5, 2.3);
+/// Where WoW.exe (`FUN_00608640`) puts the name of a unit: at the model's attachment 18 ("PlayerName"), or else this many yards above the feet for each yard of scale.
+const NAME_ATTACHMENT: usize = 18;
+const NAME_FALLBACK: f32 = 1.25;
+/// How tall the em of a name's font stands in the world, yards (`FUN_006c6e90`): 0.2, or the unit's height / 4 * 1.5 * 0.2 once it is over 4 yards tall.
+const NAME_EM: f32 = 0.2;
+/// A name is checked against the walls every this many frames, and at most this many creatures are checked in a frame (the rest keep their last answer).
+const LOOK_EVERY: u8 = 8;
+const LOOKS_PER_FRAME: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub enum State {
@@ -1287,6 +1292,12 @@ impl Mob {
 }
 
 /// What a kind of beast needs to be drawn: its model with the skins, shared by every creature of the kind.
+/// Where the name of a model floats, from its feet: its `NAME_ATTACHMENT` posed by `bones` (model space), turned by `orient`; without one, `NAME_FALLBACK` yards up per yard of `scale`.
+fn name_offset(m2: &M2, bones: &[Mat4], orient: Mat4, scale: f32) -> Vec3 {
+    let at = m2.attachment_lookup.get(NAME_ATTACHMENT).and_then(|&i| m2.attachments.get(i as usize)).and_then(|a| Some(bones.get(a.bone as usize)?.transform_point3(Vec3::from(a.position))));
+    at.map_or(Vec3::Y * NAME_FALLBACK * scale, |p| orient.transform_point3(crate::character::MODEL_TO_RENDER.transform_point3(p)))
+}
+
 struct BeastRig {
     m2: M2,
     template: Arc<ModelCpu>,
@@ -1459,6 +1470,10 @@ struct Creature {
     /// It fell as a ragdoll when it died, and lies as that until it is back; whether it was dead at the last frame.
     ragdoll: Option<Ragdoll>,
     was_dead: bool,
+    /// Where its name floats, from its feet (the model's `NAME_ATTACHMENT` as of the last pose).
+    name_at: Vec3,
+    /// Whether a wall hid its name when last looked at, and how many label frames ago (a look costs a ray through the world).
+    hidden: std::cell::Cell<(bool, u8)>,
     /// Seconds not posed yet and the frame it is at of the few it is posed every (far creatures are posed less often).
     owed: f32,
     beat: u8,
@@ -1493,9 +1508,13 @@ const TARGET_RANGE: f32 = 40.0;
 /// A name floating over a creature: where on the screen (pixels, the middle of the text) and in which colour.
 pub struct Label {
     pub text: String,
+    /// The line under the name, `<Weapon Master>` (`FUN_00608f50`: a creature's subname).
+    pub sub: Option<String>,
     pub color: [f32; 4],
     pub x: f32,
     pub y: f32,
+    /// How tall its line of text is on the screen, pixels.
+    pub line: f32,
 }
 
 /// A place of the map where a creature of some kind stands (a spawn of the content): while the player is far it is only this.
@@ -1631,7 +1650,7 @@ impl Creatures {
         if let Some(saved) = self.pending.remove(&site) {
             mob.restore(&saved);
         }
-        let slot = self.alloc(Creature { mob, parent: None, site: Some(site), visual: Visual::None, marks: None, want: None, ragdoll: None, was_dead: false, owed: 0.0, beat: 0 });
+        let slot = self.alloc(Creature { mob, parent: None, site: Some(site), visual: Visual::None, marks: None, want: None, ragdoll: None, was_dead: false, name_at: Vec3::Y * NAME_FALLBACK, hidden: std::cell::Cell::new((true, u8::MAX)), owed: 0.0, beat: 0 });
         self.sites[site].slot = Some(slot);
         // Behind it wait the creatures that its script summons (twice as many as there are summon actions, so that a summon that repeats finds some).
         let mut waiting: Vec<(usize, usize)> = Vec::new();
@@ -1647,7 +1666,7 @@ impl Creatures {
             for _ in 0..count {
                 let mut mob = Mob::new(summoned, pos, yaw);
                 (mob.wander, mob.summoned, mob.state) = (wander, true, State::Unborn);
-                self.alloc(Creature { mob, parent: Some(slot), site: None, visual: Visual::None, marks: None, want: None, ragdoll: None, was_dead: false, owed: 0.0, beat: 0 });
+                self.alloc(Creature { mob, parent: Some(slot), site: None, visual: Visual::None, marks: None, want: None, ragdoll: None, was_dead: false, name_at: Vec3::Y * NAME_FALLBACK, hidden: std::cell::Cell::new((true, u8::MAX)), owed: 0.0, beat: 0 });
             }
         }
     }
@@ -1977,6 +1996,7 @@ impl Creatures {
                             if let Some(at) = physics.as_deref().and_then(|p| rd.corpse_at(p)) {
                                 c.mob.pos = Vec3::new(at.x, ground(at.x, at.z, at.y).unwrap_or(c.mob.pos.y), at.z);
                             }
+                            c.name_at = rd.origin() - c.mob.pos + name_offset(&rig.m2, &bones, orient, rig.scale);
                         }
                         renderer.set_entity(*entity, rd.origin(), orient, true);
                         continue;
@@ -1991,6 +2011,7 @@ impl Creatures {
                     let bones = anim::bone_matrices_with(&rig.m2, anim.mix(&rig.m2), self.clock_ms, &[], &[]);
                     anim::skin(&rig.m2, &bones, &rig.template.vertices, &mut self.vertices);
                     renderer.update_entity_vertices(gpu, *entity, &self.vertices);
+                    c.name_at = name_offset(&rig.m2, &bones, orient, rig.scale);
                     // Batches that the model shows only in some animations (the logs a peasant carries) fade in and out by its tracks.
                     if let Some(tracks) = &rig.template.tracks {
                         let pose = anim.mix(&rig.m2).to;
@@ -2012,12 +2033,16 @@ impl Creatures {
                                 c.mob.pos = Vec3::new(at.x, ground(at.x, at.z, at.y).unwrap_or(c.mob.pos.y), at.z);
                             }
                         }
+                        if let Some(b) = &bones {
+                            c.name_at = rd.origin() - c.mob.pos + name_offset(&person.character.m2, b, orient, 1.0);
+                        }
                         person.tumble(bones, dt, rd.origin(), orient, (c.mob.pos + Vec3::Y - self.viewer).normalize_or_zero(), self.viewer, renderer, gpu);
                         continue;
                     }
                     let anims = if let State::Cast(spell, ..) = c.mob.state { c.mob.spell_anims(spell, &self.anims) } else { (READY_SPELL, CAST_SPELL) };
                     (person.emote, person.run) = (c.mob.emote, c.mob.run);
-                    person.pose(dt, c.mob.pos, c.mob.yaw, c.mob.state, c.mob.moving, anims, (c.mob.pos + Vec3::Y - self.viewer).normalize_or_zero(), self.viewer, renderer, gpu)
+                    person.pose(dt, c.mob.pos, c.mob.yaw, c.mob.state, c.mob.moving, anims, (c.mob.pos + Vec3::Y - self.viewer).normalize_or_zero(), self.viewer, renderer, gpu);
+                    c.name_at = name_offset(&person.character.m2, &person.character.bones, orient, 1.0);
                 }
                 Visual::None => {}
             }
@@ -2376,16 +2401,41 @@ impl Creatures {
         self.creatures.iter().map(|c| c.mob.alert(feet, level)).fold(0.0, f32::max)
     }
 
-    /// The names floating over the living creatures near the camera: red for hostile ones, yellow for neutral ones, green for friendly ones.
-    pub fn labels(&self, camera: &Camera, size: (u32, u32)) -> Vec<Label> {
+    /// The names floating over creatures: red for hostile ones, yellow for neutral ones, green for friendly ones.
+    /// Like the original's unit names (`FUN_006070a0`) they show on the target and, with `npc_names`, on every creature. They are text standing in the
+    /// world at the model's name attachment: they shrink with distance and a wall in between hides them (`blocked`).
+    pub fn labels(&self, camera: &Camera, size: (u32, u32), npc_names: bool, blocked: impl Fn(Vec3, Vec3) -> bool) -> Vec<Label> {
+        let focal = size.1 as f32 / 2.0 / (camera.fov_y / 2.0).tan();
+        let mut looks = LOOKS_PER_FRAME;
         self.creatures
             .iter()
-            .filter(|c| !c.mob.is_dead() && !matches!(c.visual, Visual::None) && (c.mob.pos - camera.pos).length() <= NAME_RANGE)
-            .filter_map(|c| {
-                let height = if let Visual::Person(p) = &c.visual { NAME_HEIGHT.1 * p.tall() } else { NAME_HEIGHT.0 };
-                let (x, y) = Self::on_screen(camera, size, c.mob.pos + Vec3::Y * height)?;
+            .enumerate()
+            .filter(|(i, c)| !matches!(c.visual, Visual::None) && (npc_names || self.target == Some(*i)))
+            .filter_map(|(_, c)| {
+                let head = c.mob.pos + c.name_at;
+                let (x, y) = Self::on_screen(camera, size, head)?;
+                if x < 0.0 || y < 0.0 || x > size.0 as f32 || y > size.1 as f32 {
+                    return None;
+                }
+                let depth = (camera.view_proj_relative() * (head - camera.pos).extend(1.0)).w;
+                let em = if c.name_at.y > 4.0 { c.name_at.y / 4.0 * 1.5 * NAME_EM } else { NAME_EM };
+                let line = em * focal / depth;
+                // Under a pixel it shows nothing.
+                if line < 1.0 {
+                    return None;
+                }
+                let (hidden, age) = c.hidden.get();
+                if age >= LOOK_EVERY && looks > 0 {
+                    looks -= 1;
+                    c.hidden.set((blocked(camera.pos, head), 0));
+                } else {
+                    c.hidden.set((hidden, age.saturating_add(1)));
+                }
+                if c.hidden.get().0 {
+                    return None;
+                }
                 let color = if c.mob.def.is_hostile() { [1.0, 0.1, 0.1, 1.0] } else if c.mob.def.is_neutral() { [1.0, 0.9, 0.1, 1.0] } else { [0.1, 1.0, 0.1, 1.0] };
-                Some(Label { text: c.mob.def.name.clone(), color, x, y })
+                Some(Label { text: c.mob.def.name.clone(), sub: c.mob.def.title.as_ref().filter(|t| !t.is_empty()).map(|t| format!("<{t}>")), color, x, y, line })
             })
             .collect()
     }
@@ -2427,6 +2477,18 @@ mod tests {
     /// Run `seconds` at 60 fps against a player standing at `target`; collects the damage dealt.
     fn run(mob: &mut Mob, seconds: f32, target: Vec3) -> Vec<f32> {
         (0..(seconds * 60.0) as usize).filter_map(|_| mob.update(1.0 / 60.0, target, flat_ground, open)).collect()
+    }
+
+    #[test]
+    fn a_wolfs_name_floats_at_its_attachment_and_a_model_without_one_at_a_fixed_height() {
+        let Some(mount) = mpq::find_wow_dir().and_then(|d| mpq::Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
+        let Body::Beast { model, .. } = &def().body else { panic!("a wolf is a beast") };
+        let mut m2 = M2::parse(&mount.read(model).unwrap()).unwrap();
+        let bones = vec![Mat4::IDENTITY; m2.bones.len()];
+        let up = name_offset(&m2, &bones, Mat4::IDENTITY, 1.0);
+        assert!(up.y > 0.5 && up.y < 3.0, "{up:?}");
+        m2.attachment_lookup[NAME_ATTACHMENT] = 0xFFFF;
+        assert_eq!(name_offset(&m2, &bones, Mat4::IDENTITY, 2.0), Vec3::Y * 2.5);
     }
 
     #[test]
