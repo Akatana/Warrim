@@ -106,6 +106,19 @@ pub fn of_shot(mount: &Mount, id: u32) -> Visual {
     Tables::new(mount).ok().and_then(|t| t.visuals.find_by_id(id).map(|v| t.visual(v, 0.0, SHOT_SPEED))).unwrap_or_default()
 }
 
+/// What the original shows for a spell by its row of `Spell.dbc` (the gathering spells: Mining 2575, Herb Gathering 2366): the kits of its visual row.
+pub fn of_spell(mount: &Mount, spell: u32) -> Visual {
+    let dbc = |name: &str| Dbc::parse(&mount.read(&format!(r"DBFilesClient\{name}.dbc")).ok()?).ok();
+    let (Some(spells), Some(tables)) = (dbc("Spell"), Tables::new(mount).ok()) else { return Visual::default() };
+    spells.find_by_id(spell).and_then(|s| tables.visuals.find_by_id(s.u32(115)).map(|v| tables.visual(v, 0.0, 0.0))).unwrap_or_default()
+}
+
+/// The visuals of Mining (spell 2575) and of Herb Gathering (2366), read once: the stance and the model in the hand, and the sounds.
+pub fn gathering(mount: &Mount) -> &'static [Visual; 2] {
+    static CACHE: std::sync::OnceLock<[Visual; 2]> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| [of_spell(mount, 2575), of_spell(mount, 2366)])
+}
+
 /// The Stealth spell of the original, whose pictures and sound a sneaking player has.
 pub const STEALTH: u32 = 1784;
 
@@ -237,5 +250,16 @@ mod tests {
             }
         }
         assert!(missing.len() * 50 < v.len(), "{} of {} spells name a model that is not there: {:?}", missing.len(), v.len(), &missing[..missing.len().min(8)]);
+    }
+}
+
+#[cfg(test)]
+mod gather_tests {
+    #[test]
+    fn mining_swings_a_pick_and_herb_gathering_has_its_own_stance_and_sound() {
+        let Some(mount) = mpq::find_wow_dir().and_then(|d| mpq::Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
+        let [mining, herbs] = super::gathering(&mount);
+        assert!(mining.precast.anim.is_some() && mining.precast.effects.iter().any(|e| e.model.contains("MiningPick")) && mining.missile_sound.is_some());
+        assert!(herbs.precast.anim.is_some() && herbs.precast.sound.is_some());
     }
 }

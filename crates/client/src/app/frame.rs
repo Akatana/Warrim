@@ -175,6 +175,9 @@ impl State {
             let world = &self.world;
             pickups.update(dt, self.camera.pos, |x, z| world.height_at(x, z), &mut self.renderer);
         }
+        if let Some(nodes) = &mut self.nodes {
+            nodes.update(dt, self.camera.pos, &self.mount, &self.gpu, &mut self.renderer);
+        }
         self.drag_if_held();
         if let Some(bodies) = &mut self.bodies {
             let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
@@ -184,6 +187,7 @@ impl State {
         drop(t);
         let t = scope("cursor, lock");
         self.step_lock(dt);
+        self.step_gather(dt);
         (self.pointer, self.hover) = {
             let (kind, hover) = self.cursor_context(&render_camera, size);
             (kind, hover)
@@ -587,8 +591,8 @@ impl State {
             wolves.draw_plates(&mut self.renderer.ui, &render_camera, size);
             // Looting: the window closes when the player walks away, and what is left stays on the corpse.
             if let Some(panels) = &mut self.panels {
-                let chests = &mut self.chests;
-                if panels.looting().and_then(|i| if i >= CHEST_LOOT { chests.as_ref()?.pos(i - CHEST_LOOT) } else { wolves.corpse_pos(i) }).is_some_and(|at| (at - feet).length() > LOOT_LEAVE) {
+                let (chests, nodes) = (&mut self.chests, &mut self.nodes);
+                if panels.looting().and_then(|i| if i >= NODE_LOOT { nodes.as_ref()?.pos(i - NODE_LOOT) } else if i >= CHEST_LOOT { chests.as_ref()?.pos(i - CHEST_LOOT) } else { wolves.corpse_pos(i) }).is_some_and(|at| (at - feet).length() > LOOT_LEAVE) {
                     panels.close_loot();
                 }
                 if panels.talking_to().and_then(|i| wolves.corpse_pos(i)).is_some_and(|at| (at - feet).length() > LOOT_LEAVE) {
@@ -597,13 +601,15 @@ impl State {
                     panels.close_quest();
                 }
                 if let Some((id, left)) = panels.take_closed_loot() {
-                    match chests {
-                        Some(chests) if id >= CHEST_LOOT => chests.set_loot(id - CHEST_LOOT, left),
+                    match (chests, nodes) {
+                        (_, Some(nodes)) if id >= NODE_LOOT => nodes.set_loot(id - NODE_LOOT, left),
+                        (Some(chests), _) if id >= CHEST_LOOT && id < NODE_LOOT => chests.set_loot(id - CHEST_LOOT, left),
                         _ => wolves.set_loot(id, left),
                     }
                 }
                 let chest = self.chests.as_ref().and_then(|c| Some(c.lock(c.near(feet, OPEN_RANGE)?).is_some()));
                 let pickup = self.pickups.as_ref().is_some_and(|p| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv)).is_some());
+                let node = self.nodes.as_ref().and_then(|n| n.kind(n.near(feet, OPEN_RANGE)?)).map(|k| k.skill == crate::skills::Skill::Mining);
                 let bed = near_bed(&self.beds, &self.world, feet);
                 let body = self.bodies.as_ref().is_some_and(|b| b.near(feet, crate::physics::GRAB_RANGE).is_some());
                 let drag = self.bodies.as_ref().is_some_and(|b| b.near_corpse(feet, crate::physics::GRAB_RANGE).is_some());
@@ -614,6 +620,8 @@ impl State {
                     (_, None, _, Some(true)) => Some("Press E to pick the lock"),
                     (_, None, _, Some(false)) => Some("Press E to open"),
                     (_, None, _, None) if pickup => Some("Press E to pick up"),
+                    (_, None, _, None) if node == Some(true) => Some("Press E to mine"),
+                    (_, None, _, None) if node == Some(false) => Some("Press E to gather"),
                     (_, None, _, None) if body => Some("Hold E to pick up"),
                     (_, None, _, None) if drag => Some("Hold E to drag"),
                     (_, None, _, None) if bed => Some("Press E to sleep"),
@@ -752,7 +760,8 @@ impl State {
             drop(t);
             panels.set_quest_targets(self.wolves.as_ref(), self.chests.as_ref(), self.pickups.as_ref());
             if self.lock.is_none() {
-                panels.draw_compass(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw);
+                let marks = self.nodes.as_ref().filter(|_| panels.compass_nodes()).map_or_else(Vec::new, |n| n.marks(self.camera.pos, self.camera.yaw));
+                panels.draw_compass(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw, &marks);
             }
             panels.draw_map(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw);
             panels.draw_level(&mut self.renderer.ui, &self.gpu, size);

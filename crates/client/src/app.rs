@@ -57,9 +57,18 @@ const SAVE_SECONDS: u64 = 30;
 const DEFAULT_NAME: &str = "Adventurer";
 /// Loot window numbers from this one up are the chests' (the creatures' are below).
 const CHEST_LOOT: usize = 1_000_000;
+/// Loot window numbers from this one up are the nodes' (veins and herbs).
+const NODE_LOOT: usize = 2_000_000;
 
 /// How fast the editor's camera flies at first (yards a second; the wheel changes it).
 const FREE_SPEED: f32 = 25.0;
+
+/// A gathering being cast: the node, the seconds left and the models the original shows in the hands meanwhile.
+struct Gather {
+    node: usize,
+    left: f32,
+    glows: Vec<(usize, u32)>,
+}
 
 /// The editor's camera: it flies without bumping into anything, and the player stays where he was (the creatures cannot hurt him
 /// meanwhile).
@@ -160,6 +169,9 @@ struct State {
     /// The props that are picked up or have physics (the world's props change in the editor), and whether `pickups` and `bodies` are to be made again from them.
     pickup_props: Vec<content::Prop>,
     pickups_stale: bool,
+    /// The veins and herbs of the map, and the one being gathered (its place and the seconds left of the cast).
+    nodes: Option<crate::nodes::Nodes>,
+    gather: Option<Gather>,
     /// Where the beds are (render space): the props flagged `sleep`.
     beds: Vec<Vec3>,
     /// A lootable corpse that can also be dragged, and when the interact key went down on it: a tap loots it, holding drags it.

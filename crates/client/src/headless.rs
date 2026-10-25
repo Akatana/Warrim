@@ -780,7 +780,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             panels.draw_overlay(&mut renderer.ui, &gpu, (w, h), 0.0, args.panel.iter().any(|p| p == "hint").then_some("Press E to loot"));
             if args.compass {
                 panels.found.iter_mut().take(args.discover).for_each(|f| *f = true);
-                panels.draw_compass(&mut renderer.ui, &gpu, (w, h), render_camera.pos, render_camera.yaw);
+                panels.draw_compass(&mut renderer.ui, &gpu, (w, h), render_camera.pos, render_camera.yaw, &crate::nodes::Nodes::load(&args.map).marks(render_camera.pos, render_camera.yaw));
             }
             panels.draw_map(&mut renderer.ui, &gpu, (w, h), render_camera.pos, render_camera.yaw);
             panels.draw_level(&mut renderer.ui, &gpu, (w, h));

@@ -167,6 +167,7 @@ enum Sel {
     Prop(usize),
     Creature(usize),
     Chest(usize),
+    Node(usize),
 }
 
 /// Where the ground is (render space x, z -> height), as the world has it.
@@ -179,6 +180,7 @@ fn stand(d: &Data, sel: Sel, ground: Ground) -> Option<Prop> {
         Sel::Prop(i) => return d.cur.props.get(i).cloned(),
         Sel::Creature(i) => d.cur.spawns.get(i).map(|s| (s.creature.clone(), s.at, s.facing))?,
         Sel::Chest(i) => d.cur.chests.get(i).map(|c| (c.id.clone(), c.at, c.facing))?,
+        Sel::Node(i) => return places::node_prop(&d.cur.node_kinds, d.cur.nodes.get(i)?, ground),
     };
     Some(Prop { model: name, map: None, zone: None, pickup: None, sleep: false, physics: false, at: (at.0, at.1, ground(-at.1, -at.0)?), rotation: [0.0, -facing, 0.0], scale: 1.0 })
 }
@@ -196,6 +198,8 @@ fn store(d: &mut Data, sel: Sel, p: &Prop) {
             (s.at, s.facing) = ((p.at.0, p.at.1), facing);
         }
         Sel::Chest(i) => (d.cur.chests[i].at, d.cur.chests[i].facing) = ((p.at.0, p.at.1), facing),
+        // A node's heading is a prop's (not turned the other way round).
+        Sel::Node(i) => (d.cur.nodes[i].at, d.cur.nodes[i].facing) = (p.at, p.rotation[1].rem_euclid(360.0)),
     }
 }
 
@@ -206,9 +210,9 @@ pub struct Editor {
     /// The client's picture of the places of the map (`POIIcons`), for choosing the icon of a place.
     poi_icons: Option<usize>,
     tab: Tab,
-    /// What the places tab lists: 0 the creatures, 1 the chests, 2 the places to discover, 3 the props.
+    /// What the places tab lists: 0 the creatures, 1 the chests, 2 the places to discover, 3 the props, 4 the nodes (veins and herbs), 5 their kinds.
     sub: usize,
-    pick: [Pick; 8],
+    pick: [Pick; 10],
     /// The map being played, as of the last picture: what the creatures put down are made for.
     map: &'static str,
     /// Where the editor's eye was at the last picture.
@@ -224,6 +228,7 @@ pub struct Editor {
     /// The ground under each creature and chest (as the last frame saw it), to pick them with the pointer.
     spawn_ground: Vec<Option<f32>>,
     chest_ground: Vec<Option<f32>>,
+    node_ground: Vec<Option<f32>>,
     input: Input,
     edit: Edit,
     status: (String, [f32; 4]),
@@ -255,19 +260,20 @@ impl Editor {
             poi_icons,
             tab: Tab::World,
             sub: 0,
-            pick: [pick(), pick(), pick(), pick(), pick(), pick(), pick(), pick()],
+            pick: [pick(), pick(), pick(), pick(), pick(), pick(), pick(), pick(), pick(), pick()],
             map: "Azeroth",
             around: Place { north: 0.0, west: 0.0, height: 0.0, yaw: 0.0, map: "Azeroth" },
             data: None,
             placer: {
                 let models = Models::new(mount.clone());
-                Placer { gallery: Gallery::new(mount.clone(), models.cache.clone()), models, mount, files: None, model: String::new(), placing: false, view: None, memory: None, tool: Mode::Move, drag: None, drag_actor: false, hot: None, hover: None, hold: false, out: Vec::new(), aim: Aim::Prop, creature: String::new(), chest: String::new(), ghosted: false, turn: 0.0, scale: 1.0, lift: 0.0 }
+                Placer { gallery: Gallery::new(mount.clone(), models.cache.clone()), models, mount, files: None, model: String::new(), placing: false, view: None, memory: None, tool: Mode::Move, drag: None, drag_actor: false, hot: None, hover: None, hold: false, out: Vec::new(), aim: Aim::Prop, creature: String::new(), chest: String::new(), node: String::new(), ghosted: false, turn: 0.0, scale: 1.0, lift: 0.0 }
             },
             sent: content::get().props.clone(),
             eye: None,
             save_apply: false,
             spawn_ground: Vec::new(),
             chest_ground: Vec::new(),
+            node_ground: Vec::new(),
             input: Input::default(),
             edit: Edit::default(),
             status: ("F1 closes the editor. Click a field to type in it: Enter keeps what you typed, Esc throws it away. Save and apply puts the changes into the running game.".into(), DIM),
@@ -310,10 +316,12 @@ impl Editor {
             "chests" => 1,
             "discoveries" => 2,
             "props" => 3,
+            "nodes" => 4,
+            "nodekinds" => 5,
             _ => 0,
         };
         let i = match self.tab {
-            Tab::World => [0, 1, 6, 7][self.sub],
+            Tab::World => [0, 1, 6, 7, 8, 9][self.sub],
             Tab::Creatures => 2,
             Tab::Quests => 3,
             Tab::Items => 4,
@@ -402,9 +410,10 @@ impl Editor {
             (Tab::World, 0) => (d.cur.spawns.len(), Sel::Creature),
             (Tab::World, 1) => (d.cur.chests.len(), Sel::Chest),
             (Tab::World, 3) => (d.cur.props.len(), Sel::Prop),
+            (Tab::World, 4) => (d.cur.nodes.len(), Sel::Node),
             _ => return None,
         };
-        let at = self.pick[[0, 1, 0, 7][self.sub]].selected;
+        let at = self.pick[[0, 1, 0, 7, 8][self.sub]].selected;
         (at < n).then(|| make(at))
     }
 
@@ -538,8 +547,17 @@ impl Editor {
                 }
             }
         }
+        for (i, n) in d.cur.nodes.iter().enumerate() {
+            if let Some(&Some(y)) = self.node_ground.get(i) {
+                let at = Vec3::new(-n.at.1, y, -n.at.0);
+                if let Some(t) = propedit::hit_standing(origin, dir, at - Vec3::new(0.6, 0.0, 0.6), at + Vec3::new(0.6, 1.0, 0.6)) {
+                    consider(t, Sel::Node(i));
+                }
+            }
+        }
         let Some((_, found)) = best else { return false };
         let (sub, pick, i) = match found {
+            Sel::Node(i) => (4, 8, i),
             Sel::Creature(i) => (0, 0, i),
             Sel::Chest(i) => (1, 1, i),
             Sel::Prop(i) => (3, 7, i),
@@ -624,16 +642,22 @@ impl Editor {
                 Some(Sel::Prop(i)) => d.cur.props.get(i).cloned().map(Want::Prop),
                 Some(Sel::Creature(i)) => d.cur.spawns.get(i).zip(self.spawn_ground.get(i).copied().flatten()).map(|(s, y)| Want::Creature(s.creature.clone(), Vec3::new(-s.at.1, y, -s.at.0), s.facing.to_radians())),
                 Some(Sel::Chest(i)) => d.cur.chests.get(i).zip(self.chest_ground.get(i).copied().flatten()).map(|(c, y)| Want::Chest(c.model.clone(), Vec3::new(-c.at.1, y, -c.at.0), c.facing.to_radians())),
+                Some(Sel::Node(i)) => d.cur.nodes.get(i).zip(self.node_ground.get(i).copied().flatten()).and_then(|(n, y)| places::node_prop(&d.cur.node_kinds, n, &|_, _| Some(y))).map(Want::Prop),
                 None => None,
             },
             // Put down: what the next click would make, where the pointer touches the world.
-            (_, p) if self.open && p.placing => p.hover.and_then(|at| match p.aim {
+            (d, p) if self.open && p.placing => p.hover.and_then(|at| match p.aim {
                 Aim::Prop if placeable(&p.model) && p.mount.exists(&p.model) => {
                     let [north, west, height] = render_to_wow(at + Vec3::Y * p.lift);
                     Some(Want::Prop(Prop { model: p.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (north, west, height), rotation: [0.0, p.turn, 0.0], scale: p.scale }))
                 }
                 Aim::Prop => None,
                 Aim::Chest => Some(Want::Chest(p.chest.clone(), at, p.turn.to_radians())),
+                Aim::Node => {
+                    let [north, west, height] = render_to_wow(at);
+                    let node = content::Node { kind: p.node.clone(), map: None, at: (north, west, height), facing: p.turn, respawn: None };
+                    d.as_ref().and_then(|d| places::node_prop(&d.cur.node_kinds, &node, &|_, _| Some(height))).map(Want::Prop)
+                }
                 Aim::Creature => Some(Want::Creature(p.creature.clone(), at, p.turn.to_radians())),
                 Aim::Stop => None,
             }),
@@ -701,6 +725,12 @@ impl Editor {
                     s.path.push(Waypoint { at: (north, west), wait: 0.0, facing: None, steps: Vec::new() });
                 }
             }
+            Aim::Node => {
+                d.cur.nodes.push(content::Node { kind: self.placer.node.clone(), map: Some(self.map.to_string()), at: (north, west, height), facing: turn, respawn: None });
+                let p = &mut self.pick[8];
+                p.selected = d.cur.nodes.len() - 1;
+                p.reveal = true;
+            }
             Aim::Chest => {
                 let mut chest = chest_like(d, self.pick[1].selected);
                 (chest.model, chest.at, chest.facing) = (self.placer.chest.clone(), (north, west), turn);
@@ -752,12 +782,14 @@ impl Editor {
             // The ground under the creatures near the editor's eye (the world has tens of thousands; the others cannot be picked in the world).
             self.spawn_ground = d.cur.spawns.iter().map(|s| if near_here(s.at, around) { ground(-s.at.1, -s.at.0) } else { None }).collect();
             self.chest_ground = d.cur.chests.iter().map(|c| ground(-c.at.1, -c.at.0)).collect();
+            self.node_ground = d.cur.nodes.iter().map(|n| if near_here((n.at.0, n.at.1), around) { ground(-n.at.1, -n.at.0) } else { None }).collect();
         }
         self.gizmo(ui, eye, size.1, ground);
         // A creature or a chest that has no ghost to show gets a mark on the ground with an arrow for the way it will face.
         if let (true, Some(at), false) = (self.placer.placing, self.placer.hover, self.placer.ghosted || self.placer.aim == Aim::Prop) {
             let color = match self.placer.aim {
                 Aim::Chest => [1.0, 0.6, 0.2, 1.0],
+                Aim::Node => [0.9, 0.9, 0.3, 1.0],
                 Aim::Stop => [0.4, 0.7, 1.0, 1.0],
                 _ => [0.4, 1.0, 0.4, 1.0],
             };
@@ -929,6 +961,12 @@ mod tests {
         // Two props, one of them the same as the other (a copy stays a copy).
         let barn = Prop { model: r"World\wmo\Azeroth\Buildings\Human_Barn_Silo\barn.wmo".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (-8915.0, -150.0, 85.0), rotation: [0.0, 90.0, 0.0], scale: 1.0 };
         cur.props.extend([barn.clone(), barn]);
+        // A node kind made (like the first, another name and size), a node of it put down and another one taken away.
+        let mut kind = cur.node_kinds[0].clone();
+        (kind.id, kind.name, kind.scale) = ("big_vein".into(), "Big Vein".into(), 2.0);
+        cur.node_kinds.push(kind);
+        cur.nodes.push(content::Node { kind: "big_vein".into(), map: Some("Azeroth".into()), at: (-8900.0, -100.0, 85.0), facing: 30.0, respawn: Some(60.0) });
+        cur.nodes.remove(0);
         let overlay = Overlay::between(&base, &cur);
         assert_eq!((overlay.props_removed.len(), overlay.props_added.len()), (0, 2));
         assert_eq!((overlay.creatures.entries.len(), overlay.quests.entries.len(), overlay.chests.removed.len(), overlay.spawns_removed.len(), overlay.spawns_added.len()), (2, 1, 1, 1, 2));
@@ -942,6 +980,8 @@ mod tests {
         assert!(again.loot == cur.loot && again.pois == cur.pois && again.chests == cur.chests && again.creatures == cur.creatures);
         assert!(again.spawns.len() == cur.spawns.len() && cur.spawns.iter().all(|s| again.spawns.contains(s)));
         assert_eq!(again.props, cur.props);
+        assert!(again.node_kinds == cur.node_kinds && again.nodes.len() == cur.nodes.len() && cur.nodes.iter().all(|n| again.nodes.contains(n)));
+        assert_eq!((overlay.node_kinds.entries.len(), overlay.nodes_removed.len(), overlay.nodes_added.len()), (1, 1, 1));
         content::check(&again).unwrap();
         // And a change that breaks a reference is caught before it is saved.
         let mut broken = cur.clone();

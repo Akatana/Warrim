@@ -203,20 +203,22 @@ pub(super) fn setup(tree: &mut Tree) -> Result<()> {
     for part in ["AdvancedOptions", "BasicOptionsHelp", "UIOptionsFrameTab1", "UIOptionsFrameTab2", "UIOptionsFrameSlider1", "UIOptionsFrameSlider2", "UIOptionsFrameClickCameraDropDown", "UIOptionsFrameCameraDropDown"] {
         tree.show(part, false);
     }
-    for i in [5, 6, 12, 14, 15, 16, 2, 20, 21, 22, 23, 24, 26, 27, 31, 42, 43, 45, 61, 62, 66, 67] {
+    for i in [5, 6, 12, 14, 15, 16, 20, 21, 22, 23, 24, 26, 27, 31, 42, 43, 45, 61, 62, 66, 67] {
         tree.show(&format!("UIOptionsFrameCheckButton{i}"), false);
     }
     tree.set_size("BasicOptionsGeneral", None, Some(45.0));
-    tree.set_size("BasicOptionsDisplay", None, Some(107.0));
+    tree.set_size("BasicOptionsDisplay", None, Some(139.0));
     tree.set_size("BasicOptionsCamera", None, Some(65.0));
     tree.set_point("UIOptionsFrameCheckButton1", Point::TopLeft, Some("BasicOptionsGeneral"), Some(Point::TopLeft), 10.0, -8.0);
     tree.set_point("UIOptionsFrameCheckButton30", Point::TopLeft, Some("BasicOptionsDisplay"), Some(Point::TopLeft), 10.0, -8.0);
     tree.set_point("UIOptionsFrameCheckButton39", Point::Top, Some("UIOptionsFrameCheckButton30"), Some(Point::Bottom), 0.0, 0.0);
     tree.set_point("UIOptionsFrameCheckButton3", Point::Top, Some("UIOptionsFrameCheckButton39"), Some(Point::Bottom), 0.0, 0.0);
+    tree.set_point("UIOptionsFrameCheckButton2", Point::Top, Some("UIOptionsFrameCheckButton3"), Some(Point::Bottom), 0.0, 0.0);
     // Ragdolls is a child of the Controls box, moved into the Display box: draw Controls last or Display's backdrop veils it.
     tree.set_level("BasicOptionsGeneral", 1);
     // (The original has no such string.)
     tree.set_text("UIOptionsFrameCheckButton3Text", "Ragdolls");
+    tree.set_text("UIOptionsFrameCheckButton2Text", "Nodes on the compass");
     tree.set_point("UIOptionsFrameSlider3", Point::TopLeft, Some("BasicOptionsCamera"), Some(Point::TopLeft), 20.0, -28.0);
     tree.set_point("UIOptionsFrameSlider4", Point::Left, Some("UIOptionsFrameSlider3"), Some(Point::Right), 60.0, 0.0);
     // The buttons go under the boxes: the original's are at the bottom of the screen, where the action bar stands.
@@ -281,6 +283,11 @@ impl Panels {
         self.menu.interface.take()
     }
 
+    /// Whether the veins and herbs near show on the compass.
+    pub fn compass_nodes(&self) -> bool {
+        self.menu.interface.now.compass_nodes
+    }
+
     /// Whether the buffs show how long they last.
     pub(super) fn show_durations(&self) -> bool {
         self.menu.interface.now.buff_durations
@@ -330,6 +337,7 @@ impl Panels {
             "UIOptionsFrameCheckButton30" => (&mut m.interface.now.npc_names, &mut m.interface.changed),
             "UIOptionsFrameCheckButton39" => (&mut m.interface.now.buff_durations, &mut m.interface.changed),
             "UIOptionsFrameCheckButton3" => (&mut m.interface.now.ragdolls, &mut m.interface.changed),
+            "UIOptionsFrameCheckButton2" => (&mut m.interface.now.compass_nodes, &mut m.interface.changed),
             _ => return None,
         })
     }
@@ -435,6 +443,7 @@ impl Panels {
             ("UIOptionsFrameCheckButton30", i.npc_names),
             ("UIOptionsFrameCheckButton39", i.buff_durations),
             ("UIOptionsFrameCheckButton3", i.ragdolls),
+            ("UIOptionsFrameCheckButton2", i.compass_nodes),
         ];
         for (name, flag) in flags {
             self.tree.set_checked(name, flag);

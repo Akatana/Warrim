@@ -427,6 +427,41 @@ pub struct ChestDef {
     pub items: Vec<(String, u32)>,
 }
 
+/// A kind of node, a mineral vein or a plant that a profession gathers (`content/classic_node_kinds.ron`, made by `tools/import_nodes.py`).
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeKind {
+    pub id: String,
+    pub name: String,
+    /// The profession that gathers it (Mining or Herbalism) and the rank it asks for.
+    pub skill: crate::skills::Skill,
+    pub rank: u32,
+    pub model: String,
+    pub scale: f32,
+    /// Id of the drop table of one gathering.
+    pub loot: String,
+    /// How many times it can be gathered (lowest, highest) before it is gone.
+    pub uses: (u32, u32),
+}
+
+/// A node standing in the world: a kind, where, and the seconds until it is back after it was gathered empty (`NODE_RESPAWN` if none).
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Node {
+    pub kind: String,
+    /// The map it stands in; none (what the editor put down) is the map being played.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
+    /// North, west and height of the place in WoW coordinates, and the heading in degrees.
+    pub at: (f32, f32, f32),
+    pub facing: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub respawn: Option<f32>,
+}
+
+/// Seconds until a node is back when it says nothing of its own.
+pub const NODE_RESPAWN: f32 = 300.0;
+
 /// A place the compass can show and the player can discover.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -680,6 +715,10 @@ pub struct Content {
     pub creature_numbers: std::collections::HashMap<String, usize>,
     pub spawns: Vec<Spawn>,
     pub props: Vec<Prop>,
+    pub node_kinds: Vec<NodeKind>,
+    /// The place in `node_kinds` of each kind, by id.
+    pub node_numbers: std::collections::HashMap<String, usize>,
+    pub nodes: Vec<Node>,
     pub start: Start,
 }
 
@@ -1206,6 +1245,11 @@ impl Keyed for Poi {
         &self.id
     }
 }
+impl Keyed for NodeKind {
+    fn key(&self) -> &str {
+        &self.id
+    }
+}
 impl Keyed for ChestDef {
     fn key(&self) -> &str {
         &self.id
@@ -1243,6 +1287,7 @@ pub struct Overlay {
     pub quests: Part<RawQuest>,
     pub chests: Part<ChestDef>,
     pub pois: Part<Poi>,
+    pub node_kinds: Part<NodeKind>,
     /// The loot tables by id: those it changed or made, and those it removed.
     pub loot_removed: Vec<String>,
     pub loot: BTreeMap<String, RawTable>,
@@ -1250,6 +1295,8 @@ pub struct Overlay {
     pub spawns_added: Vec<Spawn>,
     pub props_removed: Vec<Prop>,
     pub props_added: Vec<Prop>,
+    pub nodes_removed: Vec<Node>,
+    pub nodes_added: Vec<Node>,
 }
 
 impl Overlay {
@@ -1272,18 +1319,22 @@ impl Overlay {
     pub fn between(base: &Raws, current: &Raws) -> Overlay {
         let (spawns_removed, spawns_added) = difference(&base.spawns, &current.spawns);
         let (props_removed, props_added) = difference(&base.props, &current.props);
+        let (nodes_removed, nodes_added) = difference(&base.nodes, &current.nodes);
         Overlay {
             items: Part::between(&base.items, &current.items),
             creatures: Part::between(&base.creatures, &current.creatures),
             quests: Part::between(&base.quests, &current.quests),
             chests: Part::between(&base.chests, &current.chests),
             pois: Part::between(&base.pois, &current.pois),
+            node_kinds: Part::between(&base.node_kinds, &current.node_kinds),
             loot_removed: base.loot.keys().filter(|k| !current.loot.contains_key(*k)).cloned().collect(),
             loot: current.loot.iter().filter(|(k, v)| base.loot.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), v.clone())).collect(),
             spawns_removed,
             spawns_added,
             props_removed,
             props_added,
+            nodes_removed,
+            nodes_added,
         }
     }
 }
@@ -1335,6 +1386,8 @@ pub struct Raws {
     pub chests: Vec<ChestDef>,
     pub pois: Vec<Poi>,
     pub props: Vec<Prop>,
+    pub node_kinds: Vec<NodeKind>,
+    pub nodes: Vec<Node>,
     pub loot: BTreeMap<String, RawTable>,
 }
 
@@ -1392,8 +1445,11 @@ impl Raws {
                 props.extend(classic_props()?);
                 props
             },
+            node_kinds: ron::from_str(&source("classic_node_kinds.ron", include_str!("../../../content/classic_node_kinds.ron"))).context("classic_node_kinds.ron")?,
+            nodes: ron::from_str(&source("classic_nodes.ron", include_str!("../../../content/classic_nodes.ron"))).context("classic_nodes.ron")?,
             loot: {
                 let mut loot: BTreeMap<String, RawTable> = ron::from_str(&source("loot.ron", include_str!("../../../content/loot.ron"))).context("loot.ron")?;
+                loot.extend(ron::from_str::<BTreeMap<String, RawTable>>(&source("classic_node_loot.ron", include_str!("../../../content/classic_node_loot.ron"))).context("classic_node_loot.ron")?);
                 loot.extend(ron::from_str::<BTreeMap<String, RawTable>>(&source("classic_loot.ron", include_str!("../../../content/classic_loot.ron"))).context("classic_loot.ron")?);
                 loot.extend(ron::from_str::<BTreeMap<String, RawTable>>(&source("classic_creature_loot.ron", include_str!("../../../content/classic_creature_loot.ron"))).context("classic_creature_loot.ron")?);
                 loot
@@ -1407,10 +1463,12 @@ impl Raws {
         overlay.quests.apply(&mut self.quests);
         overlay.chests.apply(&mut self.chests);
         overlay.pois.apply(&mut self.pois);
+        overlay.node_kinds.apply(&mut self.node_kinds);
         self.loot.retain(|k, _| !overlay.loot_removed.contains(k));
         self.loot.extend(overlay.loot.iter().map(|(k, v)| (k.clone(), v.clone())));
         patched(&mut self.spawns, &overlay.spawns_removed, &overlay.spawns_added);
         patched(&mut self.props, &overlay.props_removed, &overlay.props_added);
+        patched(&mut self.nodes, &overlay.nodes_removed, &overlay.nodes_added);
         self
     }
 }
@@ -1438,7 +1496,7 @@ pub fn check(raws: &Raws) -> Result<()> {
 
 /// Cross-check the lists and the rest of the content files and make the content of them.
 pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
-    let Raws { items: raw_items, creatures: raw_creatures, quests: raw_quests, spawns, chests, pois, props, loot: raw_loot } = raws;
+    let Raws { items: raw_items, creatures: raw_creatures, quests: raw_quests, spawns, chests, pois, props, node_kinds, nodes, loot: raw_loot } = raws;
     let display_dbc = mount.map(|m| -> Result<Dbc> { Ok(Dbc::parse(&m.read(r"DBFilesClient\ItemDisplayInfo.dbc")?)?) }).transpose().context("ItemDisplayInfo.dbc")?;
     let display = display_dbc.as_ref().zip(mount).map(|(dbc, mount)| Displays::new(dbc, mount));
     let spells: Vec<SpellDef> = ron::from_str(&source("spells.ron", include_str!("../../../content/spells.ron"))).context("spells.ron")?;
@@ -1595,6 +1653,17 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         }
     }
     let portals: Vec<Portal> = ron::from_str(&source("classic_portals.ron", include_str!("../../../content/classic_portals.ron"))).context("classic_portals.ron")?;
+    let node_numbers: std::collections::HashMap<String, usize> = node_kinds.iter().enumerate().map(|(i, k)| (k.id.clone(), i)).collect();
+    ensure!(node_kinds.iter().enumerate().all(|(i, k)| node_kinds[..i].iter().all(|o| o.id != k.id)), "a node kind id is used twice");
+    for k in &node_kinds {
+        ensure!(k.model.to_ascii_lowercase().ends_with(".m2") && k.rank <= crate::skills::PROFESSION_MAX, "node kind {}: model (a .m2 file) or rank", k.id);
+        ensure!(matches!(k.skill, crate::skills::Skill::Mining | crate::skills::Skill::Herbalism) && k.uses.0 >= 1 && k.uses.0 <= k.uses.1 && k.scale > 0.0, "node kind {}: skill, uses or scale", k.id);
+        ensure!(raw_loot.contains_key(&k.loot), "node kind {}: unknown loot table {}", k.id, k.loot);
+    }
+    for n in &nodes {
+        ensure!(node_numbers.contains_key(&n.kind), "a node of unknown kind {}", n.kind);
+        ensure!(n.at.0.is_finite() && n.at.1.is_finite() && n.at.2.is_finite() && n.respawn.is_none_or(|r| r > 0.0), "node of kind {}: place or time", n.kind);
+    }
     let (mut giving, mut taking): (std::collections::HashMap<usize, Vec<usize>>, std::collections::HashMap<usize, Vec<usize>>) = Default::default();
     let mut item_quests: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     for (i, q) in quests.iter().enumerate() {
@@ -1604,7 +1673,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         }
         taking.entry(q.turn_in).or_default().push(i);
     }
-    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, start: Start { spells: known, money: raw_start.money, equipment, bag } })
+    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, start: Start { spells: known, money: raw_start.money, equipment, bag } })
 }
 
 #[cfg(test)]

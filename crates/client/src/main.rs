@@ -34,6 +34,7 @@ mod keys;
 mod lifts;
 mod physics;
 mod ragdoll;
+mod nodes;
 mod pickups;
 mod procs;
 mod profile;

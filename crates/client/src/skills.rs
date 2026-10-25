@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX: u32 = 100;
 
+/// The top rank of a profession, as in the original (the other skills stop at `MAX`).
+pub const PROFESSION_MAX: u32 = 300;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub enum Skill {
     Swords,
@@ -45,10 +48,22 @@ pub enum Skill {
     Mage,
     Warlock,
     Druid,
+    Alchemy,
+    Blacksmithing,
+    Enchanting,
+    Engineering,
+    Herbalism,
+    Leatherworking,
+    Mining,
+    Skinning,
+    Tailoring,
+    Cooking,
+    Fishing,
+    FirstAid,
 }
 
 /// How many skills there are.
-pub const COUNT: usize = 36;
+pub const COUNT: usize = 48;
 
 /// The rank of the original's skills of riding: apprentice, and journeyman (the nearest the game has, with only these two, to the original's tiers). Not trained by use:
 /// a riding instructor teaches them for a price.
@@ -92,6 +107,18 @@ pub const ALL: [Skill; COUNT] = [
     Skill::Mage,
     Skill::Warlock,
     Skill::Druid,
+    Skill::Alchemy,
+    Skill::Blacksmithing,
+    Skill::Enchanting,
+    Skill::Engineering,
+    Skill::Herbalism,
+    Skill::Leatherworking,
+    Skill::Mining,
+    Skill::Skinning,
+    Skill::Tailoring,
+    Skill::Cooking,
+    Skill::Fishing,
+    Skill::FirstAid,
 ];
 
 /// The headings of the skills window.
@@ -101,6 +128,8 @@ pub enum Group {
     Weapon,
     Armor,
     General,
+    Professions,
+    Secondary,
 }
 
 impl Group {
@@ -110,14 +139,25 @@ impl Group {
             Group::Weapon => "Weapon Skills",
             Group::Armor => "Armor Proficiencies",
             Group::General => "General Skills",
+            Group::Professions => "Professions",
+            Group::Secondary => "Secondary Skills",
         }
     }
 }
 
 impl Skill {
-    /// The most a rank of the skill can be: `MAX`, but riding is bought in two steps beyond it.
+    /// The most a rank of the skill can be: `MAX`, but riding is bought in two steps beyond it and the professions go to 300.
     pub fn top(self) -> u32 {
-        if self == Skill::Riding { JOURNEYMAN_RIDING } else { MAX }
+        match self {
+            Skill::Riding => JOURNEYMAN_RIDING,
+            s if s.is_profession() => PROFESSION_MAX,
+            _ => MAX,
+        }
+    }
+
+    /// A trade (mining, tailoring, fishing...), whose ranks rise by what it makes or gathers, not by the uses that train the others.
+    pub fn is_profession(self) -> bool {
+        matches!(self.group(), Group::Professions | Group::Secondary)
     }
 
     /// The rank the skill's bar is full at: for riding the tier the rank is in.
@@ -125,7 +165,7 @@ impl Skill {
         match self {
             Skill::Riding if rank > APPRENTICE_RIDING => JOURNEYMAN_RIDING,
             Skill::Riding => APPRENTICE_RIDING,
-            _ => MAX,
+            s => s.top(),
         }
     }
 
@@ -180,6 +220,18 @@ impl Skill {
             Skill::Mage => "Mage",
             Skill::Warlock => "Warlock",
             Skill::Druid => "Druid",
+            Skill::Alchemy => "Alchemy",
+            Skill::Blacksmithing => "Blacksmithing",
+            Skill::Enchanting => "Enchanting",
+            Skill::Engineering => "Engineering",
+            Skill::Herbalism => "Herbalism",
+            Skill::Leatherworking => "Leatherworking",
+            Skill::Mining => "Mining",
+            Skill::Skinning => "Skinning",
+            Skill::Tailoring => "Tailoring",
+            Skill::Cooking => "Cooking",
+            Skill::Fishing => "Fishing",
+            Skill::FirstAid => "First Aid",
         }
     }
 
@@ -194,6 +246,9 @@ impl Skill {
             Skill::Swimming => "Skill at swimming. Rises while you swim, and swimming tires you less.".into(),
             Skill::Diving => "Skill at holding your breath. Rises while your head is under water, and you can stay under longer before you start to drown.".into(),
             armor if armor.group() == Group::Armor => format!("Skill in wearing {} armor. Rises with every blow that lands on you, in the share of the pieces you wear of it, and each piece of it stops more damage.", armor.name().to_lowercase()),
+            Skill::Mining => "Skill at mining. Lets you dig ore and stones from mineral veins with a mining pick; the richer veins ask for a higher rank, and every vein within reach of your rank can teach you more.".into(),
+            Skill::Herbalism => "Skill at gathering herbs. Lets you pick plants for their leaves and roots; the rarer herbs ask for a higher rank, and every herb within reach of your rank can teach you more.".into(),
+            trade if trade.is_profession() => format!("Skill in {}. The rank is here, but this game has no recipes or tools for it yet.", trade.name().to_lowercase()),
             Skill::Riding => "Skill at riding. Learned from a riding instructor, for a price; it lets you ride the mounts that ask for it.".into(),
             class => format!("Skill in the arts of the {}. Rises with every spell of the class you cast, and its spells grow stronger. The greater tomes of the class ask for its rank.", class.name().to_lowercase()),
         }
@@ -207,6 +262,8 @@ impl Skill {
     pub fn group(self) -> Group {
         match self {
             Skill::Sneaking | Skill::Lockpicking | Skill::Riding | Skill::Swimming | Skill::Diving => Group::General,
+            Skill::Alchemy | Skill::Blacksmithing | Skill::Enchanting | Skill::Engineering | Skill::Herbalism | Skill::Leatherworking | Skill::Mining | Skill::Skinning | Skill::Tailoring => Group::Professions,
+            Skill::Cooking | Skill::Fishing | Skill::FirstAid => Group::Secondary,
             Skill::Cloth | Skill::Leather | Skill::Chain | Skill::Plate => Group::Armor,
             Skill::Warrior | Skill::Paladin | Skill::Hunter | Skill::Rogue | Skill::Priest | Skill::Shaman | Skill::Mage | Skill::Warlock | Skill::Druid => Group::Class,
             _ => Group::Weapon,
@@ -296,19 +353,36 @@ impl Skills {
     /// The skill was used `uses` times (a swing, a block, a spell): returns its new rank if it rose.
     pub fn train(&mut self, skill: Skill, uses: f32) -> Option<u32> {
         let i = skill.index();
-        if self.rank[i] >= MAX {
+        if self.rank[i] >= skill.top() {
             return None;
         }
         self.uses[i] += uses;
         let before = self.rank[i];
-        while self.rank[i] < MAX && self.uses[i] >= uses_needed(self.rank[i]) {
+        while self.rank[i] < skill.top() && self.uses[i] >= uses_needed(self.rank[i]) {
             self.uses[i] -= uses_needed(self.rank[i]);
             self.rank[i] += 1;
         }
-        if self.rank[i] >= MAX {
+        if self.rank[i] >= skill.top() {
             self.uses[i] = 0.0;
         }
         (self.rank[i] > before).then_some(self.rank[i])
+    }
+
+    /// The server's rule for gathering skill (CMaNGOS `UpdateGatherSkill`): gathering what asks for `required` gives one rank with a chance by how
+    /// far the skill is above it, 100% up to 25 above, 75% to 50, 25% to 100 and none beyond. `roll` is a number from 0 to 1. Returns the new rank if it rose.
+    pub fn gather(&mut self, skill: Skill, required: u32, roll: f32) -> Option<u32> {
+        let i = skill.index();
+        let above = self.rank[i].saturating_sub(required);
+        let chance = match above {
+            0..=24 => 1.0,
+            25..=49 => 0.75,
+            50..=99 => 0.25,
+            _ => 0.0,
+        };
+        (self.rank[i] < skill.top() && roll < chance).then(|| {
+            self.rank[i] += 1;
+            self.rank[i]
+        })
     }
 
     /// How much of the next rank is done, 0 to 1.
@@ -378,7 +452,7 @@ impl Skills {
         for (id, rank, uses) in parts {
             if let Some(skill) = Skill::from_id(id) {
                 s.rank[skill.index()] = (*rank).clamp(1, skill.top());
-                s.uses[skill.index()] = if *rank >= MAX { 0.0 } else { uses.clamp(0.0, uses_needed(*rank)) };
+                s.uses[skill.index()] = if *rank >= skill.top() { 0.0 } else { uses.clamp(0.0, uses_needed(*rank)) };
             }
         }
         s
@@ -441,6 +515,24 @@ mod tests {
     }
 
     #[test]
+    fn a_profession_goes_to_300_and_gathering_rises_it_by_the_servers_chances() {
+        let mut s = Skills::new();
+        assert_eq!((Skill::Mining.top(), Skill::Mining.cap(1), Skill::Swords.top()), (PROFESSION_MAX, 300, MAX));
+        // At the rank a node asks for, and up to 24 above it, every gathering teaches; 25 above, three in four; 50 above, one in four; 100 above, none.
+        assert_eq!(s.gather(Skill::Mining, 1, 0.99), Some(2));
+        assert_eq!(s.gather(Skill::Mining, 2, 0.99), Some(3));
+        s.set(Skill::Mining, 30);
+        assert_eq!((s.gather(Skill::Mining, 1, 0.74), s.gather(Skill::Mining, 1, 0.75)), (Some(31), None));
+        s.set(Skill::Mining, 60);
+        assert_eq!((s.gather(Skill::Mining, 1, 0.24), s.gather(Skill::Mining, 1, 0.25)), (Some(61), None));
+        s.set(Skill::Mining, 101);
+        assert_eq!(s.gather(Skill::Mining, 1, 0.0), None);
+        s.set(Skill::Mining, 300);
+        assert_eq!(s.gather(Skill::Mining, 300, 0.0), None);
+        assert_eq!(Skills::from_parts(&s.parts()).rank(Skill::Mining), 300);
+    }
+
+    #[test]
     fn weapons_train_by_family_and_every_skill_has_a_name_a_heading_and_an_id_that_comes_back() {
         assert_eq!([Skill::of_weapon(7), Skill::of_weapon(4), Skill::of_weapon(8), Skill::of_weapon(99)], [Skill::Swords, Skill::Maces, Skill::TwoHandedSwords, Skill::Unarmed]);
         for s in ALL {
@@ -450,6 +542,7 @@ mod tests {
         assert_eq!(ALL.iter().filter(|s| s.is_class()).count(), 9);
         assert_eq!(ALL.iter().filter(|s| s.group() == Group::Weapon).count(), 18);
         assert_eq!(ALL.iter().filter(|s| s.group() == Group::General).count(), 5);
+        assert_eq!((ALL.iter().filter(|s| s.group() == Group::Professions).count(), ALL.iter().filter(|s| s.group() == Group::Secondary).count()), (9, 3));
         assert_eq!(ALL.iter().filter(|s| s.group() == Group::Armor).count(), 4);
     }
 

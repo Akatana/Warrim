@@ -132,6 +132,9 @@ pub struct Save {
     pub weather: Vec<(u32, u8, f32, f32)>,
     #[serde(default)]
     pub gone: Vec<(usize, f32)>,
+    /// The nodes (veins and herbs) that are gone: their place in the map's list, seconds until they are back.
+    #[serde(default)]
+    pub nodes_gone: Vec<(usize, f32)>,
     #[serde(default)]
     pub moved: Vec<crate::physics::BodySave>,
     #[serde(default)]
@@ -200,6 +203,7 @@ impl Save {
             time_fixed: false,
             weather: Vec::new(),
             gone: Vec::new(),
+            nodes_gone: Vec::new(),
             moved: Vec::new(),
             lifts_clock: 0.0,
         }

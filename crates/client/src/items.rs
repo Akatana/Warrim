@@ -942,9 +942,9 @@ mod tests {
         // 3 linen in slot 3: 10 more join it.
         assert!(inv.add(Stack { item: find("linen_cloth"), count: 10 }));
         assert_eq!(inv.bag[3], Some(Stack { item: find("linen_cloth"), count: 13 }));
-        // 20 more fill that stack (to 20) and the rest starts a new one in the first free slot (6, after the five items of the starting kit and the lockpicks).
+        // 20 more fill that stack (to 20) and the rest starts a new one in the first free slot (7, after the five items of the starting kit, the lockpicks and the mining pick).
         assert!(inv.add(Stack { item: find("linen_cloth"), count: 20 }));
-        assert_eq!((inv.bag[3], inv.bag[6]), (Some(Stack { item: find("linen_cloth"), count: 20 }), Some(Stack { item: find("linen_cloth"), count: 13 })));
+        assert_eq!((inv.bag[3], inv.bag[7]), (Some(Stack { item: find("linen_cloth"), count: 20 }), Some(Stack { item: find("linen_cloth"), count: 13 })));
         // Fill every free slot with non-stacking items: the next one makes a new row instead of being refused.
         while let Some(free) = inv.bag.iter().position(Option::is_none) {
             inv.bag[free] = Some(Stack { item: find("hearthstone"), count: 1 });
@@ -953,8 +953,8 @@ mod tests {
         assert!(inv.add(Stack { item: find("hatchet"), count: 1 }));
         assert_eq!((inv.bag.len(), inv.bag[before.len()].map(|s| s.item)), (before.len() + 2 * BACKPACK_COLUMNS, Some(find("hatchet"))));
         // A stack with room still takes more.
-        assert!(inv.add(Stack { item: find("linen_cloth"), count: 7 }) && inv.bag[6].map(|s| s.count) == Some(20));
-        assert_eq!(inv.bag[..6], before[..6]);
+        assert!(inv.add(Stack { item: find("linen_cloth"), count: 7 }) && inv.bag[7].map(|s| s.count) == Some(20));
+        assert_eq!(inv.bag[..7], before[..7]);
         // Taking the items out shrinks the pack back to the size it started with.
         for slot in 0..before.len() + 1 {
             inv.bag[slot] = None;

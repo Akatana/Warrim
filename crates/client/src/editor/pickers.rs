@@ -56,6 +56,7 @@ pub(super) enum Ref {
     Loot,
     Quest,
     Spell,
+    NodeKind,
 }
 
 impl Ref {
@@ -66,6 +67,7 @@ impl Ref {
             Ref::Loot => "Choose a loot table",
             Ref::Quest => "Choose a quest",
             Ref::Spell => "Choose a spell",
+            Ref::NodeKind => "Choose a kind of node",
         }
     }
 }
@@ -78,6 +80,7 @@ pub(super) struct Ids {
     pub(super) loot: Vec<(String, String)>,
     pub(super) quests: Vec<(String, String)>,
     pub(super) spells: Vec<(String, String)>,
+    pub(super) nodes: Vec<(String, String)>,
 }
 
 impl Ids {
@@ -88,6 +91,7 @@ impl Ids {
             loot: raws.loot.keys().map(|k| (k.clone(), String::new())).collect(),
             quests: raws.quests.iter().map(|q| (q.id.clone(), q.title.clone())).collect(),
             spells: content::get().spells.iter().map(|s| (s.id.clone(), s.name.clone())).collect(),
+            nodes: raws.node_kinds.iter().map(|k| (k.id.clone(), format!("{}, {} {}", k.name, k.skill.name(), k.rank))).collect(),
         }
     }
 
@@ -98,6 +102,7 @@ impl Ids {
             Ref::Loot => &self.loot,
             Ref::Quest => &self.quests,
             Ref::Spell => &self.spells,
+            Ref::NodeKind => &self.nodes,
         }
     }
 

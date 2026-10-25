@@ -99,6 +99,11 @@ impl State {
         }
         let pickup_props = pickup_props();
         let mut pickups = Pickups::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &map).map_err(|e| log::warn!("no pickups: {e:#}")).ok();
+        let mut nodes = crate::nodes::Nodes::load(&map);
+        if let Some(saved) = &loaded {
+            nodes.restore(&saved.nodes_gone);
+        }
+        let nodes = Some(nodes);
         let mut effects = crate::effects::Effects::new(player_mount.clone());
         let lifts = crate::lifts::Lifts::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &mut effects, &map, loaded.as_ref().map_or(0.0, |s| s.lifts_clock)).map_err(|e| log::warn!("no lifts: {e:#}")).ok();
         let mut bodies = Bodies::load(&player_mount, &ModelCache::default(), &mut renderer, &gpu, &pickup_props, &map).map_err(|e| log::warn!("no physics props: {e:#}")).ok();
@@ -182,6 +187,8 @@ impl State {
             pending_loot: None,
             pickup_props,
             pickups_stale: false,
+            nodes,
+            gather: None,
             beds: bed_spots(&content::get().props, &map),
             map,
             home: start_map.to_string(),

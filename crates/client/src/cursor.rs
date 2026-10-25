@@ -17,9 +17,11 @@ pub enum Kind {
     LootAll,
     PickLock,
     Buy,
+    Mine,
+    Herb,
 }
 
-const FILES: [&str; 7] = ["Point", "Attack", "Speak", "Interact", "LootAll", "PickLock", "Buy"];
+const FILES: [&str; 9] = ["Point", "Attack", "Speak", "Interact", "LootAll", "PickLock", "Buy", "Mine", "GatherHerbs"];
 
 /// What the pointer is over in the world (a creature, a chest or a prop to pick up, by number), for the click that follows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -27,6 +29,7 @@ pub enum Hover {
     Creature(usize),
     Chest(usize),
     Pickup(usize),
+    Node(usize),
 }
 
 /// The pointer's pictures are 32 pixels square, whatever the size of the window, with the tip at the top left.
@@ -38,14 +41,14 @@ const GLOW: &str = r"SPELLS\White-Circle.blp";
 const RING: &str = r"Interface\Buttons\IconBorder-GlowRing.blp";
 
 pub struct Cursors {
-    textures: [usize; 7],
+    textures: [usize; FILES.len()],
     glow: usize,
     ring: usize,
 }
 
 impl Cursors {
     pub fn load(mount: &Mount, ui: &mut Ui, gpu: &Gpu) -> Result<Cursors> {
-        let mut textures = [0; 7];
+        let mut textures = [0; FILES.len()];
         for (slot, name) in textures.iter_mut().zip(FILES) {
             let blp = Blp::parse(&mount.read(&format!(r"Interface\Cursor\{name}.blp"))?)?;
             *slot = ui.add_texture(gpu, blp.width, blp.height, &blp.mips[0]);

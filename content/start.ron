@@ -3,5 +3,5 @@
     spells: ["holy_light"],
     money: 0,
     equipment: [(16, "longsword"), (17, "round_shield")],
-    bag: [("hearthstone", 1), ("worn_leather_vest", 1), ("scuffed_boots", 1), ("linen_cloth", 3), ("hatchet", 1), ("lockpick", 5)],
+    bag: [("hearthstone", 1), ("worn_leather_vest", 1), ("scuffed_boots", 1), ("linen_cloth", 3), ("hatchet", 1), ("lockpick", 5), ("i2901", 1)],
 )

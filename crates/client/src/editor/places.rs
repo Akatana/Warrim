@@ -15,26 +15,28 @@ pub(super) fn chest_like(d: &Data, selected: usize) -> content::ChestDef {
 
 /// The places tab: where creatures and chests stand, the places the compass shows and the props.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 8], sub: &mut usize, kind: &mut usize, placer: &mut Placer, me: Place, around: Place, actions: &mut Vec<Action>, top: f32, bottom: f32) {
-    for (i, name) in ["Creatures", "Chests", "Discoveries", "Props"].into_iter().enumerate() {
-        if g.button(8.0 + i as f32 * 114.0, top, 108.0, name) {
+pub(super) fn world(g: &mut Gui, d: &mut Data, pick: &mut [Pick; 10], sub: &mut usize, kind: &mut usize, placer: &mut Placer, me: Place, around: Place, actions: &mut Vec<Action>, top: f32, bottom: f32) {
+    for (i, name) in ["Creatures", "Chests", "Discoveries", "Props", "Nodes", "Node kinds"].into_iter().enumerate() {
+        if g.button(8.0 + i as f32 * 108.0, top, 102.0, name) {
             *sub = i;
         }
     }
-    g.fill(8.0 + *sub as f32 * 114.0, top + ROW, 108.0, 2.0, GOLD);
+    g.fill(8.0 + *sub as f32 * 108.0, top + ROW, 102.0, 2.0, GOLD);
     let body = top + 28.0;
     let rows = ((bottom - body - 26.0) / ROW) as usize;
     match *sub {
         0 => spawns(g, d, &mut pick[0], kind, placer, me, around, actions, body, bottom, rows),
         1 => chests(g, d, &mut pick[1], placer, me, actions, body, bottom, rows),
         2 => pois(g, d, &mut pick[6], me, actions, body, bottom, rows),
-        _ => props(g, d, &mut pick[7], placer, me, actions, body, bottom, rows),
+        3 => props(g, d, &mut pick[7], placer, me, actions, body, bottom, rows),
+        4 => nodes(g, d, &mut pick[8], placer, me, around, actions, body, bottom, rows),
+        _ => node_kinds(g, d, &mut pick[9], placer, body, bottom, rows),
     }
     // Esc ends the putting down, and so does leaving the tab of what is put down.
     if placer.placing && !g.blocked && g.input.keys.contains(&Key::Escape) {
         placer.placing = false;
     }
-    placer.placing &= matches!((placer.aim, *sub), (Aim::Creature | Aim::Stop, 0) | (Aim::Chest, 1) | (Aim::Prop, 3));
+    placer.placing &= matches!((placer.aim, *sub), (Aim::Creature | Aim::Stop, 0) | (Aim::Chest, 1) | (Aim::Prop, 3) | (Aim::Node, 4));
 }
 
 /// The distance in yards from the player to a place (north, west).
@@ -354,6 +356,152 @@ pub(super) fn steps_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, steps: &mut V
         steps.push((0.0, Step::Run(true)));
     }
     *y += ROW + 3.0;
+}
+
+/// A node as the gizmo and the ghost see it: a prop of the kind's model and size, standing where `ground` puts it, turned by the node's heading. None for
+/// an unknown kind or a place without ground.
+pub(super) fn node_prop(kinds: &[content::NodeKind], n: &content::Node, ground: Ground) -> Option<Prop> {
+    let kind = kinds.iter().find(|k| k.id == n.kind)?;
+    Some(Prop { model: kind.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (n.at.0, n.at.1, ground(-n.at.1, -n.at.0)?), rotation: [0.0, n.facing, 0.0], scale: kind.scale })
+}
+
+/// The kinds of nodes: what a vein or an herb is called, which profession gathers it at what rank, how it looks, what it gives and how often it can be gathered.
+#[allow(clippy::too_many_arguments)]
+fn node_kinds(g: &mut Gui, d: &mut Data, p: &mut Pick, placer: &mut Placer, body: f32, bottom: f32, rows: usize) {
+    let lines: Vec<String> = d.cur.node_kinds.iter().map(|k| format!("{}  ({} {})", k.name, k.skill.name(), k.rank)).collect();
+    let selected = p.selected;
+    let (made, gone) = list_header(g, body, "delete-node-kind", "New kind", !d.cur.node_kinds.is_empty());
+    if made {
+        // Like the selected one (else like the first), under a new id.
+        let mut kind = d.cur.node_kinds.get(selected).or(d.cur.node_kinds.first()).cloned().unwrap_or_else(|| content::NodeKind { id: String::new(), name: String::new(), skill: crate::skills::Skill::Mining, rank: 1, model: String::new(), scale: 1.0, loot: String::new(), uses: (1, 1) });
+        kind.id = fresh(&d.cur.node_kinds.iter().map(|k| k.id.as_str()).collect::<Vec<_>>(), "node");
+        kind.name = "New node".into();
+        d.cur.node_kinds.push(kind);
+        p.selected = d.cur.node_kinds.len() - 1;
+        p.reveal = true;
+    }
+    list(g, 8.0, body + 26.0, LIST_WIDTH, rows, &lines, p);
+    let used = d.cur.node_kinds.get(selected).map_or(0, |k| d.cur.nodes.iter().filter(|n| n.kind == k.id).count());
+    form(g, p, PANE_X, body, PANE_W, bottom, |g, y, _| {
+        let (x, w) = (PANE_X, PANE_W);
+        let Some(k) = d.cur.node_kinds.get_mut(selected) else {
+            empty_pane(g, x, *y, w, "No kind is selected. Pick one in the list, or make one with \"New kind\".");
+            return;
+        };
+        g.text(x, *y, w, "The selected kind", GOLD);
+        *y += ROW + 4.0;
+        g.text(x, *y + 3.0, LABEL_WIDTH, "Id", DIM);
+        g.text(x + LABEL_WIDTH + 4.0, *y + 3.0, w - LABEL_WIDTH, &k.id, TEXT);
+        *y += ROW + 3.0;
+        text_row(g, y, x, w, "Name", 911, &mut k.name);
+        let mut mining = k.skill == crate::skills::Skill::Mining;
+        toggle_row(g, y, x, "Gathered by", &mut mining, "Mining", "Herbalism");
+        k.skill = if mining { crate::skills::Skill::Mining } else { crate::skills::Skill::Herbalism };
+        value_row(g, y, x, w, "Rank needed", 912, &mut k.rank);
+        k.rank = k.rank.min(crate::skills::PROFESSION_MAX);
+        hint(g, y, x, "The rank of the profession it asks for (0 to 300).");
+        let tag = fid("pick", 913);
+        if let Some(model) = g.picked(tag) {
+            k.model = model;
+        }
+        g.text(x, *y + 3.0, LABEL_WIDTH, "Model", DIM);
+        if !(placeable(&k.model) && k.model.to_ascii_lowercase().ends_with(".m2") && placer.mount.exists(&k.model)) {
+            g.tint = Some(RED);
+        }
+        g.field("Model", 913, x + LABEL_WIDTH, *y, w - LABEL_WIDTH - BROWSE - 4.0, &mut k.model);
+        if g.button(x + w - BROWSE, *y, BROWSE, "...") {
+            let current = k.model.clone();
+            placer.open_gallery_for(g, tag, &current);
+        }
+        *y += ROW + 3.0;
+        value_row(g, y, x, w, "Size", 914, &mut k.scale);
+        k.scale = k.scale.max(0.05);
+        hint(g, y, x, "1 is the model's own size.");
+        text_row_ref(g, y, x, w, "Loot table", 915, &mut k.loot, Ref::Loot, None);
+        hint(g, y, x, "What one gathering gives.");
+        let mut uses = [k.uses.0, k.uses.1];
+        if numbers_row(g, y, x, w, "Gathered (times)", 916, &["At least", "At most"], &mut uses) {
+            k.uses = (uses[0].max(1), uses[1].max(uses[0]).max(1));
+        }
+        hint(g, y, x, "How many times it can be gathered before it is gone; picked between the two.");
+        hint(g, y, x, &format!("{used} nodes of this kind stand in the world."));
+    });
+    if gone {
+        if used > 0 {
+            g.say("Nodes of this kind stand in the world: take them away first.", RED);
+        } else {
+            d.cur.node_kinds.remove(selected);
+            p.selected = selected.saturating_sub(1);
+        }
+    }
+}
+
+/// The veins and herbs standing in the world, which Mining and Herbalism gather. The form changes the one selected (its kind too); clicks in the world put the chosen kind down.
+#[allow(clippy::too_many_arguments)]
+fn nodes(g: &mut Gui, d: &mut Data, p: &mut Pick, placer: &mut Placer, me: Place, around: Place, actions: &mut Vec<Action>, body: f32, bottom: f32, rows: usize) {
+    let kinds = d.cur.node_kinds.clone();
+    let name = |kind: &str| kinds.iter().find(|k| k.id == kind).map_or(kind.to_string(), |k| k.name.clone());
+    // Of the world's thousands only those near the editor's eye are listed (a line left empty is not shown).
+    let lines: Vec<String> = d.cur.nodes.iter().map(|n| if near_here((n.at.0, n.at.1), around) { format!("{} {:.0}yd  ({:.0}, {:.0})", name(&n.kind), yards_from(me, n.at.0, n.at.1), n.at.0, n.at.1) } else { String::new() }).collect();
+    if placer.node.is_empty() {
+        placer.node = kinds.first().map(|k| k.id.clone()).unwrap_or_default();
+    }
+    let selected = p.selected;
+    let (made, gone) = list_header(g, body, "delete-node", "New here", !d.cur.nodes.is_empty());
+    if made {
+        // Of the kind of the selected one, else of the one chosen for putting down.
+        let kind = d.cur.nodes.get(selected).map_or_else(|| placer.node.clone(), |n| n.kind.clone());
+        d.cur.nodes.push(content::Node { kind, map: Some(me.map.to_string()), at: (me.north, me.west, me.height), facing: me.yaw, respawn: None });
+        p.selected = d.cur.nodes.len() - 1;
+        p.reveal = true;
+    }
+    list(g, 8.0, body + 26.0, LIST_WIDTH, rows, &lines, p);
+    form(g, p, PANE_X, body, PANE_W, bottom, |g, y, _| {
+        let (x, w) = (PANE_X, PANE_W);
+        if let Some(n) = d.cur.nodes.get_mut(selected) {
+            g.text(x, *y, w, "The selected node", GOLD);
+            *y += ROW + 4.0;
+            text_row_ref(g, y, x, w, "Kind", 900, &mut n.kind, Ref::NodeKind, None);
+            match kinds.iter().find(|k| k.id == n.kind) {
+                Some(k) => hint(g, y, x, &format!("{}: needs {} {}; can be gathered {} to {} times.", k.name, k.skill.name(), k.rank, k.uses.0, k.uses.1)),
+                None => hint(g, y, x, "No such kind: it is left out of the game."),
+            }
+            let mut at = [n.at.0, n.at.1, n.at.2];
+            if numbers_row(g, y, x, w, "Position", 901, &["North", "West", "Height"], &mut at) {
+                n.at = (at[0], at[1], at[2]);
+            }
+            value_row(g, y, x, w, "Facing (deg)", 904, &mut n.facing);
+            option_value_row(g, y, x, w, "Back after (s)", 905, &mut n.respawn);
+            hint(g, y, x, "Seconds from its last gathering until it is back; empty: five minutes.");
+            option_row(g, y, x, w, "Map", 906, &mut n.map);
+            hint(g, y, x, "The map it stands in (Azeroth, Kalimdor, a dungeon's name); empty: the map being played.");
+            if here_and_go(g, y, x, (n.at.0, n.at.1), actions) {
+                (n.at, n.facing, n.map) = ((me.north, me.west, me.height), me.yaw, Some(me.map.to_string()));
+            }
+            gizmo_row(g, y, x, placer, false);
+        } else {
+            empty_pane(g, x, *y, w, "No node is selected. Pick one in the list, or put one down below.");
+            *y += ROW + 8.0;
+        }
+        *y += 12.0;
+        g.text(x, *y, w, "Put new nodes down", GOLD);
+        *y += ROW + 4.0;
+        // What is chosen in the window starts the putting down at once, as for creatures.
+        let chosen = matches!(&g.modal.picked, Some((t, _)) if *t == fid("pick", 902));
+        let mut kind = placer.node.clone();
+        text_row_ref(g, y, x, w, "Kind", 902, &mut kind, Ref::NodeKind, None);
+        placer.node = kind.clone();
+        if chosen {
+            placer.start(Aim::Node, &kind, me.yaw);
+        }
+        put_down_button(g, y, x, placer, Aim::Node, &kind, me.yaw);
+        hint(g, y, x, "\"New here\" over the list puts one where you stand.");
+        *y += 8.0;
+    });
+    if gone {
+        d.cur.nodes.remove(selected);
+        p.selected = selected.saturating_sub(1);
+    }
 }
 
 /// The props: models put into the world. The form changes the one selected; clicks in the world put the chosen model down.

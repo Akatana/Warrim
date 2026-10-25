@@ -1370,7 +1370,7 @@ impl Panels {
 
     /// The compass at the top middle of the screen, for a character at `pos` (render space) facing `yaw`: a band with ticks every
     /// 15 degrees (the points of the compass named), fading towards its ends, and the places near, the farther the fainter.
-    pub fn draw_compass(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32), pos: Vec3, yaw: f32) {
+    pub fn draw_compass(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32), pos: Vec3, yaw: f32, nodes: &[(f32, f32, crate::skills::Skill, &str)]) {
         use crate::compass::{marks, relative, HALF_VIEW};
         let mount = self.mount.clone();
         let s = screen.1 as f32 / ui_height();
@@ -1415,6 +1415,20 @@ impl Panels {
                 self.tree.draw_text_aligned(ui, gpu, &mount, screen, "GameFontNormalLarge", "?", (at.0, at.1 - 9.0 * s), 0.5, [0.75, 0.75, 0.75, fading]);
             }
         }
+        // The veins and herbs near: the icon of the profession that gathers each, small, the farther the fainter.
+        for &(x, distance, skill, _) in nodes {
+            let icon = if skill == crate::skills::Skill::Mining { r"Interface\Icons\Trade_Mining" } else { r"Interface\Icons\Spell_Nature_NatureTouchGrow" };
+            if let Some(texture) = self.tree.texture(ui, gpu, &mount, icon) {
+                let size = 14.0 * s;
+                let fading = fade(x) * (1.0 - 0.6 * distance / crate::compass::RANGE);
+                ui.quad(Quad { texture, rect: [cx + x * half - size / 2.0, top + 22.0 * s - size / 2.0, size, size], uv: FULL_UV, color: [1.0, 1.0, 1.0, fading], additive: false });
+            }
+        }
+        // The name shows only for the node the player is facing (the nearest of those in front), as a place's does.
+        if let Some(&(x, distance, _, name)) = nodes.iter().filter(|n| n.0.abs() < 0.3).min_by(|a, b| a.1.total_cmp(&b.1)) {
+            let fading = fade(x) * (1.0 - 0.6 * distance / crate::compass::RANGE);
+            self.tree.draw_text_aligned(ui, gpu, &mount, screen, "GameFontNormalSmall", name, (cx + x * half, top + 36.0 * s), 0.5, [1.0, 1.0, 1.0, fading]);
+        }
         // The arrow of the tracked quest (the guide arrow of the original's minimap): over the band when its place is in view,
         // turned to point along the band's end when it is not.
         let Some(quest) = self.quests.tracked else { return };
@@ -1451,6 +1465,19 @@ impl Panels {
             }
         }
         self.fill_skills();
+    }
+
+    /// A gathering of something that asks for rank `required` of a profession: the profession may rise (`roll` from 0 to 1 against the chance).
+    pub fn gather_skill(&mut self, skill: crate::skills::Skill, required: u32, roll: f32) {
+        if let Some(rank) = self.skills.gather(skill, required, roll) {
+            self.notice(&format!("Your skill in {} has increased to {rank}.", skill.name()));
+            self.fill_skills();
+        }
+    }
+
+    /// Whether the item with this id is carried, in the pack or worn.
+    pub fn carries(&self, id: &str) -> bool {
+        crate::items::all().iter().position(|i| i.id == id).is_some_and(|item| self.inv.count(item) > 0 || self.inv.equipment.iter().flatten().any(|s| s.item == item))
     }
 
     /// The skill a swing of the sword trains: that of the weapon in the main hand, or the fists.

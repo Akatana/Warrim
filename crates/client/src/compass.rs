@@ -23,7 +23,7 @@ pub fn relative(bearing: f32, yaw: f32) -> f32 {
 }
 
 /// The bearing (clockwise from north) from `from` to `to`, render space.
-fn bearing(from: Vec3, to: Vec3) -> f32 {
+pub fn bearing(from: Vec3, to: Vec3) -> f32 {
     (to.x - from.x).atan2(from.z - to.z)
 }
 

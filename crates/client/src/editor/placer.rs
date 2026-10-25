@@ -7,7 +7,11 @@ pub(super) fn hud(g: &mut Gui, placer: &Placer, props: bool, width: f32) {
     if placer.placing && placer.aim == Aim::Stop {
         lines.push(("Adding stops to the patrol: every click in the world adds one stop there (a blue mark shows where). Esc stops.".to_string(), GOLD));
     } else if placer.placing && placer.aim != Aim::Prop {
-        let what = if placer.aim == Aim::Creature { placer.creature.as_str() } else { file_stem(&placer.chest) };
+        let what = match placer.aim {
+            Aim::Creature => placer.creature.as_str(),
+            Aim::Node => placer.node.as_str(),
+            _ => file_stem(&placer.chest),
+        };
         lines.push((format!("Putting down {what}: click stands it there, facing the way the arrow points. Hold the right button and move the mouse to turn it ({:.0} deg). Esc stops.", placer.turn), GOLD));
     } else if placer.placing {
         lines.push((format!("Putting down {}: click puts it there. Hold the right button and move the mouse to turn it ({:.0} deg), the wheel sizes it (x{:.2}), Shift + wheel raises it ({:+.2}). Esc stops.", file_stem(&placer.model), placer.turn, placer.scale, placer.lift), GOLD));
@@ -52,6 +56,8 @@ pub(super) struct Placer {
     pub(super) aim: Aim,
     pub(super) creature: String,
     pub(super) chest: String,
+    /// The id of the kind of node that is put down.
+    pub(super) node: String,
     /// Whether the ghost of what is put down is shown (else a mark on the ground shows where it will stand).
     pub(super) ghosted: bool,
     /// How the model that is put down is turned (degrees), how big it is and how far above the ground it stands.
@@ -71,6 +77,7 @@ impl Placer {
         match aim {
             Aim::Creature => self.creature = what.to_string(),
             Aim::Chest => self.chest = what.to_string(),
+            Aim::Node => self.node = what.to_string(),
             Aim::Prop | Aim::Stop => {}
         }
         (self.aim, self.placing, self.turn) = (aim, true, facing);
@@ -102,6 +109,7 @@ pub(super) enum Aim {
     Prop,
     Creature,
     Chest,
+    Node,
     /// A stop of the patrol of the creature selected.
     Stop,
 }

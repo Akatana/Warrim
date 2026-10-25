@@ -223,6 +223,34 @@ impl Spellcaster {
         started
     }
 
+    /// A gathering (mining, herb gathering) begins: the original's precast kit of its spell, which is the character's stance and work animation, the model
+    /// in the hand (the mining pick) and the sound. Returns the models started, for `gather_follow` and `gather_end`.
+    pub fn gather_begin(ctx: &mut Ctx, vis: &Visual, feet: Vec3) -> Vec<(usize, u32)> {
+        let yaw = ctx.player.facing();
+        let glows = Self::show(ctx, &vis.precast, true, feet, yaw, 1.8, true);
+        if let Some(entry) = vis.precast.sound.or(vis.missile_sound) {
+            ctx.panels.emit(Sfx::Hold(entry));
+        }
+        ctx.player.set_precast(vis.precast.anim);
+        glows
+    }
+
+    /// The models of a gathering follow the hands.
+    pub fn gather_follow(ctx: &mut Ctx, glows: &[(usize, u32)]) {
+        for &(id, attachment) in glows.iter().filter(|g| g.1 != 0) {
+            if let Some(world) = ctx.player.attachment_world(attachment) {
+                ctx.effects.set_world(id, world);
+            }
+        }
+    }
+
+    /// The gathering ends (done or broken): the models go, the character stands as before and the sound stops.
+    pub fn gather_end(ctx: &mut Ctx, glows: &[(usize, u32)]) {
+        Self::stop_glows(ctx, glows);
+        ctx.player.set_precast(None);
+        ctx.panels.emit(Sfx::Release);
+    }
+
     /// The key of a spell went down. A spell with a cast time starts its cast; an instant one goes off.
     pub fn begin(&mut self, ctx: &mut Ctx, spell: usize, feet: Vec3) {
         let def = content::spell(spell);

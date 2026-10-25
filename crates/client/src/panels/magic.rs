@@ -11,7 +11,8 @@ pub const SPELLBOOK: &str = "SpellBookFrame";
 const SPELL_BUTTONS: usize = 12;
 const SKILL_ROWS: usize = 12;
 const SKILLS: &str = "SkillFrame";
-const GROUPS: [Group; 4] = [Group::Class, Group::Weapon, Group::Armor, Group::General];
+/// The headings of the skills list, in the order of the original's (class, trades, weapons, armor).
+const GROUPS: [Group; 6] = [Group::Class, Group::Professions, Group::Secondary, Group::Weapon, Group::Armor, Group::General];
 
 /// The cast bar's state, as `CastingBarFrame.lua` keeps it: filling (yellow, with its spark), done (green, flashing, fading out) or
 /// failed (red with the reason, held a second, fading out).
@@ -41,19 +42,19 @@ enum Row {
 pub struct SkillList {
     offset: usize,
     selected: Option<Skill>,
-    folded: [bool; 4],
+    folded: [bool; GROUPS.len()],
     /// Whether the tab shows (and not the doll).
     pub shown: bool,
 }
 
 impl Default for SkillList {
     fn default() -> SkillList {
-        SkillList { offset: 0, selected: None, folded: [false; 4], shown: false }
+        SkillList { offset: 0, selected: None, folded: [false; GROUPS.len()], shown: false }
     }
 }
 
 /// The rows of the list: each heading, and under it its skills unless it is folded.
-fn rows(folded: &[bool; 4]) -> Vec<Row> {
+fn rows(folded: &[bool; GROUPS.len()]) -> Vec<Row> {
     let mut out = Vec::new();
     for (g, group) in GROUPS.iter().enumerate() {
         out.push(Row::Header(*group));
@@ -534,7 +535,7 @@ impl Panels {
             }
             "SkillFrameCollapseAllButton" => {
                 let all = self.skill_list.folded.iter().all(|&f| !f);
-                self.skill_list.folded = [all; 4];
+                self.skill_list.folded = [all; GROUPS.len()];
                 self.fill_skills();
             }
             "SkillListScrollFrameScrollBarScrollUpButton" | "SkillListScrollFrameScrollBarScrollDownButton" => {
@@ -575,13 +576,13 @@ mod tests {
 
     #[test]
     fn the_list_has_a_heading_for_each_group_and_what_is_folded_is_left_out() {
-        let all = rows(&[false; 4]);
-        assert_eq!(all.len(), 4 + skills::ALL.len());
+        let all = rows(&[false; GROUPS.len()]);
+        assert_eq!(all.len(), GROUPS.len() + skills::ALL.len());
         assert_eq!(all[0], Row::Header(Group::Class));
         // Folded, a heading has nothing under it; listed, its skills are in the order of the alphabet.
-        let folded = rows(&[true, false, false, false]);
-        assert_eq!(folded.len(), 4 + skills::ALL.iter().filter(|s| s.group() != Group::Class).count());
+        let folded = rows(&[true, false, false, false, false, false]);
+        assert_eq!(folded.len(), GROUPS.len() + skills::ALL.iter().filter(|s| s.group() != Group::Class).count());
         let names: Vec<&str> = folded.iter().filter_map(|r| if let Row::Skill(s) = r { Some(s.name()) } else { None }).collect();
-        assert_eq!(names, ["Axes", "Block", "Bows", "Crossbows", "Daggers", "Fist Weapons", "Guns", "Maces", "Polearms", "Spears", "Staves", "Swords", "Thrown", "Two-Handed Axes", "Two-Handed Maces", "Two-Handed Swords", "Unarmed", "Wands", "Cloth", "Leather", "Mail", "Plate Mail", "Diving", "Lockpicking", "Riding", "Stealth", "Swimming"]);
+        assert_eq!(names, ["Alchemy", "Blacksmithing", "Enchanting", "Engineering", "Herbalism", "Leatherworking", "Mining", "Skinning", "Tailoring", "Cooking", "First Aid", "Fishing", "Axes", "Block", "Bows", "Crossbows", "Daggers", "Fist Weapons", "Guns", "Maces", "Polearms", "Spears", "Staves", "Swords", "Thrown", "Two-Handed Axes", "Two-Handed Maces", "Two-Handed Swords", "Unarmed", "Wands", "Cloth", "Leather", "Mail", "Plate Mail", "Diving", "Lockpicking", "Riding", "Stealth", "Swimming"]);
     }
 }

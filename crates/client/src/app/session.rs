@@ -17,6 +17,7 @@ impl State {
         (saved.hour, saved.time_fixed) = (Some(self.hour), self.fixed_time);
         saved.weather = self.weather.snapshot();
         saved.gone = self.pickups.as_ref().map_or_else(Vec::new, |p| p.snapshot());
+        saved.nodes_gone = self.nodes.as_ref().map_or_else(Vec::new, |n| n.snapshot());
         saved.moved = self.bodies.as_ref().map_or_else(Vec::new, |b| b.snapshot());
         saved.lifts_clock = self.lifts.as_ref().map_or(0.0, |l| l.clock());
         (saved.mana, saved.stamina) = (player.vitals.mana.fraction(), player.vitals.stamina.fraction());
@@ -78,6 +79,7 @@ impl State {
         if let Some(old) = self.bodies.take() {
             old.retire(&mut self.renderer);
         }
+        self.end_gather();
         (self.lock, self.hover, self.hint, self.cast_request) = (None, None, None, None);
         if let Some(panels) = &mut self.panels {
             panels.forget_world();
@@ -97,7 +99,17 @@ impl State {
         self.pickup_props = pickup_props();
         self.beds = bed_spots(&content::get().props, &self.map);
         self.load_pickups();
+        self.load_nodes();
         Ok(())
+    }
+
+    /// Put the veins and herbs of the map being played in the world, in place of those there were.
+    pub(super) fn load_nodes(&mut self) {
+        if let Some(old) = self.nodes.take() {
+            old.retire(&mut self.renderer);
+        }
+        self.end_gather();
+        self.nodes = Some(crate::nodes::Nodes::load(&self.map));
     }
 
     /// Put the creatures of the map being played in the world, in place of those there were (their models are made as the player comes near).
