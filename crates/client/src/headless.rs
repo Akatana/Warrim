@@ -658,8 +658,11 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                     panels.map_zoom(args.cursor.unwrap_or((640.0, 360.0)), (w, h), 6.0);
                 }
             }
-            if args.panel.iter().any(|p| p == "menu" || p == "sound" || p == "video" || p == "interface" || p == "dropdown") {
+            if args.panel.iter().any(|p| p == "menu" || p == "sound" || p == "video" || p == "interface" || p == "dropdown" || p == "keys") {
                 panels.open_menu();
+                if args.panel.iter().any(|p| p == "keys") {
+                    panels.menu_click("GameMenuButtonKeybindings");
+                }
                 if args.panel.iter().any(|p| p == "sound") {
                     panels.menu_click("GameMenuButtonSoundOptions");
                 }

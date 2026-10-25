@@ -21,6 +21,7 @@ use std::f32::consts::PI;
 use std::rc::Rc;
 
 mod magic;
+mod keybinds;
 mod levelup;
 mod map;
 mod menu;
@@ -162,6 +163,7 @@ pub struct Panels {
     target: Option<usize>,
     /// The game menu and the sound options.
     menu: menu::MenuState,
+    keys: keybinds::KeyState,
 }
 
 /// The three screens of the quest window (`QuestFrameDetailPanel`, `QuestFrameProgressPanel`, `QuestFrameRewardPanel`).
@@ -384,7 +386,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), forgotten: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), forgotten: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
         panels.refresh();
         Ok(panels)
     }
@@ -1275,6 +1277,9 @@ impl Panels {
     }
 
     pub fn close_all(&mut self) {
+        if self.keys_open() {
+            self.keys_done(false);
+        }
         self.map_open = false;
         self.level_open = false;
         self.tree.show("GameMenuFrame", false);
@@ -2413,6 +2418,10 @@ impl Panels {
     pub fn scroll(&mut self, pos: (f32, f32), screen: (u32, u32), lines: f32) -> bool {
         if self.map_open {
             self.map_zoom(pos, screen, lines);
+            return true;
+        }
+        if self.keys_open() {
+            self.keys_wheel(lines);
             return true;
         }
         if self.sleep_step(lines.signum()) {

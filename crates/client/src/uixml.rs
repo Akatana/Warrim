@@ -457,6 +457,8 @@ impl Registry {
         let mut reg = Registry::load_toc(mount, r"Interface\FrameXML\", "FrameXML.toc", "GlobalStrings.lua")?;
         // The talent window is an addon that loads on demand in the original (`Blizzard_TalentUI.toc`).
         reg.load_xml(mount, r"Interface\AddOns\Blizzard_TalentUI\Blizzard_TalentUI.xml")?;
+        // So is the key bindings window (`Blizzard_BindingUI.toc`).
+        reg.load_xml(mount, r"Interface\AddOns\Blizzard_BindingUI\Blizzard_BindingUI.xml")?;
         Ok(reg)
     }
 
@@ -750,6 +752,8 @@ pub struct Tree {
     text_dims: HashMap<String, (f32, f32)>,
     /// Buttons that are disabled (`set_enabled`).
     disabled: std::collections::HashSet<usize>,
+    /// Buttons that show their highlight picture without the pointer on them (`LockHighlight`).
+    locked: std::collections::HashSet<usize>,
     /// The money frames and what they show: copper, whether the coins are the small ones, and whether it is the
     /// player's purse (which also shows the smaller coins under the biggest one).
     moneys: HashMap<String, (u32, bool, bool)>,
@@ -784,6 +788,7 @@ impl Tree {
             glyphs: HashMap::new(),
             text_dims: HashMap::new(),
             disabled: Default::default(),
+            locked: Default::default(),
             moneys: HashMap::new(),
             screen: (1280, 720),
             text_scale: 1.0,
@@ -1156,6 +1161,17 @@ impl Tree {
         }
     }
 
+    /// Keep a button's highlight shown (`LockHighlight`) or let it go (`UnlockHighlight`).
+    pub fn lock_highlight(&mut self, name: &str, on: bool) {
+        if let Some(&i) = self.by_name.get(name) {
+            if on {
+                self.locked.insert(i);
+            } else {
+                self.locked.remove(&i);
+            }
+        }
+    }
+
     /// Hide the pictures of a frame that are of a texture file (for those that have no name to be hidden by).
     pub fn hide_textures_of(&mut self, frame: &str, file: &str) {
         let Some(&i) = self.by_name.get(frame) else { return };
@@ -1459,6 +1475,7 @@ impl Tree {
         let pressed = self.pressed == Some(node);
         let checked = self.checked.contains(&node);
         let is_disabled = self.disabled.contains(&node);
+        let lit = hovered || self.locked.contains(&node);
         let mut draw_order: Vec<&Region> = regions.iter().collect();
         let level = |r: &Region| match r.role {
             Role::Layer(l) => l as u8,
@@ -1476,7 +1493,7 @@ impl Tree {
                 Role::Normal => !is_disabled && !(pressed && regions.iter().any(|o| o.role == Role::Pushed)),
                 Role::Pushed => pressed,
                 Role::Disabled => is_disabled,
-                Role::Highlight => hovered,
+                Role::Highlight => lit,
                 Role::Checked => checked,
             };
             if r.hidden || !visible {

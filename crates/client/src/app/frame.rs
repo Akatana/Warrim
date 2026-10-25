@@ -844,6 +844,12 @@ impl State {
                 }
                 (self.names, self.ragdolls) = (i.npc_names, i.ragdolls);
             }
+            if let Some(binds) = panels.take_keys() {
+                self.binds = binds;
+                if let Some(bar) = &mut self.actionbar {
+                    bar.set_hotkeys(&mut self.renderer.ui, &self.gpu, &binds.action_labels());
+                }
+            }
             if let Some(v) = panels.take_video() {
                 self.weather.detail = v.weather_scale();
                 self.effects.detail = v.particle_scale();

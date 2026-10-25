@@ -9,7 +9,7 @@ use crate::loading::{Loading, Stage};
 use crate::lockpick::{Event, Lockpick};
 use crate::camera::{Camera, Controller, Input, Mode, EYE_HEIGHT};
 use crate::coords::{render_to_wow, wow_to_render};
-use crate::actionbar::{slot_of_key, ActionBar};
+use crate::actionbar::ActionBar;
 use crate::audio::{Audio, Cry, Sfx};
 use crate::combattext::CombatText;
 use crate::character::Appearance;
@@ -203,6 +203,8 @@ struct State {
     levelfx: Option<usize>,
     /// The sound entry of the original's Stealth, played when a sneak begins.
     stealth_sound: Option<u32>,
+    /// What the keys do (the key bindings window changes it, `take_keys`).
+    binds: crate::keys::Binds,
     moving: bool,
     caster: crate::casting::Spellcaster,
     /// What the spells of creatures do to the player, and the auras that have hold of him.

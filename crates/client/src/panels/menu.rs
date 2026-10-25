@@ -1,6 +1,6 @@
 //! The game menu (Esc, `GameMenuFrame`) and the options it opens: the video options (`OptionsFrame`), the sound options (`SoundOptionsFrame`)
-//! and the interface options (`UIOptionsFrame`), all the original's frames with only what this game has left in them. The key bindings and
-//! macros are in the menu but greyed out: there is nothing behind them.
+//! and the interface options (`UIOptionsFrame`), all the original's frames with only what this game has left in them. The key bindings window is
+//! `keybinds.rs`; the macros are in the menu but greyed out: there is nothing behind them.
 
 use super::*;
 use crate::audio::SoundSettings;
@@ -53,25 +53,25 @@ pub enum MenuAction {
 
 /// One kind of options: as they are now, as they were when their window opened (what Cancel goes back to), and whether they changed since
 /// the game last took them.
-struct Group<T> {
-    now: T,
-    before: T,
-    changed: bool,
+pub(super) struct Group<T> {
+    pub(super) now: T,
+    pub(super) before: T,
+    pub(super) changed: bool,
 }
 
 impl<T: Copy + PartialEq> Group<T> {
     /// The game takes the options on its first frame too.
-    fn new(now: T) -> Group<T> {
+    pub(super) fn new(now: T) -> Group<T> {
         Group { now, before: now, changed: true }
     }
 
-    fn set(&mut self, to: T) {
+    pub(super) fn set(&mut self, to: T) {
         self.now = to;
         self.changed = true;
     }
 
     /// The window closes: keep the options (`save`) or go back to what they were.
-    fn finish(&mut self, keep: bool, save: impl FnOnce(&T)) {
+    pub(super) fn finish(&mut self, keep: bool, save: impl FnOnce(&T)) {
         if keep {
             save(&self.now);
         } else if self.now != self.before {
@@ -79,7 +79,7 @@ impl<T: Copy + PartialEq> Group<T> {
         }
     }
 
-    fn take(&mut self) -> Option<T> {
+    pub(super) fn take(&mut self) -> Option<T> {
         std::mem::take(&mut self.changed).then_some(self.now)
     }
 }
@@ -113,9 +113,7 @@ struct Slider<'a> {
 
 pub(super) fn setup(tree: &mut Tree) -> Result<()> {
     tree.instantiate(GAME_MENU)?;
-    for button in ["GameMenuButtonKeybindings", "GameMenuButtonMacros"] {
-        tree.set_enabled(button, false);
-    }
+    tree.set_enabled("GameMenuButtonMacros", false);
 
     tree.instantiate(SOUND)?;
     // Only what the game has: all sound, ambience and music, and the four volumes.
@@ -197,6 +195,8 @@ pub(super) fn setup(tree: &mut Tree) -> Result<()> {
     tree.set_backdrop_colors("DropDownList1MenuBackdrop", Some([0.0, 0.0, 0.0, 4.0]), None);
     tree.set_backdrop_colors("DropDownList1Backdrop", Some([0.0, 0.0, 0.0, 4.0]), None);
 
+    super::keybinds::setup(tree)?;
+
     tree.instantiate(INTERFACE)?;
     // The basic page only (no tabs), with what the game has: inverting the mouse; names over creatures and buff durations; how fast the mouse
     // looks round and how far the camera stands.
@@ -235,7 +235,7 @@ impl Panels {
 
     /// One of the options windows is open.
     pub fn options_open(&self) -> bool {
-        [SOUND, VIDEO, INTERFACE].iter().any(|f| self.tree.is_name_shown(f))
+        self.keys_open() || [SOUND, VIDEO, INTERFACE].iter().any(|f| self.tree.is_name_shown(f))
     }
 
     /// Esc with nothing else to close: the menu comes up.
@@ -287,9 +287,12 @@ impl Panels {
     }
 
     /// Leave the options window for the menu, keeping what was set or going back to what it was.
-    fn options_done(&mut self, keep: bool) {
+    pub(super) fn options_done(&mut self, keep: bool) {
+        let keys = self.keys_open();
         let m = &mut self.menu;
-        if self.tree.is_name_shown(SOUND) {
+        if keys {
+            self.keys_done(keep);
+        } else if self.tree.is_name_shown(SOUND) {
             m.sound.finish(keep, SoundSettings::save);
         } else if self.tree.is_name_shown(VIDEO) {
             m.video.finish(keep, VideoSettings::save);
@@ -354,7 +357,7 @@ impl Panels {
 
     /// A click on a button of these windows. False when it was none of them.
     pub(crate) fn menu_click(&mut self, name: &str) -> bool {
-        if self.dropdown_click(name) {
+        if self.dropdown_click(name) || self.keys_click(name) {
             return true;
         }
         let sfx = match name {
@@ -364,6 +367,10 @@ impl Panels {
                     "GameMenuButtonSoundOptions" => SOUND,
                     _ => INTERFACE,
                 });
+                return true;
+            }
+            "GameMenuButtonKeybindings" => {
+                self.open_keys();
                 return true;
             }
             "GameMenuButtonContinue" => {

@@ -207,6 +207,7 @@ impl State {
             mount: player_mount.clone(),
             levelfx: None,
             stealth_sound: crate::visuals::state_sound(&player_mount, crate::visuals::STEALTH),
+            binds: crate::keys::Binds::load(),
             moving: false,
             caster,
             foes,

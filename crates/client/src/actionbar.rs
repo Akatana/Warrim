@@ -155,18 +155,26 @@ pub struct ActionBar {
     /// The item a button asked to use, for the backpack to use.
     item_use: Option<usize>,
     labels: Vec<Option<Label>>,
+    font: fontdue::Font,
     bar_text: GlyphSet,
 }
 
-/// The slot a key stands for: 1-9, 0, - and = in the order of the bar.
-pub fn slot_of_key(code: winit::keyboard::KeyCode) -> Option<usize> {
-    use winit::keyboard::KeyCode::*;
-    [Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9, Digit0, Minus, Equal].iter().position(|&k| k == code)
+/// The pictures of the keys written on the buttons.
+fn hotkey_labels(font: &fontdue::Font, ui: &mut Ui, gpu: &Gpu, keys: &[String; SLOTS]) -> Vec<Option<Label>> {
+    keys.iter()
+        .map(|text| {
+            let (w, h, rgba) = render_text(font, text, 12.0 * TEXT_SCALE);
+            Some(Label { texture: ui.add_texture(gpu, w, h, &rgba), size: (w as f32 / TEXT_SCALE, h as f32 / TEXT_SCALE) })
+        })
+        .collect()
 }
 
-const HOTKEYS: [&str; SLOTS] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "="];
-
 impl ActionBar {
+    /// The keys changed: write the new ones on the buttons.
+    pub fn set_hotkeys(&mut self, ui: &mut Ui, gpu: &Gpu, keys: &[String; SLOTS]) {
+        self.labels = hotkey_labels(&self.font, ui, gpu, keys);
+    }
+
     pub fn load(mount: &Mount, ui: &mut Ui, gpu: &Gpu) -> Result<ActionBar> {
         let mut texture = |path: &str| -> Option<usize> {
             let blp = mount.read(&format!("{path}.blp")).map_err(anyhow::Error::from).and_then(|d| Ok(Blp::parse(&d)?)).map_err(|e| log::warn!("interface texture {path}: {e:#}")).ok()?;
@@ -178,20 +186,14 @@ impl ActionBar {
         let item_icons = crate::items::all().iter().enumerate().filter(|(i, _)| crate::consume::Consumed::can_use(*i)).map(|(i, d)| (i, texture(d.icon))).collect();
         let status_bar = texture(STATUS_BAR);
         let font = fontdue::Font::from_bytes(mount.read(FONT)?, fontdue::FontSettings::default()).map_err(|e| anyhow::anyhow!("{FONT}: {e}")).context("action bar font")?;
-        let labels = HOTKEYS
-            .iter()
-            .map(|text| {
-                let (w, h, rgba) = render_text(&font, text, 12.0 * TEXT_SCALE);
-                Some(Label { texture: ui.add_texture(gpu, w, h, &rgba), size: (w as f32 / TEXT_SCALE, h as f32 / TEXT_SCALE) })
-            })
-            .collect();
+        let labels = hotkey_labels(&font, ui, gpu, &crate::keys::Binds::load().action_labels());
         let white = ui.add_texture(gpu, 1, 1, &[255; 4]);
         let mut slots = [None; SLOTS];
         for (slot, a) in slots.iter_mut().zip(BASIC) {
             *slot = Some(a);
         }
         let bar_text = GlyphSet::new(ui, gpu, &font, BAR_TEXT_HEIGHT, 1)?;
-        Ok(ActionBar { slots, held: [false; SLOTS], cursor: None, dragging: None, white, status_bar, bar, end_cap, slot_filled, slot_empty, pushed, highlight, checked, icons, item_icons, item_use: None, labels, bar_text })
+        Ok(ActionBar { slots, held: [false; SLOTS], cursor: None, dragging: None, white, status_bar, bar, end_cap, slot_filled, slot_empty, pushed, highlight, checked, icons, item_icons, item_use: None, labels, font, bar_text })
     }
 
     /// Take a spell off every button it is on.
@@ -485,13 +487,6 @@ fn render_text(font: &fontdue::Font, text: &str, px: f32) -> (u32, u32, Vec<u8>)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn keys_map_to_the_bar_slots_in_order() {
-        use winit::keyboard::KeyCode::*;
-        assert_eq!([Digit1, Digit9, Digit0, Minus, Equal].map(slot_of_key), [Some(0), Some(8), Some(9), Some(10), Some(11)]);
-        assert_eq!(slot_of_key(KeyW), None);
-    }
 
     #[test]
     fn actions_are_saved_by_id_and_every_basic_one_has_an_icon_and_a_description() {

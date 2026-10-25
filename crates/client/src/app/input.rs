@@ -1,10 +1,16 @@
 //! Keys pressed in the game.
 
 use super::*;
+use crate::keys::Cmd;
 
 impl State {
     pub(super) fn key(&mut self, code: KeyCode, pressed: bool, event_loop: &ActiveEventLoop) {
         log::debug!("key {code:?} pressed={pressed}");
+        // The key bindings window hears the keys while it is open (Esc, when it is not waiting for a key, still closes it below).
+        if self.panels.as_mut().is_some_and(|p| p.keys_key(code, pressed)) {
+            return;
+        }
+        let cmd = self.binds.command(code);
         // F1 opens and closes the editor.
         if let (KeyCode::F1, true, Some(editor)) = (code, pressed, &mut self.editor) {
             editor.toggle();
@@ -73,19 +79,19 @@ impl State {
             }
         }
         // With the editor's camera out the keys fly it; the game's own keys are not heard.
-        if self.free.is_some() && !matches!(code, KeyCode::KeyW | KeyCode::KeyA | KeyCode::KeyS | KeyCode::KeyD | KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::Space | KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::ShiftLeft | KeyCode::ShiftRight) {
+        if self.free.is_some() && !matches!(cmd, Some(Cmd::Forward | Cmd::Back | Cmd::Left | Cmd::Right | Cmd::Jump | Cmd::Down | Cmd::Run)) {
             return;
         }
         // While a lock is picked the keys turn the lock, and Esc leaves; nothing else is heard.
         if self.lock.is_some() {
-            match code {
-                KeyCode::Escape if pressed => self.end_lock(),
-                KeyCode::KeyA | KeyCode::KeyD | KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::Space => self.lock_turn = pressed,
+            match (code, cmd) {
+                (KeyCode::Escape, _) if pressed => self.end_lock(),
+                (_, Some(Cmd::Left | Cmd::Right | Cmd::Jump)) => self.lock_turn = pressed,
                 _ => {}
             }
             return;
         }
-        if let (Some(slot), Some(bar), Some(player)) = (slot_of_key(code), &mut self.actionbar, &mut self.player) {
+        if let (Some(Cmd::Action(slot)), Some(bar), Some(player)) = (cmd, &mut self.actionbar, &mut self.player) {
             if pressed {
                 self.cast_request = bar.press(slot, player).or(self.cast_request);
             } else {
@@ -93,16 +99,16 @@ impl State {
             }
             return;
         }
-        match code {
-            KeyCode::KeyW | KeyCode::ArrowUp => self.input.forward = pressed,
-            KeyCode::KeyS | KeyCode::ArrowDown => self.input.back = pressed,
-            KeyCode::KeyA | KeyCode::ArrowLeft => self.input.left = pressed,
-            KeyCode::KeyD | KeyCode::ArrowRight => self.input.right = pressed,
-            KeyCode::Space => {
+        match cmd {
+            Some(Cmd::Forward) => self.input.forward = pressed,
+            Some(Cmd::Back) => self.input.back = pressed,
+            Some(Cmd::Left) => self.input.left = pressed,
+            Some(Cmd::Right) => self.input.right = pressed,
+            Some(Cmd::Jump) => {
                 self.input.up = pressed;
                 self.input.jump_pressed |= pressed;
             }
-            KeyCode::ControlLeft | KeyCode::ControlRight => {
+            Some(Cmd::Down) => {
                 // Flying down, or on foot: sneaking on and off.
                 self.input.down = pressed;
                 if let (true, Mode::Walk, None, Some(p)) = (pressed, self.controller.mode, &self.free, &mut self.player) {
@@ -112,9 +118,9 @@ impl State {
                     }
                 }
             }
-            KeyCode::ShiftLeft | KeyCode::ShiftRight => self.input.fast = pressed,
-            KeyCode::KeyE if pressed => self.interact(),
-            KeyCode::KeyE => {
+            Some(Cmd::Run) => self.input.fast = pressed,
+            Some(Cmd::Interact) if pressed => self.interact(),
+            Some(Cmd::Interact) => {
                 // Let go of what is carried or dragged; a corpse the key was only tapped on is looted.
                 if let Some((corpse, since)) = self.pending_loot.take() {
                     if since.elapsed() < super::interact::DRAG_HOLD {
@@ -123,69 +129,70 @@ impl State {
                 }
                 self.bodies.iter_mut().for_each(|b| b.release());
             }
-            KeyCode::Tab if pressed => {
+            Some(Cmd::Target) if pressed => {
                 // The nearest enemy ahead; again, the next.
                 let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
                 if let Some(wolves) = &mut self.wolves {
                     wolves.cycle_target(feet, self.camera.yaw);
                 }
             }
-            KeyCode::KeyC if pressed => self.toggle_panel(true),
-            KeyCode::KeyB if pressed => self.toggle_panel(false),
-            KeyCode::KeyK if pressed => {
+            Some(Cmd::Character) if pressed => self.toggle_panel(true),
+            Some(Cmd::Backpack) if pressed => self.toggle_panel(false),
+            Some(Cmd::Skills) if pressed => {
                 if let Some(panels) = &mut self.panels {
                     panels.toggle_character_tab(true);
                     let open = panels.any_open();
                     self.set_grab(!open);
                 }
             }
-            KeyCode::KeyP if pressed => {
+            Some(Cmd::Spellbook) if pressed => {
                 if let Some(panels) = &mut self.panels {
                     panels.toggle_spellbook();
                     let open = panels.any_open();
                     self.set_grab(!open);
                 }
             }
-            KeyCode::KeyN if pressed => {
+            Some(Cmd::Talents) if pressed => {
                 if let Some(panels) = &mut self.panels {
                     panels.toggle_talents();
                     let open = panels.any_open();
                     self.set_grab(!open);
                 }
             }
-            KeyCode::KeyU if pressed => {
+            Some(Cmd::Level) if pressed => {
                 if let Some(panels) = &mut self.panels {
                     panels.toggle_level();
                     let open = panels.any_open();
                     self.set_grab(!open);
                 }
             }
-            KeyCode::KeyM if pressed => {
+            Some(Cmd::Map) if pressed => {
                 if let Some(panels) = &mut self.panels {
                     panels.toggle_map();
                     let open = panels.any_open();
                     self.set_grab(!open);
                 }
             }
-            KeyCode::KeyL if pressed => {
+            Some(Cmd::QuestLog) if pressed => {
                 if let Some(panels) = &mut self.panels {
                     panels.toggle_quest_log();
                     let open = panels.any_open();
                     self.set_grab(!open);
                 }
             }
-            KeyCode::KeyR if pressed => {
+            Some(Cmd::Sheath) if pressed => {
                 if let Some(p) = &mut self.player {
                     p.toggle_sheath();
                 }
             }
-            KeyCode::KeyV if pressed => {
+            Some(Cmd::View) if pressed => {
                 if let Some(p) = &mut self.player {
                     p.toggle_view();
                 }
             }
+            Some(Cmd::Fly) if pressed => self.toggle_fly(),
             // Stand-in for an enemy: a 10 damage hit, blocked (at a stamina cost) if the shield is up.
-            KeyCode::KeyH if pressed => {
+            None if pressed && code == KeyCode::KeyH => {
                 if let Some(p) = &mut self.player {
                     match p.take_hit(10.0) {
                         None => log::info!("test hit: blocked"),
@@ -193,8 +200,7 @@ impl State {
                     }
                 }
             }
-            KeyCode::KeyF if pressed => self.toggle_fly(),
-            KeyCode::Escape if pressed => {
+            None if pressed && code == KeyCode::Escape => {
                 if self.panels.as_ref().is_some_and(|p| p.any_open()) {
                     let panels = self.panels.as_mut().unwrap();
                     panels.escape();

@@ -30,6 +30,7 @@ mod loading;
 mod headless;
 mod models;
 mod particles;
+mod keys;
 mod lifts;
 mod physics;
 mod ragdoll;
