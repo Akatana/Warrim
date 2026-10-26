@@ -25,6 +25,8 @@ def main():
     wanted = {int(x) for x in re.findall(r"enchant: (\d+)", open(os.path.join(target, "classic_recipes.ron"), encoding="utf8").read())}
     # And those that items put on the weapon in the hand for a while (lures, sharpening stones).
     wanted |= {int(x) for x in re.findall(r"Temp\((\d+),", open(os.path.join(target, "classic_items.ron"), encoding="utf8").read())}
+    # And those that spells of the classes put on it (a shaman's weapons, a rogue's poisons): the effect 54 of a spell names the enchantment.
+    wanted |= {int(x) for x in re.findall(r"\(kind: 54,[^)]*?misc: (\d+)\)", open(os.path.join(target, "classic_spells.ron"), encoding="utf8").read())}
     table = dbc.Dbc(os.path.join(folder, "SpellItemEnchantment.dbc"))
     spells = spelltext.Spells(folder)
     ppm = {r["entry"]: r["ppmRate"] for r in classicdb.rows(os.path.join(folder, "db.sql"), "spell_proc_item_enchant")}

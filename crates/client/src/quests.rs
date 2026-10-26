@@ -15,6 +15,13 @@ pub struct Active {
     pub kills: Vec<u32>,
 }
 
+/// What the item of a quest does when it is used (see `QuestLog::used`): the creature (an index) that is called to be fought, or the kind of beast that is to be tamed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuestUse {
+    Summon(usize),
+    Tame(usize),
+}
+
 /// What a creature shows over its head for the player's quests.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Marker {
@@ -118,6 +125,18 @@ impl QuestLog {
         let c = content::get();
         let quest = *c.item_quests.get(&item)?;
         (!self.is_active(quest) && !self.done.contains(&quest) && c.quests[quest].requires.is_none_or(|r| self.done.contains(&r)) && who.may(&c.quests[quest])).then_some(quest)
+    }
+
+    /// What using `item` does for a quest being worked on: calls the creature to fight, or tames the beast of the quest's kill goal.
+    pub fn used(&self, item: usize) -> Option<QuestUse> {
+        self.active.iter().find_map(|a| {
+            let q = content::quest(a.quest);
+            match (q.summons, q.tames) {
+                (Some((i, creature)), _) if i == item => Some(QuestUse::Summon(creature)),
+                (_, Some(i)) if i == item => q.goals.iter().find_map(|g| if let Goal::Kill { creature, .. } = *g { Some(QuestUse::Tame(creature)) } else { None }),
+                _ => None,
+            }
+        })
     }
 
     pub fn is_active(&self, quest: usize) -> bool {
@@ -246,6 +265,30 @@ mod tests {
     use crate::items::Stack;
 
     const WHO: Who = Who { level: 2, race: 1 };
+
+    /// The pet quests of the original are in the game: a demon is bound with the quest's item and fought, a beast is tamed with a rod, and the last quest of each chain gives the
+    /// tome of the spell it teaches.
+    #[test]
+    fn the_quests_of_the_warlocks_demons_and_the_hunters_beasts_are_there() {
+        let c = content::get();
+        let by = |id: &str| content::quest(content::quest_index(id));
+        // The voidwalker of an orc warlock's binding: its item calls the demon, and the reward is the tome.
+        let binding = by("q1504");
+        let (item, demon) = binding.summons.expect("a binding calls its demon");
+        assert!(c.items[item].name.contains("Glyphs") && c.creatures[demon].name == "Summoned Voidwalker", "{} {}", c.items[item].name, c.creatures[demon].name);
+        assert!(binding.items.iter().chain(&binding.choice).any(|s| c.items[s.item].tome.is_some_and(|t| c.spells[t].name == "Summon Voidwalker")));
+        // A tauren hunter's last taming: the rod, a beast of the kill goal, and the tome of Tame Beast.
+        let taming = by("q6088");
+        assert!(taming.tames.is_some() && taming.goals.iter().any(|g| matches!(g, Goal::Kill { .. })) && taming.requires.is_some());
+        assert!(taming.items.iter().chain(&taming.choice).any(|s| c.items[s.item].tome.is_some_and(|t| c.spells[t].name == "Tame Beast")));
+        // The imp: a few skulls, and the tome of Summon Imp, for the races it is for.
+        let imp = by("q1470");
+        assert!(imp.races != 0 && imp.items.iter().any(|s| c.items[s.item].tome.is_some_and(|t| c.spells[t].name == "Summon Imp")));
+        // Using the item of a taken quest says what it does.
+        let mut log = QuestLog::default();
+        log.active.push(Active { quest: content::quest_index("q1504"), kills: vec![0] });
+        assert_eq!(log.used(item), Some(QuestUse::Summon(demon)));
+    }
 
     /// Deputy Willem, who sends new arrivals to Marshal McBride.
     fn willem() -> usize {

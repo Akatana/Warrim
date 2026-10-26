@@ -22,6 +22,9 @@ pub struct TargetView {
     pub dead: bool,
     pub hostile: bool,
     pub neutral: bool,
+    /// Its harmful auras, and the icons of its helpful ones.
+    pub debuffs: Vec<super::Aura>,
+    pub buffs: Vec<super::Aura>,
 }
 
 /// How far the target is let go at (yards), and how far the next one is looked for.
@@ -81,6 +84,12 @@ pub struct Creatures {
     deaths: Vec<usize>,
     /// The creature the player has selected.
     target: Option<usize>,
+    /// What the pet bar has told the pet.
+    orders: ally::PetOrders,
+    /// The spell whose harm is being put on creatures now (its icon and dispel kind), so that the target frame can list it; none for harm that comes from gear.
+    source: (String, String, u32),
+    /// The damage of the ticks of damage over time and where the creature stood, since `take_ticks`.
+    ticks: Vec<(Vec3, f32)>,
     /// The quest items that the active quests want (`QuestLog::wanted`): what dies now may drop them, and no other quest item.
     wanted: Vec<usize>,
     /// The tomes that the character can learn and does not have (`Panels::learnable_tomes`): any kill may drop one of them.
@@ -90,6 +99,10 @@ pub struct Creatures {
     /// The animations the creatures' spells ask for.
     anims: SpellAnims,
 }
+
+/// How far a taming rod reaches, yards, and how long the beast it tames follows, seconds.
+const TAME_REACH: f32 = 20.0;
+const TAME_SECONDS: f32 = 60.0;
 
 /// Most creatures of one kind that a creature has waiting to be summoned.
 const MOST_SUMMONED: usize = 6;
@@ -113,8 +126,10 @@ impl Creatures {
         }
         let markers = if markers.len() == MARKER_MODELS.len() { markers } else { Vec::new() };
         // The looks that the waypoint scripts turn creatures into.
-        for id in content::get().spawns.iter().flat_map(|s| &s.path).flat_map(|w| &w.steps).filter_map(|(_, step)| if let content::Step::Morph(id) = step { Some(id) } else { None }) {
-            if let Some(kind) = defs.iter().position(|d| d.id == *id).filter(|&k| rigs[k].is_none()) {
+        let morphs = content::get().spawns.iter().flat_map(|s| &s.path).flat_map(|w| &w.steps).filter_map(|(_, step)| if let content::Step::Morph(id) = step { defs.iter().position(|d| d.id == *id) } else { None });
+        // (A polymorphed creature looks like a sheep.)
+        for kind in morphs.chain(content::sheep_kind()) {
+            if rigs[kind].is_none() {
                 rigs[kind] = beast_rig(&defs[kind], mount, cache)?;
             }
         }
@@ -126,7 +141,7 @@ impl Creatures {
         }
         let _ = renderer;
         let _ = gpu;
-        Ok(Creatures { rigs, creatures: Vec::new(), sites, grid, by_kind, free: Vec::new(), pending: HashMap::new(), mount: mount.clone(), cache: ModelCache::default(), budget: MAKE_PER_FRAME, scan: SCAN, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, wanted: Vec::new(), tomes: Vec::new(), ragdolls: true, anims: SpellAnims::new() })
+        Ok(Creatures { rigs, creatures: Vec::new(), sites, grid, by_kind, free: Vec::new(), pending: HashMap::new(), mount: mount.clone(), cache: ModelCache::default(), budget: MAKE_PER_FRAME, scan: SCAN, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, orders: Default::default(), source: (String::new(), String::new(), 0), ticks: Vec::new(), wanted: Vec::new(), tomes: Vec::new(), ragdolls: true, anims: SpellAnims::new() })
     }
 
     /// The creatures at their places that have a model: (kind id, north and west of the place, where it is now in render space).
@@ -413,14 +428,33 @@ impl Creatures {
             .iter()
             .enumerate()
             .filter(|_| needed)
-            .filter(|(_, c)| c.mob.def.attackable() && !c.mob.is_dead() && flat(c.mob.pos - player).length() <= DRAW_RANGE)
+            .filter(|(_, c)| c.mob.attackable() && !c.mob.is_dead() && flat(c.mob.pos - player).length() <= DRAW_RANGE)
             .map(|(index, c)| Friend { index, pos: c.mob.pos, faction: c.mob.def.brain.faction, dist: 0.0, health: c.mob.health, max: c.mob.def.health, auras: c.mob.aura_ids() })
             .collect();
         let (mut casts, mut summons, mut assists) = (Vec::new(), Vec::new(), Vec::new());
+        // What the player's allies fight: what he has selected, if it is a foe within reach of him; else what fights him and is the nearest to him. And who of them soak blows.
+        let is_foe = |c: &Creature| c.mob.attackable() && !c.mob.is_dead() && flat(c.mob.pos - player).length() <= ally::GO_FOR;
+        let nearest_foe = |this: &Self, reach: f32, fighting: bool| {
+            (0..this.creatures.len())
+                .filter(|&i| is_foe(&this.creatures[i]) && flat(this.creatures[i].mob.pos - player).length() <= reach && (!fighting || this.creatures[i].mob.state.fights()))
+                .min_by(|&a, &b| flat(this.creatures[a].mob.pos - player).length().total_cmp(&flat(this.creatures[b].mob.pos - player).length()))
+        };
+        let focus: Option<(usize, Vec3)> = self.target.filter(|&t| self.creatures.get(t).is_some_and(is_foe)).or_else(|| nearest_foe(self, ally::GO_FOR, true)).map(|i| (i, self.creatures[i].mob.pos));
+        // The pet fights what it is sent against; else, by its stance, nothing, what fights the player, or any foe about. (The attack order ends with its foe.)
+        if self.orders.attack.is_some_and(|t| !self.creatures.get(t).is_some_and(is_foe)) {
+            self.orders.attack = None;
+        }
+        let orders = self.orders;
+        let pet_focus: Option<(usize, Vec3)> = orders.attack.or_else(|| orders.pick().and_then(|(reach, fighting)| nearest_foe(self, reach, fighting))).map(|i| (i, self.creatures[i].mob.pos));
+        let helpers: Vec<(usize, Vec3)> = (0..self.creatures.len()).filter(|&i| self.creatures[i].mob.is_pet() && !self.creatures[i].mob.is_dead()).map(|i| (i, self.creatures[i].mob.pos)).collect();
+        let (mut strikes, mut spells, mut soaked, mut gone) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (i, c) in self.creatures.iter_mut().enumerate() {
             let mouth = c.mob.pos + Vec3::Y * 0.8;
             let kind = c.mob.kind;
             cries.extend(c.mob.sounds.drain(..).map(|cry| (Sfx::Cry(cry, kind), mouth)));
+            if c.mob.state == State::Unborn && (c.mob.is_ally() || (c.mob.summoned && c.parent.is_none())) {
+                gone.push(i);
+            }
             if c.mob.state == State::Unborn || flat(c.mob.pos - player).length() > DRAW_RANGE {
                 // Out of reach nothing is updated: one that was after the player (as the save left it) gives up, or the player would stay in combat.
                 if c.mob.state.fights() {
@@ -463,10 +497,20 @@ impl Creatures {
             }
             (c.mob.hidden, c.mob.notice) = (watch.sneaking.is_some(), watch.sneaking.unwrap_or(1.0));
             let height = Self::height_of(c);
+            let aim = if c.mob.is_pet() { pet_focus } else { focus };
             let acts = {
                 let _p = crate::profile::sum(&mut step_time);
-                c.mob.step(dt, watch, i, &roster, &ground, &blocked)
+                if c.mob.is_ally() {
+                    let acts = c.mob.step_ally(dt, player, aim.map(|f| f.1), c.mob.is_pet() && orders.stay, &blocked);
+                    if let Some(y) = ground(c.mob.pos.x, c.mob.pos.z, c.mob.pos.y) {
+                        c.mob.pos.y = y;
+                    }
+                    acts
+                } else {
+                    c.mob.step(dt, watch, i, &roster, &ground, &blocked)
+                }
             };
+            self.ticks.extend(c.mob.ticked.drain(..).map(|damage| (c.mob.pos + Vec3::Y * 0.9, damage)));
             // What the damage over time slew is a kill of the player's.
             if std::mem::take(&mut c.mob.slain_over) {
                 self.deaths.push(kind);
@@ -474,7 +518,16 @@ impl Creatures {
             }
             for act in acts {
                 match act {
-                    Act::Melee(damage) => foes.push(Foe::Melee(damage)),
+                    Act::Melee(damage) => {
+                        // A pet next to the one that strikes takes some of the blows.
+                        let near = helpers.iter().filter(|h| flat(h.1 - c.mob.pos).length() < ally::SOAK_REACH).map(|h| h.0).next();
+                        match near {
+                            Some(j) if self.rng.next() % 100 < ally::SOAK_PERCENT => soaked.push((j, damage)),
+                            _ => foes.push(Foe::Melee(damage)),
+                        }
+                    }
+                    Act::Strike(damage) => strikes.push((aim.map(|f| f.0), damage)),
+                    Act::Spell(spell) => spells.push((i, spell, aim.map(|f| f.0))),
                     Act::Begin(spell) => foes.push(Foe::Begin { who: i, spell, at: c.mob.pos, yaw: c.mob.yaw, height }),
                     Act::Stop => foes.push(Foe::Stop { who: i }),
                     Act::Cast(cast) => casts.push((i, cast, height)),
@@ -600,6 +653,23 @@ impl Creatures {
         crate::profile::add("  beasts: vertex upload", upload_time);
         crate::profile::add("  people: pose", person_time);
         drop(t);
+        // What the allies did: the blows and spells land, the pets take the blows they soaked, the ones that are done are gone.
+        for (j, damage) in soaked {
+            if let Some(c) = self.creatures.get_mut(j) {
+                c.mob.hurt(damage);
+            }
+        }
+        for (target, damage) in strikes {
+            if let Some(t) = target {
+                self.ally_hit(t, damage);
+            }
+        }
+        for (who, spell, target) in spells {
+            self.ally_cast(who, spell, target);
+        }
+        for i in gone {
+            self.free_ally(i, renderer);
+        }
         // Summoned creatures come out of the pool, round whoever summoned them.
         for (parent, entry, ms) in summons {
             let id = format!("c{entry}");
@@ -710,7 +780,7 @@ impl Creatures {
     /// Where creature `i` stands, if it is a hostile one that is alive (what a spell can be cast on).
     pub fn enemy_at(&self, i: usize) -> Option<Vec3> {
         let m = &self.creatures.get(i)?.mob;
-        (m.def.attackable() && !m.is_dead()).then_some(m.pos)
+        (m.attackable() && !m.is_dead()).then_some(m.pos)
     }
 
     /// A spell hurts creature `i` for `damage`. Returns where above it the damage shows. It becomes the target.
@@ -735,17 +805,251 @@ impl Creatures {
         }
     }
 
+    // ---- allies
+
+    /// A creature of the original (its `entry`) comes to fight for the player at `at` for `left` seconds (0: for good). `spell` is the spell of the original it casts from
+    /// afar (0: it strikes); a `pet` lies dead until it is revived. Its place among the creatures, or none if the content has no such creature.
+    pub fn call_ally(&mut self, entry: u32, at: Vec3, yaw: f32, level: u32, left: f32, spell: u32, pet: bool) -> Option<usize> {
+        let kind = *content::get().creature_numbers.get(&format!("c{entry}"))?;
+        let mut mob = Mob::new(kind, at, yaw);
+        mob.make_ally(level, left, spell, pet, false);
+        if pet {
+            self.orders = Default::default();
+        }
+        Some(self.alloc(Creature { mob, parent: None, site: None, visual: Visual::None, marks: None, want: None, ragdoll: None, was_dead: false, name_at: Vec3::Y * NAME_FALLBACK, hidden: std::cell::Cell::new((true, u8::MAX)), owed: 0.0, beat: 0 }))
+    }
+
+    /// A creature (a kind) is called to be fought at `at` for `seconds`: it is hostile whatever its kind is, and goes when the fight is over.
+    pub fn call_foe(&mut self, kind: usize, at: Vec3, yaw: f32, seconds: f32) {
+        let mut mob = Mob::new(kind, at, yaw);
+        (mob.summoned, mob.forced_hostile) = (true, true);
+        mob.summon_at(at, yaw, (seconds * 1000.0) as i32);
+        self.alloc(Creature { mob, parent: None, site: None, visual: Visual::None, marks: None, want: None, ragdoll: None, was_dead: false, name_at: Vec3::Y * NAME_FALLBACK, hidden: std::cell::Cell::new((true, u8::MAX)), owed: 0.0, beat: 0 });
+    }
+
+    /// The beast selected is of the kind `goal` (by its name) and within reach of `from`: it is tamed for a minute, and counts as killed for the quest that asks for one.
+    pub fn tame_for_quest(&mut self, goal: usize, from: Vec3, level: u32) -> bool {
+        let wanted = &content::get().creatures[goal].name;
+        let Some(i) = self.target.filter(|&t| self.enemy_at(t).is_some_and(|p| flat(p - from).length() <= TAME_REACH) && self.creatures[t].mob.def.name == *wanted) else { return false };
+        self.deaths.push(goal);
+        self.charm(i, TAME_SECONDS, level)
+    }
+
+    /// An ally that is done is taken out of the world: its model goes back and its place is free.
+    fn free_ally(&mut self, i: usize, renderer: &mut Renderer) {
+        let c = &mut self.creatures[i];
+        match std::mem::replace(&mut c.visual, Visual::None) {
+            Visual::Beast { entity, .. } => renderer.remove_entity(entity),
+            Visual::Person(p) => p.retire(renderer),
+            Visual::None => {}
+        }
+        c.marks.take().into_iter().flatten().for_each(|e| renderer.remove_entity(e));
+        (c.parent, c.site, c.want, c.ragdoll, c.was_dead) = (None, None, None, None, false);
+        (c.mob.ally, c.mob.summoned, c.mob.forced_hostile) = (None, false, false);
+        c.mob.state = State::Unborn;
+        if !self.free.contains(&i) {
+            self.free.push(i);
+        }
+        if self.target == Some(i) {
+            self.target = None;
+        }
+    }
+
+    /// An ally's blow lands on creature `i` (a kill is the player's, for the quests and the loot).
+    fn ally_hit(&mut self, i: usize, damage: f32) {
+        let Some(c) = self.creatures.get_mut(i).filter(|c| c.mob.attackable() && !c.mob.is_dead()) else { return };
+        c.mob.hurt(damage);
+        if c.mob.is_dead() {
+            self.deaths.push(c.mob.kind);
+            c.mob.settle_loot(&self.wanted, &self.tomes);
+        }
+    }
+
+    /// An ally casts a spell of the original at creature `target`: what it hurts and puts on it.
+    fn ally_cast(&mut self, who: usize, spell: u32, target: Option<usize>) {
+        let (Some(target), Some(sp)) = (target, content::classic_spell(spell)) else { return };
+        let Some(c) = self.creatures.get(who) else { return };
+        let (level, strength) = (c.mob.def.level, c.mob.ally.as_ref().map_or(1.0, |a| a.strength));
+        let mut rng = self.rng.next();
+        let outcomes = crate::procs::effects_of(sp, level, &mut || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            rng
+        });
+        for o in outcomes {
+            match o {
+                crate::procs::Outcome::Hurt { amount, .. } => self.ally_hit(target, amount * strength),
+                crate::procs::Outcome::Put(status) => self.afflict(target, status),
+                _ => {}
+            }
+        }
+    }
+
+    /// Where the living creatures of a type (1 beast ... 7 humanoid) are, within the reach of the creatures that are in the world.
+    pub fn of_type(&self, kind: u32) -> Vec<Vec3> {
+        self.creatures.iter().map(|c| &c.mob).filter(|m| m.attackable() && !m.is_dead() && m.def.kind == kind).map(|m| m.pos).collect()
+    }
+
+    /// The nearest hostile creature within `range` yards of `at` that is alive (what a trap waits for, and a totem shoots at).
+    pub fn foe_near(&self, at: Vec3, range: f32) -> Option<usize> {
+        (0..self.creatures.len())
+            .filter(|&i| self.enemy_at(i).is_some_and(|p| flat(p - at).length() <= range))
+            .min_by(|&a, &b| flat(self.creatures[a].mob.pos - at).length().total_cmp(&flat(self.creatures[b].mob.pos - at).length()))
+    }
+
+    /// Creature `i`, a beast not more than `top` levels high, is made into a pet: it is taken out of the world (a copy of it is the pet). Its kind's id, if it can be.
+    pub fn tame(&mut self, i: usize, top: u32) -> Option<String> {
+        self.enemy_at(i)?;
+        let m = &self.creatures[i].mob;
+        if m.def.kind != 1 || m.def.level > top {
+            return None;
+        }
+        let id = m.def.id.clone();
+        let c = &mut self.creatures[i];
+        c.mob.health = 0.0;
+        c.mob.loot = None;
+        c.mob.die();
+        if self.target == Some(i) {
+            self.target = None;
+        }
+        Some(id)
+    }
+
+    /// The pet of the player's that is in the world, if there is one (alive or dead).
+    pub fn pet(&self) -> Option<usize> {
+        (0..self.creatures.len()).find(|&i| self.creatures[i].mob.is_pet())
+    }
+
+    /// The pet is sent away.
+    pub fn dismiss_pet(&mut self) {
+        for c in self.creatures.iter_mut().filter(|c| c.mob.is_pet()) {
+            c.mob.state = State::Unborn;
+        }
+    }
+
+    /// A dead pet is on its feet again, half whole. False if there is none that is dead.
+    pub fn revive_pet(&mut self) -> bool {
+        match self.pet().filter(|&i| self.creatures[i].mob.is_dead()) {
+            Some(i) => {
+                self.creatures[i].mob.revive_ally();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The pet's orders, and whether it lies dead, if the player has one in the world (what the pet bar shows).
+    pub fn pet_orders(&self) -> Option<(ally::PetOrders, bool)> {
+        self.pet().map(|i| (self.orders, self.creatures[i].mob.is_dead()))
+    }
+
+    /// An order from the pet bar. Err is what is wrong with it.
+    pub fn command_pet(&mut self, command: ally::PetCommand) -> Result<(), &'static str> {
+        let i = self.pet().ok_or("You have no pet.")?;
+        if self.creatures[i].mob.is_dead() {
+            return Err("Your pet is dead.");
+        }
+        match command {
+            ally::PetCommand::Attack => match self.target.filter(|&t| self.creatures.get(t).is_some_and(|c| c.mob.attackable() && !c.mob.is_dead())) {
+                Some(t) => (self.orders.attack, self.orders.stay) = (Some(t), false),
+                None => return Err("You have no target."),
+            },
+            ally::PetCommand::Follow => (self.orders.attack, self.orders.stay) = (None, false),
+            ally::PetCommand::Stay => (self.orders.attack, self.orders.stay) = (None, true),
+            ally::PetCommand::Stance(stance) => self.orders.stance = stance,
+        }
+        Ok(())
+    }
+
+    /// The pet is healed by this many percent of what health it can have.
+    pub fn mend_pet(&mut self, percent: f32) {
+        if let Some(i) = self.pet() {
+            let amount = self.creatures[i].mob.ally_max() * percent / 100.0;
+            self.creatures[i].mob.mend(amount);
+        }
+    }
+
+    /// The pet's kind (the id of the creature) and where it is, if it is in the world and alive.
+    pub fn pet_kind(&self) -> Option<(String, Vec3)> {
+        self.pet().filter(|&i| !self.creatures[i].mob.is_dead()).map(|i| (self.creatures[i].mob.def.id.clone(), self.creatures[i].mob.pos))
+    }
+
+    /// Creature `i`, a hostile one, fights for the player for `seconds` (mind control, enslave); it is itself again when they are over.
+    pub fn charm(&mut self, i: usize, seconds: f32, level: u32) -> bool {
+        if self.enemy_at(i).is_none() {
+            return false;
+        }
+        self.creatures[i].mob.make_ally(level, seconds, 0, false, true);
+        if self.target == Some(i) {
+            self.target = None;
+        }
+        true
+    }
+
+    /// A corpse near `from` (the nearest within `range` yards that was not raised before and has nothing left to loot) rises to fight for `left` seconds, half whole. Returns whether
+    /// one did.
+    pub fn raise(&mut self, from: Vec3, range: f32, level: u32, left: f32) -> bool {
+        let found = self.nearest(from, range, |m| m.is_dead() && !m.is_ally() && !m.raised && m.def.attackable() && m.loot.as_ref().is_none_or(|l| l.is_empty()));
+        let Some(i) = found else { return false };
+        let (kind, at, yaw) = (self.creatures[i].mob.kind, self.creatures[i].mob.pos, self.creatures[i].mob.yaw);
+        self.creatures[i].mob.raised = true;
+        let mut mob = Mob::new(kind, at, yaw);
+        mob.make_ally(level, left, 0, false, false);
+        mob.revive_ally();
+        self.alloc(Creature { mob, parent: None, site: None, visual: Visual::None, marks: None, want: None, ragdoll: None, was_dead: false, name_at: Vec3::Y * NAME_FALLBACK, hidden: std::cell::Cell::new((true, u8::MAX)), owed: 0.0, beat: 0 });
+        true
+    }
+
+    /// What the player's spells do to creature `i` besides hurting it: break off its spell, take its auras of some kinds (`mask`) or some of its mana, rob it.
+    pub fn interrupt(&mut self, i: usize) {
+        if let Some(c) = self.creatures.get_mut(i) {
+            c.mob.interrupt();
+        }
+    }
+
+    pub fn purge(&mut self, i: usize, mask: u32) {
+        if let Some(c) = self.creatures.get_mut(i) {
+            c.mob.purge(mask);
+        }
+    }
+
+    pub fn drain_mana(&mut self, i: usize, amount: f32) {
+        if let Some(c) = self.creatures.get_mut(i) {
+            c.mob.drain(amount);
+        }
+    }
+
+    pub fn pickpocket(&mut self, i: usize) -> Option<u32> {
+        self.creatures.get_mut(i).and_then(|c| c.mob.pickpocket())
+    }
+
+    /// Every creature that fights the player loses him (a vanish, a feigned death).
+    pub fn lose_player(&mut self) {
+        self.creatures.iter_mut().for_each(|c| c.mob.lose_player());
+    }
+
     /// Put something on creature `i`.
     pub fn afflict(&mut self, i: usize, status: Status) {
         if let Some(c) = self.creatures.get_mut(i) {
-            c.mob.afflict(status);
+            c.mob.afflict_from(status, &self.source.0, &self.source.1, self.source.2);
         }
+    }
+
+    /// What is put on creatures from now on comes from the spell with this name, icon and dispel kind (an empty icon: from none).
+    pub fn set_source(&mut self, name: &str, icon: &str, dispel: u32) {
+        self.source = (name.to_string(), icon.to_string(), dispel);
+    }
+
+    /// The ticks of damage over time that struck since the last call: where, and for how much (they float up as numbers).
+    pub fn take_ticks(&mut self) -> Vec<(Vec3, u32)> {
+        std::mem::take(&mut self.ticks).into_iter().map(|(at, damage)| (at, damage.round() as u32)).collect()
     }
 
     /// The creature that is fighting the player and is nearest to `feet` (what hits back at him is aimed at it), within a short reach.
     pub fn attacker(&self, feet: Vec3) -> Option<usize> {
         (0..self.creatures.len())
-            .filter(|&i| self.creatures[i].mob.state.fights() && !self.creatures[i].mob.is_dead() && flat(self.creatures[i].mob.pos - feet).length() <= 12.0)
+            .filter(|&i| self.creatures[i].mob.state.fights() && !self.creatures[i].mob.is_ally() && !self.creatures[i].mob.is_dead() && flat(self.creatures[i].mob.pos - feet).length() <= 12.0)
             .min_by(|&a, &b| flat(self.creatures[a].mob.pos - feet).length().total_cmp(&flat(self.creatures[b].mob.pos - feet).length()))
     }
 
@@ -782,7 +1086,7 @@ impl Creatures {
                 let m = &self.creatures[i].mob;
                 let to = flat(m.pos - from);
                 let d = to.length();
-                (m.def.attackable() && !m.is_dead() && d <= TARGET_RANGE && (d < 2.0 || to.normalize().dot(ahead) > 0.0)).then_some((d, i))
+                (m.attackable() && !m.is_dead() && d <= TARGET_RANGE && (d < 2.0 || to.normalize().dot(ahead) > 0.0)).then_some((d, i))
             })
             .collect();
         near.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -805,7 +1109,8 @@ impl Creatures {
             return None;
         }
         let m = &c.mob;
-        Some(TargetView { id: i, name: m.def.name.clone(), level: m.def.level, fraction: (m.health / m.def.health).clamp(0.0, 1.0), dead: m.is_dead(), hostile: m.def.is_hostile(), neutral: m.def.is_neutral() })
+        let (debuffs, buffs) = m.shown_auras();
+        Some(TargetView { id: i, name: m.def.name.clone(), level: m.def.level, fraction: (m.health / m.def.health).clamp(0.0, 1.0), dead: m.is_dead(), hostile: (m.def.is_hostile() || m.forced_hostile) && !m.is_ally(), neutral: m.def.is_neutral() && !m.is_ally(), debuffs, buffs })
     }
 
     /// A camera looking at the head of a creature and the entities to draw, for the portrait of the target frame.
@@ -892,7 +1197,7 @@ impl Creatures {
 
     /// The nearest living creature within `range` yards of `from` that can be talked to (one that is not hostile).
     pub fn talkable_near(&self, from: Vec3, range: f32) -> Option<usize> {
-        self.nearest(from, range, |m| !m.def.attackable() && !m.is_dead())
+        self.nearest(from, range, |m| !m.def.attackable() && !m.is_ally() && !m.is_dead())
     }
 
     pub fn def(&self, creature: usize) -> Option<&'static CreatureDef> {
@@ -926,12 +1231,12 @@ impl Creatures {
 
     /// Whether any creature is after the player (chasing, biting or flinching): the player is in combat.
     pub fn engaged(&self) -> bool {
-        self.creatures.iter().any(|c| c.mob.state.fights())
+        self.creatures.iter().any(|c| c.mob.state.fights() && !c.mob.is_ally())
     }
 
     /// Who is after the player, for the log: the kind, the state and how far from the player.
     pub fn engaged_by(&self, player: Vec3) -> Vec<String> {
-        self.creatures.iter().filter(|c| c.mob.state.fights()).map(|c| format!("{} {:?} at {:.1} yards (home {:.1})", c.mob.def.name, c.mob.state, flat(player - c.mob.pos).length(), flat(player - c.mob.home).length())).collect()
+        self.creatures.iter().filter(|c| c.mob.state.fights() && !c.mob.is_ally()).map(|c| format!("{} {:?} at {:.1} yards (home {:.1})", c.mob.def.name, c.mob.state, flat(player - c.mob.pos).length(), flat(player - c.mob.home).length())).collect()
     }
 
     /// Where a point is on a `size` screen seen through `camera` (pixels), if it is in front of it.
@@ -956,7 +1261,7 @@ impl Creatures {
                     } else {
                         (!m.skinned && content::get().skins.contains_key(&m.def.id)).then_some(Kind::Skin)?
                     }
-                } else if m.def.attackable() {
+                } else if m.attackable() {
                     Kind::Attack
                 } else if !m.def.vendor.is_empty() {
                     Kind::Buy
@@ -1014,7 +1319,7 @@ impl Creatures {
                 if c.hidden.get().0 {
                     return None;
                 }
-                let color = if c.mob.def.is_hostile() { [1.0, 0.1, 0.1, 1.0] } else if c.mob.def.is_neutral() { [1.0, 0.9, 0.1, 1.0] } else { [0.1, 1.0, 0.1, 1.0] };
+                let color = if c.mob.is_ally() { [0.1, 1.0, 0.1, 1.0] } else if c.mob.def.is_hostile() || c.mob.forced_hostile { [1.0, 0.1, 0.1, 1.0] } else if c.mob.def.is_neutral() { [1.0, 0.9, 0.1, 1.0] } else { [0.1, 1.0, 0.1, 1.0] };
                 Some(Label { text: c.mob.def.name.clone(), sub: c.mob.def.title.as_ref().filter(|t| !t.is_empty()).map(|t| format!("<{t}>")), color, x, y, line })
             })
             .collect()

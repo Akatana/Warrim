@@ -18,6 +18,7 @@ impl Panels {
         }
         self.spent = saved.spent;
         self.talents = crate::talents::Ranks::from_saved(&saved.talents);
+        self.pet = saved.pet.clone();
         self.sync_points();
         self.found = content::get().pois.iter().map(|p| saved.discovered.contains(&p.id)).collect();
         self.explored = saved.explored.clone();

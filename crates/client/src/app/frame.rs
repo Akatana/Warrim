@@ -23,6 +23,15 @@ impl State {
             self.save_game();
         }
 
+        // The eyes of a spell come back when their time is up, or when they have gone as far as they can.
+        if let Some((left, reach)) = &mut self.scout {
+            *left -= dt;
+            let far = self.free.as_ref().is_some_and(|f| (f.camera.pos - self.camera.pos).length() > *reach);
+            if *left <= 0.0 || far {
+                self.scout = None;
+                self.detached = false;
+            }
+        }
         // While the editor is open its camera flies free: it starts behind and above the player, looking where he looks.
         if !self.detached && !self.editor.as_ref().is_some_and(|e| e.open) {
             self.free = None;
@@ -161,11 +170,7 @@ impl State {
         }
         // A charge: the character leaps at the target, arriving in the time a jump of this height takes.
         if let Some(at) = self.caster.take_leap() {
-            let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
-            let to = Vec3::new(at.x - feet.x, 0.0, at.z - feet.z);
-            let (up, reach) = (5.0, (to.length() - 1.5).max(0.0));
-            let airtime = 2.0 * up / crate::movement::GRAVITY;
-            self.controller.knock_back(to.normalize_or_zero(), (reach / airtime).min(45.0), up);
+            self.leap_to(at);
         }
         drop(t);
         let t = scope("fires, effects");
@@ -304,7 +309,7 @@ impl State {
                 // The head under the surface holds the breath, as long as the skill in diving allows.
                 let eye = self.camera.pos;
                 let submerged = self.controller.mode == Mode::Walk && self.world.liquid_at(eye.x, eye.z, eye.y).is_some_and(|level| eye.y < level);
-                p.set_diving(submerged, self.panels.as_ref().map_or(30.0, |pn| pn.skills.breath_seconds()));
+                p.set_diving(submerged, self.panels.as_ref().map_or(30.0, |pn| if pn.stats.water_breathing { 3600.0 } else { pn.skills.breath_seconds() }));
                 if let Some(panels) = &mut self.panels {
                     panels.set_breath(p.breath());
                     // Holding the breath trains the skill in diving.
@@ -346,6 +351,8 @@ impl State {
                 self.controller.update(&mut self.camera, &mut self.input, &Solid(&self.world, self.lifts.as_ref()), dt);
             }
             if let Some(height) = self.controller.take_landing() {
+                // (A spell that lets him fall softly takes the harm out of it.)
+                let height = if self.panels.as_ref().is_some_and(|p| p.stats.slow_fall) { 0.0 } else { height };
                 if let (Some(taken), Some(text)) = (self.player.as_mut().and_then(|p| p.take_fall(height)), &mut self.combat_text) {
                     text.damage_taken(taken);
                 }
@@ -432,6 +439,8 @@ impl State {
                             let (level, speed) = (panels.progress.level, panels.stats.speed);
                             let mut out = Vec::new();
                             crate::procs::on_hit(weapon, speed, level, &mut || panels.consumed.dice(), &mut out);
+                            let timed = panels.consumed.on_blow();
+                            crate::procs::on_timed(&timed, speed, level, &mut || panels.consumed.dice(), &mut out);
                             if player.is_extra_swing() {
                                 out.retain(|o| !matches!(o, crate::procs::Outcome::Extra(_)));
                             }
@@ -470,6 +479,12 @@ impl State {
             let (acts, mut cries) = wolves.update(dt, &watch, |x, z, y| crate::collision::Collider::floor(world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), self.bodies.as_mut(), &mut self.renderer, &self.gpu);
             drop(t);
             self.creature_time += timing.elapsed();
+            // The ticks of damage over time float up as numbers, like the blows.
+            for (at, damage) in wolves.take_ticks() {
+                if let Some(text) = &mut self.combat_text {
+                    text.damage_dealt(at, damage);
+                }
+            }
             let t = crate::profile::scope("foes, effects, damage");
             // What they did: the swings that landed, the spells begun and gone off, and the auras that hold the player.
             let mut effects = Vec::new();
@@ -578,9 +593,10 @@ impl State {
                         // What hits back at whoever strikes: shields and the spells of the gear that go off when struck.
                         if let (true, Some(panels), Some(attacker)) = (physical, &mut self.panels, wolves.attacker(feet)) {
                             let shields: Vec<(f32, u32)> = panels.consumed.shields().collect();
+                            let reactions = panels.consumed.reactions();
                             let mut out = Vec::new();
                             let level = panels.progress.level;
-                            crate::procs::struck(&panels.inv.equipment, &shields, level, &mut || panels.consumed.dice(), &mut out);
+                            crate::procs::struck(&panels.inv.equipment, &shields, &reactions, level, &mut || panels.consumed.dice(), &mut out);
                             crate::procs::apply(out, Some(attacker), player, panels, wolves, self.combat_text.as_mut());
                         }
                     }
@@ -673,6 +689,7 @@ impl State {
                 panels.arrive(&self.map, north, west);
                 wolves.set_wanted(panels.quests.wanted(&panels.inv));
                 wolves.set_tomes(panels.learnable_tomes());
+                panels.set_tracking(Some(wolves));
                 panels.update_quests();
                 let _t = crate::profile::scope("name labels");
                 panels.draw_labels(&mut self.renderer.ui, &self.gpu, size, &wolves.labels(&render_camera, size, self.names, |from, to| self.world.ray_hit(from, to).is_some()));
@@ -683,7 +700,17 @@ impl State {
                 text.draw(&mut self.renderer.ui, &render_camera, size);
             }
             // Dead: back at the spawn point with everything restored.
-            if player.vitals.health.current <= 0.0 {
+            if let (true, Some(share)) = (player.vitals.health.current <= 0.0, self.panels.as_mut().and_then(|p| p.consumed.take_ward())) {
+                // His soul was kept: he gets up where he fell.
+                log::info!("you died, and rose again");
+                player.revive();
+                (player.vitals.health.current, player.vitals.mana.current) = (player.vitals.health.max * share, player.vitals.mana.max * share);
+                wolves.lose_player();
+                self.foes.clear(&mut self.effects);
+                if let Some(panels) = &mut self.panels {
+                    panels.notice("You rise again.");
+                }
+            } else if player.vitals.health.current <= 0.0 {
                 log::info!("you died");
                 player.revive();
                 self.foes.clear(&mut self.effects);
@@ -697,8 +724,80 @@ impl State {
         }
     }
 
+    /// The character leaps at a place, arriving in the time a jump of this height takes (a charge).
+    fn leap_to(&mut self, at: Vec3) {
+        let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
+        let to = Vec3::new(at.x - feet.x, 0.0, at.z - feet.z);
+        let (up, reach) = (5.0, (to.length() - 1.5).max(0.0));
+        let airtime = 2.0 * up / crate::movement::GRAVITY;
+        self.controller.knock_back(to.normalize_or_zero(), (reach / airtime).min(45.0), up);
+    }
+
+    /// The character is put this many yards ahead (a blink), short of whatever is in the way, and down on the ground there.
+    fn blink(&mut self, yards: f32) {
+        let forward = self.camera.forward();
+        let flat = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+        let from = self.camera.pos;
+        let mut reach = yards;
+        // Not through a wall: as far as the first thing in the way, less a body's width.
+        if let Some(hit) = self.world.ray_hit(from, from + flat * yards) {
+            reach = (hit.distance(from) - 0.8).max(0.0);
+        }
+        self.camera.pos += flat * reach;
+        self.controller.reset();
+        if !self.world.indoors(self.camera.pos - Vec3::Y * (EYE_HEIGHT - 1.0)) {
+            self.snap_to_ground = Some(0.0);
+        }
+    }
+
+    /// What spells asked of the game (see `Panels::take_requests`).
+    fn spell_requests(&mut self) {
+        use crate::panels::Request;
+        for request in self.panels.as_mut().map(|p| p.take_requests()).unwrap_or_default() {
+            match request {
+                Request::Cleanse(mask) => self.foes.afflictions.cleanse(mask),
+                Request::Vanish => {
+                    if let Some(wolves) = &mut self.wolves {
+                        wolves.lose_player();
+                    }
+                }
+                Request::Blink(yards) => self.blink(yards),
+                Request::Leap(at) => self.leap_to(at),
+                Request::Foe(creature) => {
+                    let (feet, yaw) = (self.camera.pos - Vec3::Y * EYE_HEIGHT, self.camera.yaw);
+                    if let Some(wolves) = &mut self.wolves {
+                        wolves.call_foe(creature, feet + Vec3::new(yaw.sin(), 0.0, -yaw.cos()) * 4.0, yaw + std::f32::consts::PI, 300.0);
+                    }
+                }
+                Request::Tame(creature) => {
+                    let (feet, level) = (self.camera.pos - Vec3::Y * EYE_HEIGHT, self.panels.as_ref().map_or(1, |p| p.progress.level));
+                    let tamed = self.wolves.as_mut().is_some_and(|w| w.tame_for_quest(creature, feet, level));
+                    if let Some(panels) = &mut self.panels {
+                        if tamed {
+                            panels.notice("The beast is tame.");
+                        } else {
+                            panels.error("There is no such beast to tame.");
+                        }
+                    }
+                }
+                Request::Scout { seconds, reach } => {
+                    self.scout = Some((seconds, reach));
+                    self.detached = true;
+                }
+                Request::Form { display, percent } => {
+                    if let Some(player) = &mut self.player {
+                        if let Err(e) = player.shift(display, percent, &mut self.renderer, &self.gpu) {
+                            log::warn!("cannot take the shape: {e:#}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// The things that go on whatever the frame shows: level up, sleep, travel, items in use, the steed, a changed set of equipment.
     fn upkeep(&mut self, dt: f32) {
+        self.spell_requests();
         self.walk_into_portals();
         if let Some(panels) = &mut self.panels {
             let feet = Mat4::from_translation(self.camera.pos - Vec3::Y * EYE_HEIGHT);
@@ -756,7 +855,7 @@ impl State {
             }
             // A rider who goes indoors is put down: no horse goes through a door.
             self.indoor_check -= dt;
-            if player.is_mounted() && self.indoor_check <= 0.0 {
+            if player.is_riding() && self.indoor_check <= 0.0 {
                 self.indoor_check = 0.25;
                 if self.world.indoors(self.camera.pos - Vec3::Y * (EYE_HEIGHT - 1.0)) {
                     player.dismount();
@@ -791,6 +890,9 @@ impl State {
             let cooldowns = self.panels.as_ref().map_or(&[][..], |p| &p.cooldowns[..]);
             let items = |i| self.panels.as_ref().map_or((0, 0.0), |p| p.item_state(i));
             bar.draw(&mut self.renderer.ui, size, player, self.panels.as_ref().is_some_and(|p| p.character_open()), self.panels.as_ref().map_or(crate::levels::Progress::new(), |p| p.progress), cooldowns, &items);
+        }
+        if let (Some(petbar), Some((orders, dead))) = (&self.petbar, self.wolves.as_ref().and_then(|w| w.pet_orders())) {
+            petbar.draw(&mut self.renderer.ui, size, orders, dead, self.cursor);
         }
         let mut discovered = false;
         if let Some(panels) = &mut self.panels {

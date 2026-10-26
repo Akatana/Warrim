@@ -398,6 +398,8 @@ impl Panels {
             Effect::Heal { min, max } => ("Self".to_string(), format!("Heals you for {:.0} to {:.0}.", min * power + bonus, max * power + bonus)),
             Effect::Mana { min, max } => ("Self".to_string(), format!("Restores {min:.0} to {max:.0}% of your mana.")),
             Effect::Buff => ("Self".to_string(), String::new()),
+            Effect::Classic { range } if range > 0.0 => (format!("{range:.0} yd range"), String::new()),
+            Effect::Classic { .. } => ("Self".to_string(), String::new()),
         };
         let mut lines = vec![
             TipLine::new(def.name.clone(), WHITE),
@@ -414,6 +416,17 @@ impl Panels {
                     Rider::Stun(seconds) => format!("Stuns for {seconds} seconds."),
                     Rider::Slow { share, seconds } => format!("Slows by {:.0}% for {seconds:.0} seconds.", (1.0 - share) * 100.0),
                     Rider::Leap => "You leap at the target.".to_string(),
+                    Rider::Mount { .. } => "Summons a steed to ride.".to_string(),
+                    Rider::Summon { seconds, .. } if seconds > 0.0 => format!("Brings a helper that fights for you for {seconds:.0} seconds."),
+                    Rider::Summon { .. } | Rider::CallPet => "Brings your pet.".to_string(),
+                    Rider::DismissPet => "Sends your pet away.".to_string(),
+                    Rider::RevivePet => "Brings your pet back to life.".to_string(),
+                    Rider::MendPet(_) => "Heals your pet.".to_string(),
+                    Rider::Tame => "Makes the beast your pet.".to_string(),
+                    Rider::Place { kind: crate::content::PlaceKind::Totem, seconds, .. } => format!("A totem stands here for {seconds:.0} seconds."),
+                    Rider::Place { kind: crate::content::PlaceKind::Trap, .. } => "A trap is set here.".to_string(),
+                    Rider::Place { kind: crate::content::PlaceKind::Well, .. } => "A well of healing stands here.".to_string(),
+                    Rider::Conjure { item, count } => format!("Makes {count} {}.", crate::items::all().iter().find(|it| it.id == format!("i{item}")).map_or("item", |it| it.name)),
                     Rider::Gain { aura, amount, seconds, .. } => match aura {
                         0..=4 => format!("Raises your {} by {:.0} for {seconds:.0} seconds.", ["strength", "agility", "stamina", "intellect", "spirit"][aura as usize], amount * self.progress.level as f32),
                         52 => format!("Raises your chance to land a critical blow by {amount:.0}% for {seconds:.0} seconds."),

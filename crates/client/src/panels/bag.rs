@@ -151,6 +151,20 @@ impl Panels {
         if steed && item.skill.0 == 762 && self.skills.rank(crate::skills::Skill::Riding) < item.skill.1 {
             return self.error(&self.string("ITEM_REQ_SKILL").replacen("%s", &format!("{} ({})", skill_name(762), item.skill.1), 1));
         }
+        // The item of a quest: a binding calls the demon to fight, a taming rod tames the beast.
+        match self.quests.used(stack.item) {
+            Some(crate::quests::QuestUse::Summon(creature)) => return self.requests.push(Request::Foe(creature)),
+            Some(crate::quests::QuestUse::Tame(creature)) => return self.requests.push(Request::Tame(creature)),
+            None => {}
+        }
+        // A soulstone keeps the soul of the character: if he dies, he gets up where he fell.
+        if item.spells.iter().any(|s| content::classic_spell(s.spell).is_some_and(|c| c.name == "Soulstone Resurrection")) {
+            let share = ["Minor", "Lesser", "Greater", "Major"].iter().position(|w| item.name.starts_with(w)).map_or(0.4, |i| [0.2, 0.3, 0.5, 0.6][i]);
+            self.inv.remove(stack.item, 1);
+            self.consumed.add_timed(crate::consume::Timed::Ward(share), 1800.0);
+            self.consumed.show("Spell_Shadow_SoulGem", 1800.0);
+            return self.notice("Your soul is kept.");
+        }
         // A lure goes on a fishing pole in the hand and asks for the skill it names; a stone or an oil, on a weapon.
         let temp = item.spells.iter().flat_map(|s| s.effects.iter()).find_map(|e| if let crate::items::UseEffect::Temp(enchant, _) = e { Some(*enchant) } else { None });
         if let Some(enchant) = temp {
@@ -188,6 +202,11 @@ impl Panels {
                     let effects = content::get().enchants.get(&enchant).map(|e| e.effects.clone()).unwrap_or_default();
                     let weapon = self.inv.equipment[crate::items::MAIN_HAND].map(|s| s.item);
                     used.stats_changed |= self.consumed.apply_temp(weapon, &effects, seconds);
+                    // A poison does nothing to the stats: it is what the blows cast.
+                    if content::get().enchants.get(&enchant).is_some_and(|e| !e.procs.is_empty()) {
+                        self.consumed.timed.retain(|(t, _)| !matches!(t, crate::consume::Timed::Coat(_)));
+                        self.consumed.add_timed(crate::consume::Timed::Coat(enchant), seconds);
+                    }
                 }
                 if let Some(mount) = used.mount {
                     if self.mounted {
@@ -289,6 +308,27 @@ impl Panels {
     /// The steed (display, speed bonus in percent) that a mount item asked for since the last call.
     pub fn take_steed(&mut self) -> Option<(u32, i32)> {
         self.steed.take()
+    }
+
+    /// What spells asked of the game since the last call.
+    pub fn take_requests(&mut self) -> Vec<Request> {
+        std::mem::take(&mut self.requests)
+    }
+
+    /// A spell coats the weapon in the hand with an enchantment (a row of `SpellItemEnchantment.dbc`) for some seconds: what it adds to the stats, and what it casts on a blow.
+    pub fn coat(&mut self, enchant: u32, seconds: f32) {
+        let Some(e) = content::get().enchants.get(&enchant) else { return };
+        let weapon = self.inv.equipment[crate::items::MAIN_HAND].map(|s| s.item);
+        self.consumed.timed.retain(|(t, _)| !matches!(t, crate::consume::Timed::Coat(_)));
+        self.consumed.apply_temp(weapon, &e.effects, seconds);
+        self.consumed.add_timed(crate::consume::Timed::Coat(enchant), seconds);
+        self.stats_dirty = true;
+        self.refresh();
+    }
+
+    /// A spell puts a mount under the character (or takes him down from it): the game does it at the next frame.
+    pub fn ride(&mut self, display: u32, percent: i32) {
+        self.steed = Some((display, percent));
     }
 
     /// The health and mana that using items gave since the last call.

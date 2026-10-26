@@ -57,6 +57,8 @@ impl State {
 
         let mut actionbar = ActionBar::load(&player_mount, &mut renderer.ui, &gpu).map_err(|e| log::warn!("no action bar: {e:#}")).ok();
 
+        let petbar = Some(crate::petbar::PetBar::load(&player_mount, &mut renderer.ui, &gpu));
+
         show(&mut renderer, &[(Stage::Objects, 1.0 / 3.0), (Stage::Interface, 0.2)]);
         let mut panels = Panels::new(player_mount.clone(), &mut renderer, &gpu).map_err(|e| log::warn!("no character sheet: {e:#}")).ok();
         if let Some(p) = &mut panels {
@@ -179,6 +181,7 @@ impl State {
             player,
             audio,
             actionbar,
+            petbar,
             wolves,
             chests,
             pickups,
@@ -206,6 +209,7 @@ impl State {
             console,
             god: false,
             detached: false,
+            scout: None,
             restart: false,
             logout: false,
             quit: false,

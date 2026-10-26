@@ -565,3 +565,111 @@ fn how_far_a_creature_notices_the_player_grows_a_yard_for_each_level_it_is_above
     high.step(0.1, &at(aggro_range(level, level - 2) - 1.0), 0, &[], flat_ground, open);
     assert_eq!(high.state, State::Chase);
 }
+
+/// Fear sends it running from the player, a root holds its feet but not its teeth, a sleep ends with the first blow, a weakened creature takes more and deals less.
+#[test]
+fn fear_roots_sleep_and_weakness_change_what_a_creature_does() {
+    let player = Vec3::new(5.0, 0.0, 0.0);
+    // Terror: it runs away from him (west), then comes back to the fight when the time is up.
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.afflict(Status::Fear(1.0));
+    run(&mut wolf, 0.9, player);
+    assert!(wolf.pos.x < -4.0, "did not run: {:?}", wolf.pos);
+    run(&mut wolf, 3.0, player);
+    assert!(wolf.pos.x > -10.0 && wolf.state.fights(), "{:?} {:?}", wolf.pos, wolf.state);
+    // Rooted: it stays where it stands.
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.afflict(Status::Root(2.0));
+    run(&mut wolf, 1.0, player);
+    assert_eq!(wolf.pos, Vec3::ZERO);
+    run(&mut wolf, 2.0, player);
+    assert!(wolf.pos.x > 0.5, "still held: {:?}", wolf.pos);
+    // Asleep: it does nothing until it is struck; a sheep is a sheep until then.
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.afflict(Status::Sheep(30.0));
+    assert_ne!(wolf.look, wolf.kind);
+    run(&mut wolf, 2.0, Vec3::new(2.0, 0.0, 0.0));
+    assert_eq!(wolf.pos, Vec3::ZERO);
+    wolf.hurt(1.0);
+    assert_eq!(wolf.look, wolf.kind);
+    assert!(run(&mut wolf, 3.0, Vec3::new(2.0, 0.0, 0.0)).len() >= 1, "it did not wake");
+    // Weakened: it takes a tenth more and bites a bit less hard; banished, it cannot be hurt at all.
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.afflict(Status::Weaken { dealt: 0.5, taken: 1.5, seconds: 10.0 });
+    wolf.hurt(10.0);
+    assert_eq!(wolf.health, def().health - 15.0);
+    let bites = run(&mut wolf, 3.0, Vec3::new(2.0, 0.0, 0.0));
+    assert!(bites.iter().all(|&d| (d - def().bite_damage * 0.5).abs() < 1e-3), "{bites:?}");
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.afflict(Status::Banish(5.0));
+    wolf.hurt(10.0);
+    assert_eq!(wolf.health, def().health);
+}
+
+/// A creature that fights for the player follows him, goes for what is fighting him, strikes it, and is gone when its time is up.
+#[test]
+fn an_ally_follows_the_player_strikes_what_he_fights_and_goes_when_its_time_is_up() {
+    let player = Vec3::new(20.0, 0.0, 0.0);
+    let mut pet = Mob::new(kind(), Vec3::ZERO, 0.0);
+    pet.make_ally(30, 10.0, 0, true, false);
+    assert!(pet.is_ally() && pet.is_pet() && !pet.attackable());
+    let step = |pet: &mut Mob, seconds: f32, focus: Option<Vec3>| -> Vec<Act> { (0..(seconds * 60.0) as usize).flat_map(|_| pet.step_ally(1.0 / 60.0, player, focus, false, open)).collect() };
+    // Nothing to fight: it runs to the player and stays close.
+    step(&mut pet, 4.0, None);
+    assert!((pet.pos - player).length() < 6.0, "{:?}", pet.pos);
+    // Something to fight, 15 yards from him: it goes there and strikes, for more than its kind does (it is as strong as his level asks).
+    let foe = Vec3::new(20.0, 0.0, 15.0);
+    let acts = step(&mut pet, 5.0, Some(foe));
+    let blows: Vec<f32> = acts.iter().filter_map(|a| if let Act::Strike(d) = a { Some(*d) } else { None }).collect();
+    assert!((pet.pos - foe).length() < BITE_RANGE + 0.5 && blows.len() >= 2, "{:?} {blows:?}", pet.pos);
+    assert!(blows.iter().all(|&d| d > def().bite_damage), "{blows:?}");
+    // The time is up: it is gone.
+    step(&mut pet, 6.0, None);
+    assert_eq!(pet.state, State::Unborn);
+    // A pet hurt to death lies there; a revived one is up again.
+    let mut pet = Mob::new(kind(), Vec3::ZERO, 0.0);
+    pet.make_ally(1, 0.0, 0, true, false);
+    pet.hurt(1e6);
+    assert!(pet.is_dead() && pet.loot.is_none());
+    step(&mut pet, 10.0, None);
+    assert!(pet.is_dead(), "a pet lies until it is revived");
+    pet.revive_ally();
+    assert!(!pet.is_dead() && pet.health > 0.0);
+}
+
+/// A pet told to stay does not follow or chase; the stances pick foes as the pet bar says.
+#[test]
+fn a_pet_that_stays_keeps_its_place_and_the_stances_pick_their_foes() {
+    let player = Vec3::new(20.0, 0.0, 0.0);
+    let mut pet = Mob::new(kind(), Vec3::ZERO, 0.0);
+    pet.make_ally(30, 0.0, 0, true, false);
+    (0..600).for_each(|_| drop(pet.step_ally(1.0 / 60.0, player, Some(Vec3::new(0.0, 0.0, 15.0)), true, open)));
+    assert!(pet.pos.length() < 0.01, "{:?}", pet.pos);
+    let pick = |stance| PetOrders { stance, ..Default::default() }.pick();
+    assert_eq!(pick(Stance::Passive), None);
+    assert_eq!(pick(Stance::Defensive).map(|p| p.1), Some(true));
+    assert_eq!(pick(Stance::Aggressive).map(|p| p.1), Some(false));
+}
+
+/// A damage over time is listed with its spell's icon until it ends, the same spell cast again renews it instead of adding another, and it sets the creature on whoever sent it.
+#[test]
+fn a_spells_damage_over_time_is_listed_renewed_not_stacked_and_provokes() {
+    let far = Vec3::new(100.0, 0.0, 0.0);
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    let full = wolf.health;
+    let rend = Status::Over { amount: 3.0, period: 1.0, seconds: 5.0 };
+    wolf.afflict_from(rend, "Rend", "Ability_Gouge", 0);
+    assert_eq!(wolf.state, State::Chase);
+    // (Left to itself, a wolf that cannot find the player goes home and heals: keep it still.)
+    wolf.state = State::Idle;
+    run(&mut wolf, 2.0, far);
+    // Cast again: one bleed with a fresh five seconds, and one icon.
+    wolf.afflict_from(rend, "Rend", "Ability_Gouge", 0);
+    wolf.afflict_from(Status::Over { amount: 1.0, period: 1.0, seconds: 5.0 }, "Corruption", "Spell_Shadow_AbominationExplosion", 4);
+    assert_eq!(wolf.shown_auras().0.len(), 2);
+    wolf.state = State::Idle;
+    run(&mut wolf, 6.0, far);
+    // 2 ticks of 3, then 5 of 3 and 5 of 1.
+    assert!((full - wolf.health - (6.0 + 15.0 + 5.0)).abs() < 1e-3, "{}", full - wolf.health);
+    assert!(wolf.shown_auras().0.is_empty());
+}

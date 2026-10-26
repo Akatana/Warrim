@@ -95,6 +95,11 @@ impl Afflictions {
         self.list.push(a);
     }
 
+    /// Take off what is of these kinds (bit `n` for the dispel kind `n`).
+    pub fn cleanse(&mut self, mask: u32) {
+        self.list.retain(|a| !crate::content::classic_spell(a.spell).is_some_and(|s| mask >> s.dispel.min(31) & 1 == 1));
+    }
+
     pub fn clear(&mut self) {
         self.list.clear();
     }

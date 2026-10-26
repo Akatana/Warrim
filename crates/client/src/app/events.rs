@@ -207,7 +207,21 @@ impl State {
                     return;
                 }
             }
+            let order = self.cursor.filter(|_| self.petbar.is_some() && self.wolves.as_ref().is_some_and(|w| w.pet_orders().is_some())).filter(|&pos| crate::petbar::PetBar::covers(pos, size));
             match (slot, &mut self.actionbar, &mut self.player) {
+                // A button of the pet bar orders the pet; the bar's art between them does nothing.
+                _ if order.is_some() => {
+                    if let (Some(command), Some(wolves)) = (order.and_then(|pos| crate::petbar::PetBar::button_at(pos, size)), self.wolves.as_mut()) {
+                        // Attack again stands the pet down, as in the original.
+                        let command = match (command, wolves.pet_orders()) {
+                            (crate::creature::PetCommand::Attack, Some((o, _))) if o.attack.is_some() => crate::creature::PetCommand::Follow,
+                            _ => command,
+                        };
+                        if let (Err(e), Some(panels)) = (wolves.command_pet(command), self.panels.as_mut()) {
+                            panels.error(e);
+                        }
+                    }
+                }
                 // Shift lifts the action off its button to move or drop it instead of using it.
                 (Some(slot), Some(bar), Some(_)) if self.input.fast => bar.pick_up(slot),
                 (Some(slot), Some(bar), Some(player)) => {

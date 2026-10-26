@@ -644,14 +644,14 @@ impl Player {
 
     /// Sneaking (Ctrl) is for feet: in the saddle the key gets down off the steed instead.
     pub fn toggle_sneak(&mut self) {
-        if self.steed.is_some() {
+        if self.is_riding() {
             return self.dismount();
         }
         self.sneaking = !self.sneaking;
     }
 
     pub fn set_sneaking(&mut self, on: bool) {
-        self.sneaking = on && self.steed.is_none();
+        self.sneaking = on && !self.is_riding();
     }
 
     /// A mount item was used: get on the steed (display row, speed bonus in percent), or down from it when already riding.
@@ -659,8 +659,28 @@ impl Player {
         if self.steed.is_some() {
             return Ok(self.dismount());
         }
-        self.mount(Steed::load(&self.mount, &self.cache, renderer, gpu, display, percent)?);
+        self.mount(Steed::load(&self.mount, &self.cache, renderer, gpu, display, percent, false)?);
         Ok(())
+    }
+
+    /// A spell shapes the character into the beast of display row `display` (which adds `percent` to the running speed): the same shape again, or no shape, gives him back
+    /// his own.
+    pub fn shift(&mut self, display: u32, percent: i32, renderer: &mut Renderer, gpu: &Gpu) -> Result<()> {
+        if self.steed.as_ref().is_some_and(|s| s.form && s.display == display) {
+            return Ok(self.dismount());
+        }
+        self.mount(Steed::load(&self.mount, &self.cache, renderer, gpu, display, percent, true)?);
+        Ok(())
+    }
+
+    /// Whether he has taken the shape of a beast.
+    pub fn is_form(&self) -> bool {
+        self.steed.as_ref().is_some_and(|s| s.form)
+    }
+
+    /// Whether he rides a steed (not a shape of his own).
+    pub fn is_riding(&self) -> bool {
+        self.steed.as_ref().is_some_and(|s| !s.form)
     }
 
     /// Get on the steed; the character stands up from a sneak and lowers the shield.
@@ -1057,7 +1077,10 @@ impl Player {
         self.worn.animate(dt, eye.forward(), eye.pos, renderer, gpu, &self.character, feet, body, !third, self.ranged.drawn.is_some());
         // The sneaking character is see-through (the original's stealth look); every frame while it is, since `animate` resets the parts' looks.
         let was = self.fade;
-        let goal = if self.sneaking { SNEAK_OPACITY } else { 1.0 };
+        let goal = if self.is_form() { 0.0 } else if self.sneaking { SNEAK_OPACITY } else { 1.0 };
+        if self.is_form() {
+            self.fade = 0.0;
+        }
         // shortcut: constant speed (the full range in a second) where the original takes a second for any distance; same for a whole change.
         self.fade += (goal - self.fade).clamp(-1.0, 1.0).signum() * ((1.0 - SNEAK_OPACITY) / SNEAK_FADE_SECONDS * dt).min((goal - self.fade).abs());
         if self.fade < 0.995 || was < 0.995 {

@@ -77,6 +77,36 @@
                     "i2947",
                 ],
             ),
+            (
+                id: "target_dummy",
+                name: "Target Dummy",
+                level: 60,
+                title: None,
+                body: Beast(
+                    model: "Creature\\Object\\WoodenDummy.m2",
+                    skins: [
+                        (11, "Creature\\Object\\WoodenDummy.blp"),
+                    ],
+                    scale: 1.0,
+                ),
+                hostile: false,
+                neutral: true,
+                health: 10000000.0,
+                bite_damage: 0.0,
+                respawn: 30.0,
+                loot: None,
+                gossip: None,
+                vendor: [],
+                brain: (
+                    mana: 0.0,
+                    swing: 0.0,
+                    shot: 0.0,
+                    assist: 0.0,
+                    calm: false,
+                    faction: 0,
+                    events: [],
+                ),
+            ),
         ],
     ),
     quests: (
@@ -129,6 +159,12 @@
             ),
         ],
     ),
+    node_kinds: (
+        removed: [],
+        entries: [],
+    ),
+    lessons: {},
+    lessons_removed: [],
     loot_removed: [],
     loot: {
         "c_chest_poor": (
@@ -207,44 +243,17 @@
             also: [],
         ),
     },
-    spawns_removed: [
+    spawns_removed: [],
+    spawns_added: [
         (
-            creature: "deputy_willem",
-            at: (-8942.0, -137.0),
-            facing: 210.0,
-        ),
-        (
-            creature: "abbot_hollis",
-            at: (-8924.0, -139.0),
-            facing: 180.0,
-        ),
-        (
-            creature: "cellar_rat",
-            at: (-8838.0, -140.0),
-            facing: 10.0,
-        ),
-        (
-            creature: "cellar_rat",
-            at: (-8856.0, -126.0),
-            facing: 100.0,
-        ),
-        (
-            creature: "cellar_rat",
-            at: (-8874.0, -146.0),
-            facing: 200.0,
-        ),
-        (
-            creature: "cellar_rat",
-            at: (-8848.0, -158.0),
-            facing: 300.0,
-        ),
-        (
-            creature: "cellar_rat",
-            at: (-8866.0, -160.0),
-            facing: 40.0,
+            creature: "target_dummy",
+            map: Some("Azeroth"),
+            at: (-9435.133, 45.023525),
+            facing: 45.295734,
         ),
     ],
-    spawns_added: [],
     props_removed: [],
     props_added: [],
+    nodes_removed: [],
+    nodes_added: [],
 )

@@ -23,13 +23,18 @@ impl Mob {
 
     /// The player's sword hits for `damage`: it flinches, turns on whoever hit it, or dies. A spell being cast is only held up by it.
     pub fn hurt(&mut self, damage: f32) {
-        if self.is_dead() {
+        if self.is_dead() || self.banish > 0.0 {
             return;
         }
-        self.health -= damage;
+        // A blow wakes what sleeps and turns a sheep back; a weakened creature takes more of it.
+        if self.asleep {
+            self.stun = 0.0;
+            self.wake();
+        }
+        self.health -= damage * self.weak.1;
         self.sounds.push(if self.health <= 0.0 { Cry::Death } else { Cry::Wound });
         if self.health <= 0.0 {
-            self.loot = self.def.loot.as_deref().and_then(content::drop_table).map(|table| table.roll(&mut self.rng));
+            self.loot = self.def.loot.as_deref().filter(|_| self.ally.is_none()).and_then(content::drop_table).map(|table| table.roll(&mut self.rng));
             self.die();
             return;
         }
@@ -46,9 +51,44 @@ impl Mob {
             return;
         }
         match status {
-            Status::Over { amount, period, seconds } => self.over.push((amount, period, period, seconds)),
+            Status::Over { amount, period, seconds } => self.over.push((amount, period, period, seconds, String::new())),
             Status::Stun(seconds) => self.stun = self.stun.max(seconds),
             Status::Slow(share, seconds) => self.slow = if self.slow.1 > 0.0 { (self.slow.0.min(share), self.slow.1.max(seconds)) } else { (share, seconds) },
+            Status::Root(seconds) => self.root = self.root.max(seconds),
+            Status::Fear(seconds) => self.fear = self.fear.max(seconds),
+            Status::Sleep(seconds) => (self.stun, self.asleep) = (self.stun.max(seconds), true),
+            Status::Sheep(seconds) => {
+                (self.stun, self.asleep) = (self.stun.max(seconds), true);
+                if let Some(sheep) = content::sheep_kind() {
+                    self.look = sheep;
+                }
+            }
+            Status::Banish(seconds) => (self.banish, self.stun) = (self.banish.max(seconds), self.stun.max(seconds)),
+            Status::Weaken { dealt, taken, seconds } => self.weak = (dealt.min(self.weak.0), taken.max(self.weak.1), seconds.max(self.weak.2)),
+        }
+    }
+
+    /// Something is put on it by a spell with this icon and dispel kind: the target frame lists it for as long as it lasts, and a damage over time of the same spell is renewed (as the
+    /// original's auras are: one of a spell at a time) instead of being added to. Harm that comes from afar turns the creature on whoever sent it.
+    pub fn afflict_from(&mut self, status: Status, name: &str, icon: &str, dispel: u32) {
+        if self.is_dead() {
+            return;
+        }
+        let seconds = match status {
+            Status::Over { seconds, .. } | Status::Weaken { seconds, .. } => seconds,
+            Status::Stun(s) | Status::Slow(_, s) | Status::Root(s) | Status::Fear(s) | Status::Sleep(s) | Status::Sheep(s) | Status::Banish(s) => s,
+        };
+        if !icon.is_empty() {
+            self.over.retain(|o| o.4 != icon);
+            self.debuffs.retain(|d| d.icon != icon);
+            self.debuffs.push(Aura { name: name.to_string(), icon: icon.to_string(), dispel, left: seconds });
+        }
+        self.afflict(status);
+        if let (Status::Over { .. }, Some(over)) = (status, self.over.last_mut()) {
+            over.4 = icon.to_string();
+            if !self.state.fights() && !self.is_ally() && self.banish <= 0.0 && !self.asleep {
+                self.state = State::Chase;
+            }
         }
     }
 
@@ -57,8 +97,21 @@ impl Mob {
     pub(super) fn afflicted(&mut self, dt: f32) -> Option<f32> {
         if self.is_dead() {
             (self.over, self.stun, self.slow) = (Vec::new(), 0.0, (1.0, 0.0));
+            self.debuffs.clear();
+            (self.root, self.fear, self.banish, self.weak, self.asleep) = (0.0, 0.0, 0.0, (1.0, 1.0, 0.0), false);
             return Some(dt);
         }
+        self.root = (self.root - dt).max(0.0);
+        self.fear = (self.fear - dt).max(0.0);
+        self.banish = (self.banish - dt).max(0.0);
+        if self.weak.2 > 0.0 {
+            self.weak.2 -= dt;
+            if self.weak.2 <= 0.0 {
+                self.weak = (1.0, 1.0, 0.0);
+            }
+        }
+        self.debuffs.iter_mut().for_each(|d| d.left -= dt);
+        self.debuffs.retain(|d| d.left > 0.0);
         let mut damage = 0.0;
         for o in &mut self.over {
             o.2 -= dt;
@@ -66,6 +119,7 @@ impl Mob {
             while o.2 <= 1e-3 {
                 o.2 += o.1.max(0.1);
                 damage += o.0;
+                self.ticked.push(o.0);
             }
             o.3 -= dt;
         }
@@ -83,9 +137,63 @@ impl Mob {
         self.slow.1 = (self.slow.1 - dt).max(0.0);
         if self.stun > 0.0 {
             self.stun = (self.stun - dt).max(0.0);
+            if self.stun <= 0.0 {
+                self.wake();
+            }
             return None;
         }
         Some(if self.slow.1 > 0.0 { dt * self.slow.0 } else { dt })
+    }
+
+    /// The spell it is casting is broken off (an interrupt of the player's), and it cannot cast it again for a moment.
+    pub fn interrupt(&mut self) {
+        if matches!(self.state, State::Cast(_, _, _, false)) {
+            self.out.push(Act::Stop);
+            self.pending = None;
+            self.state = State::Chase;
+            self.pause = self.pause.max(2.0);
+        }
+    }
+
+    /// The auras of these kinds (bit `n` for the dispel kind `n`) are taken off it.
+    pub fn purge(&mut self, mask: u32) {
+        self.auras.retain(|a| !content::classic_spell(a.0).is_some_and(|s| mask >> s.dispel.min(31) & 1 == 1));
+    }
+
+    /// What the target frame lists of its auras: its harmful ones, and its helpful ones.
+    pub fn shown_auras(&self) -> (Vec<Aura>, Vec<Aura>) {
+        let buffs = self.auras.iter().filter_map(|a| Some((content::classic_spell(a.0)?, a.1))).map(|(s, left)| Aura { name: s.name.clone(), icon: s.icon.clone(), dispel: 0, left }).collect();
+        (self.debuffs.clone(), buffs)
+    }
+
+    /// It loses some of its mana.
+    pub fn drain(&mut self, amount: f32) {
+        self.mana = (self.mana - amount).max(0.0);
+    }
+
+    /// Whoever fights loses the player: it goes back to what it was doing.
+    pub fn lose_player(&mut self) {
+        if self.state.fights() && !self.is_dead() {
+            if matches!(self.state, State::Cast(_, _, _, false)) {
+                self.out.push(Act::Stop);
+            }
+            self.state = State::Return(0.0);
+        }
+    }
+
+    /// The coins in its pockets, once, if it is a person (a humanoid of the original's types).
+    pub fn pickpocket(&mut self) -> Option<u32> {
+        if self.picked || self.is_dead() || self.def.kind != 7 {
+            return None;
+        }
+        self.picked = true;
+        let level = self.def.level.max(1);
+        Some(level * 3 + self.next_u32() % (level * 4 + 1))
+    }
+
+    /// A sleep or a sheep's shape is over: it is itself again.
+    pub(super) fn wake(&mut self) {
+        (self.asleep, self.look) = (false, self.kind);
     }
 
     /// It is dead: what it cast stops, and its death events play.
@@ -122,14 +230,14 @@ impl Mob {
     pub(super) fn in_swing(&self, from: Vec3, yaw: f32, reach: f32) -> bool {
         let to = flat(self.pos - from);
         let ahead = to.length() < 0.5 || to.normalize().dot(Vec3::new(yaw.sin(), 0.0, -yaw.cos())) > 0.5;
-        self.def.attackable() && !self.is_dead() && to.length() <= reach && ahead
+        self.attackable() && !self.is_dead() && to.length() <= reach && ahead
     }
 
     /// How close this creature is to noticing a sneaking player at `target` (feet): 0 beyond its normal range, 1 once it has noticed
     /// (a sneaking player is noticed from `SNEAK_AGGRO` of the range, so the way between is what the reticle's eye shows).
     pub fn alert(&self, target: Vec3, level: u32) -> f32 {
         match self.state {
-            _ if !self.def.is_hostile() || self.def.brain.calm || self.is_dead() => 0.0,
+            _ if !self.def.is_hostile() || self.def.brain.calm || self.is_dead() || self.is_ally() => 0.0,
             State::Return(_) => 0.0,
             State::Idle | State::Wander(_) => ((1.0 - (target - self.pos).length() / aggro_range(self.def.level, level)) / (1.0 - SNEAK_AGGRO * self.notice)).clamp(0.0, 1.0),
             _ => 1.0,
@@ -139,6 +247,9 @@ impl Mob {
     /// Move by `delta` unless something solid stands in the way (`blocked(from, to)`): then slide along it, one axis at a time, or stay. Returns how
     /// far it went.
     pub(super) fn walk(&mut self, delta: Vec3, blocked: &impl Fn(Vec3, Vec3) -> bool) -> f32 {
+        if self.root > 0.0 {
+            return 0.0;
+        }
         for d in [delta, Vec3::new(delta.x, 0.0, 0.0), Vec3::new(0.0, 0.0, delta.z)] {
             if d.length() > 1e-6 && !blocked(self.pos, self.pos + d) {
                 self.pos += d;
@@ -191,7 +302,7 @@ impl Mob {
             .filter_map(|a| content::classic_spell(a.0))
             .flat_map(|s| s.effects.iter())
             .filter(|e| e.aura == 79 && e.low + e.high > 0)
-            .fold(1.0, |b, e| b + (e.low + e.high) as f32 / 2.0 / 100.0)
+            .fold(self.weak.0, |b, e| b + (e.low + e.high) as f32 / 2.0 / 100.0)
     }
 
     /// What a spell does to the creature when it is for friends and it is one (a heal, an aura).

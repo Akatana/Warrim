@@ -205,6 +205,7 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
     log::info!("fires: {} burning of {} in the loaded tiles", fires.burning(), world.fires().count());
     if let Some(wolves) = &wolves {
         log::info!("creatures in the world: {} made, {} with a model", wolves.counts().0, wolves.counts().1);
+        log::info!("the pet: {:?}", wolves.pet_kind());
         wolves.draw_plates(&mut renderer.ui, &render_camera, (w, h));
         if let Some(panels) = &mut panels {
             panels.draw_labels(&mut renderer.ui, gpu, (w, h), &wolves.labels(&render_camera, (w, h), crate::interface::InterfaceSettings::load().npc_names, |from, to| world.ray_hit(from, to).is_some()));
@@ -214,6 +215,12 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
     // The target frame with the first creature selected.
     if let (Some(panels), Some(wolves), true) = (&mut panels, &mut wolves, args.target && args.panel.is_empty()) {
         wolves.set_target(0);
+        // A few debuffs on it, to see how they are listed (a bleed, a curse, a poison).
+        for (name, icon, dispel) in [("Rend", "Ability_Gouge", 0), ("Curse of Agony", "Spell_Shadow_CurseOfSargeras", 2), ("Deadly Poison", "Ability_Poisons", 4)] {
+            wolves.set_source(name, icon, dispel);
+            wolves.afflict(0, crate::creature::Status::Over { amount: 1.0, period: 3.0, seconds: 30.0 });
+        }
+        wolves.set_source("", "", 0);
         let view = wolves.target_view(feet);
         panels.set_target(view);
         panels.render_target(renderer, gpu, wolves, world);
@@ -417,6 +424,10 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
     // The player previews show the interface too.
     let bar = crate::actionbar::ActionBar::load(&player_mount, &mut renderer.ui, gpu)?;
     bar.draw(&mut renderer.ui, (w, h), &player, args.panel.iter().any(|p| p == "character"), panels.as_ref().map_or(crate::levels::Progress::new(), |p| p.progress), panels.as_ref().map_or(&[][..], |p| &p.cooldowns[..]), &|i| panels.as_ref().map_or((0, 0.0), |p| p.item_state(i)));
+    // `--panel pet` shows the pet bar without a pet.
+    if args.panel.iter().any(|p| p == "pet") {
+        crate::petbar::PetBar::load(&player_mount, &mut renderer.ui, gpu).draw(&mut renderer.ui, (w, h), crate::creature::PetOrders { attack: Some(0), ..Default::default() }, false, args.cursor);
+    }
     if args.reticle {
         let art = crate::cursor::Cursors::load(&player_mount, &mut renderer.ui, gpu)?;
         art.reticle(&mut renderer.ui, (w, h), args.sneak.then(|| args.alert.unwrap_or_else(|| wolves.as_ref().map_or(0.0, |c| c.alert(feet, 1)))));

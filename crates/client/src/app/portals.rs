@@ -89,6 +89,7 @@ impl State {
             self.spare_loading = self.screens.get(&key).map(|&screen| bar.with_screen(screen));
         }
         self.map = map.to_string();
+        self.caster.clear_placed(&mut self.effects);
         self.fires = Default::default();
         self.beds = bed_spots(&content::get().props, map);
         self.stations = station_spots(&content::get().props, map);

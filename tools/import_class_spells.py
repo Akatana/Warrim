@@ -1,10 +1,14 @@
 """Adds the class spells of the original game (1.12.1) to `content/spells.ron`, each with its tome in `content/items.ron`.
 
-A spell is one the class trainers (or the first spells of a new character) teach; only its first rank is made: the ranks of the original are
-what the class skill and the character level do to the numbers here. Each is shown by its name, mapped to what the game can do (spells.ron: a
-hit, a blow on every enemy near, a heal, a buff with `Gain`, with a bleed, a stun or a slow). What the game cannot (totems, portals, pets,
-stealth, shapeshifting, resurrection, conjured items, auras that do something else) is left out and listed when this runs. A spell the file already has
-(by name) is left as it is.
+A spell is one the class trainers (or the first spells of a new character) teach; only its first rank is made: the ranks of the original are what the class
+skill and the character level do to the numbers here. Two kinds of entry are made:
+  * what the game's own spell model says directly (a blow, a blow on every enemy near, a heal, a buff, with a bleed, a stun or a slow): the numbers of the original
+    are brought down to the scale of spells.ron (they are written for a character of the level the spell is taught at: `levels::spell_scale`);
+  * the rest `Classic`: the game does what the original's spell (classic_spells.ron) does (src/special.rs): auras on the character, fear, roots, sleep, polymorph,
+    dispels, interrupts, conjuring, hiding. What needs a number the game's files do not have (the display of a steed, the item
+    a stone is) is given as a rider (`Mount`, `Conjure`). The teleports and portals are left out: the map takes the character to places.
+A spell that has none of this (tracking, a detection, an aura that only the original's own rules make use of) is left out, and listed when this runs. A spell the
+file already has (by name) is left as it is.
 
 The tome asks for the rank of the class skill that matches the level the original teaches the spell at (level 60 is rank 100). The made parts of both files are
 between the `generated` marker lines and are made again every run; the rest is not touched.
@@ -18,7 +22,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import classicdb
-import dbc
 import spelltext
 from import_items import f, q
 from import_spells import table
@@ -29,6 +32,11 @@ END = "    // ---- end of generated ----\n"
 # The SpellFamilyName of each class's own spells: the weapon skills, languages and racial abilities that the lists also hold are not the class's.
 FAMILY = {"Warrior": 4, "Paladin": 10, "Hunter": 9, "Rogue": 8, "Priest": 6, "Shaman": 11, "Mage": 3, "Warlock": 5, "Druid": 7}
 CLASSES = {1: "Warrior", 2: "Paladin", 3: "Hunter", 4: "Rogue", 5: "Priest", 7: "Shaman", 8: "Mage", 9: "Warlock", 11: "Druid"}
+# Spells that quests teach in the original (the class mounts), by class.
+EXTRA = [(13819, "Paladin"), (23214, "Paladin"), (5784, "Warlock"), (23161, "Warlock"),
+         # The pets the warlock calls and the hunter's (quests teach them in the original).
+         (688, "Warlock"), (697, "Warlock"), (712, "Warlock"), (691, "Warlock"), (1122, "Warlock"),
+         (883, "Hunter"), (2641, "Hunter"), (982, "Hunter"), (1515, "Hunter"), (8681, "Rogue")]
 # The look of a tome of each class (the display rows spells.ron's own tomes use in items.ron).
 DISPLAY = {"Warrior": 1155, "Paladin": 918, "Hunter": 3426, "Rogue": 8092, "Priest": 1103, "Shaman": 1246, "Mage": 1317, "Warlock": 1134, "Druid": 3154}
 SCHOOL = {0: "force", 1: "holy light", 2: "fire", 3: "the wrath of nature", 4: "frost", 5: "shadow", 6: "arcane magic"}
@@ -43,6 +51,10 @@ MANA_SHARE = 0.55  # the mana costs of the original, as the hand-made spells of 
 STAT_PER_LEVEL = 0.5  # a stat buff of the original at the top rank gives about this much for each level of the character
 MAX_STUN = 10.0
 MAX_BUFF = 1800.0
+# What src/procs.rs knows how to do with the effects of a spell, by the original's effect and aura numbers: a spell with none of it does nothing here.
+KINDS = {72, 73, 2, 9, 10, 24, 30, 38, 62, 67, 68, 8, 71, 29, 96, 54, 113}
+AURAS = {1, 128, 44, 151, 67, 17, 18, 19, 36, 2, 6, 10, 77, 94, 103, 107, 115, 117, 153, 143, 24, 110, 134, 137, 14, 149, 140, 105, 82, 64, 87, 3, 53, 12, 5, 7, 26, 56, 33, 22, 68, 127, 13, 79, 99, 15, 69, 97, 39, 40, 8, 29, 42, 31, 47, 49, 51, 52, 54, 55, 71, 85, 102, 124, 131, 135, 138, 141, 158, 161,
+         180, 16, 66, 23}
 
 
 def slug(name):
@@ -55,24 +67,74 @@ def points(s, n):
     return low, base + sides if sides > 1 else low
 
 
+def power(s):
+    """The kind of power a spell costs (the table holds it unsigned: health is -2)."""
+    p = s["PowerType"]
+    return p - 2**32 if p >= 2**31 else p
+
+
 def rank_of(level):
     """The rank of the class skill a spell of the original's `level` asks for."""
     return 1 if level <= 1 else max(1, min(100, round(level * 100 / 60)))
 
 
-def map_spell(s, class_name, ranges, radius, duration, cast):
-    """The spells.ron fields for a spell of the original, or None if the game cannot do what it does."""
-    if s["Attributes"] & 0x40 or s["SpellName"] in AUTO:
+def spell_scale(level):
+    """`levels::spell_scale`: how many times the numbers of a spell written for level 1 are worth at `level`."""
+    return 1.0 + (min(max(level, 1), 60) - 1) * 25.0 / 60.0
+
+
+class Tables:
+    """What the importer reads besides the spells themselves."""
+
+    def __init__(self, folder, spells):
+        self.spells = spells
+        self.text = spelltext.Spells(folder)
+        self.cast = table(folder, "SpellCastTimes", lambda d, r: d.i32(r, 1))
+        self.icons = table(folder, "SpellIcon", lambda d, r: d.string(r, 1))
+        self.ranges = table(folder, "SpellRange", lambda d, r: d.f32(r, 2))
+        sql = os.path.join(folder, "db.sql")
+        # What the creatures cast (the first spell of a totem or a demon), and the objects a trap or a well is.
+        self.creature_spell = {r["entry"]: r["spell1"] for r in classicdb.rows(sql, "creature_template_spells") if r["spell1"]}
+        self.objects = {r["entry"]: r for r in classicdb.rows(sql, "gameobject_template")}
+        # The first item of the original with a name (the plain one, not the talent's improved copy).
+        self.items = {}
+        for r in classicdb.rows(sql, "item_template"):
+            self.items.setdefault(r["name"], r["entry"])
+
+    def seconds(self, s):
+        return max(self.text.duration.get(s["DurationIndex"], 0), 0) / 1000.0
+
+    def cost(self, s):
+        """The cost as RON: mana is brought down as the hand-made spells' is, rage (kept in tenths) and energy are the game's stamina."""
+        power, cost = s["PowerType"], s["ManaCost"]
+        if power == 1:
+            return "Stamina(%s)" % f(float(round(cost / 10)))
+        if power == 3:
+            return "Stamina(%s)" % f(float(round(cost / 3)))
+        amount = cost * MANA_SHARE if cost else s["ManaCostPercentage"] * MANA_SHARE
+        return "Mana(%s)" % f(max(0.0, round(amount)))
+
+    def cooldown(self, s):
+        return max(s["RecoveryTime"], s["CategoryRecoveryTime"], self.cast.get(s["CastingTimeIndex"], 0), 1500) / 1000.0
+
+    def icon(self, s):
+        return self.icons.get(s["SpellIconID"], "").rsplit("\\", 1)[-1] or "INV_Misc_QuestionMark"
+
+
+def simple(t, s, level):
+    """The spells.ron fields for a spell of the original that the game's own spell model says, or None."""
+    if s["PowerType"] not in (0, 1, 3):
         return None
-    seconds = max(duration.get(s["DurationIndex"], 0), 0) / 1000.0
-    hit = area = heal = dot = None  # (min, max) of a blow or heal, (radius) of an area, (per tick, tick ms) of a dot
+    seconds = t.seconds(s)
+    k = spell_scale(level)
+    hit = area = heal = dot = None  # (min, max) of a blow or heal, (min, max, radius) of an area, (per tick, tick ms) of a dot
     then, buffs, enemy_dot, weapon = [], [], False, False
     for n in (1, 2, 3):
         kind, aura = s["Effect%d" % n], s["EffectApplyAuraName%d" % n]
-        a, b = s["EffectImplicitTargetA%d" % n], s["EffectImplicitTargetB%d" % n]
+        a = s["EffectImplicitTargetA%d" % n]
         low, high = points(s, n)
         amp = s["EffectAmplitude%d" % n]
-        radius_yd = radius.get(s["EffectRadiusIndex%d" % n], 0) or ranges.get(s["RangeIndex"], 0) or 8.0
+        radius_yd = t.text.radius.get(s["EffectRadiusIndex%d" % n], 0) or t.ranges.get(s["RangeIndex"], 0) or 8.0
         if kind in (2, *WEAPON) and a in ENEMY | AREA:
             if kind in WEAPON:
                 weapon = True
@@ -83,7 +145,7 @@ def map_spell(s, class_name, ranges, radius, duration, cast):
                 area = (low, high, radius_yd)
         elif kind == 10 and a not in (5, 6):
             heal = (low, high)
-        elif kind == 27 and aura == 3 and a in AREA | {28}:
+        elif kind == 27 and aura == 3 and a in AREA | {18, 28}:
             ticks = int(seconds * 1000 // amp) if amp else 1
             area = (low * max(ticks, 1), high * max(ticks, 1), radius_yd)
         elif kind == 77 and s["SpellFamilyName"] == 10 and a in (1, 21) and low >= 10:
@@ -96,7 +158,7 @@ def map_spell(s, class_name, ranges, radius, duration, cast):
         elif kind == 6 and aura == 8 and a in (1, 21, 20) and amp and seconds:
             ticks = max(seconds * 1000 // amp, 1)
             heal = (low * ticks, high * ticks)
-        elif kind == 6 and aura == 12 and (a in ENEMY or a in AREA) and seconds:
+        elif kind == 6 and aura == 12 and (a in ENEMY or a in AREA) and seconds and s["Mechanic"] in (0, 12, 13):
             then.append("Stun(%s)" % f(min(seconds, MAX_STUN)))
         elif kind == 6 and aura == 33 and (a in ENEMY or a in AREA) and seconds and low < 0:
             then.append("Slow(share: %s, seconds: %s)" % (f(round(max(0.1, 1.0 + low / 100.0), 2)), f(min(seconds, 30.0))))
@@ -105,35 +167,26 @@ def map_spell(s, class_name, ranges, radius, duration, cast):
             if aura == 29 and 0 <= s["EffectMiscValue%d" % n] <= 4:
                 gain = (s["EffectMiscValue%d" % n], 0, STAT_PER_LEVEL)
             elif aura == 99 and low > 0:
-                gain = (99, 0, float(low))
+                gain = (99, 0, round(low / k, 1))
             if gain:
                 buffs.append("Gain(aura: %d, misc: %d, amount: %s, seconds: %s)" % (gain[0], gain[1], f(gain[2]), f(min(seconds, MAX_BUFF))))
     if enemy_dot and dot:
-        tick = round(dot[0] * 3000.0 / dot[1], 1)
-        total_seconds = min(seconds, 60.0)
-        then.insert(0, "Bleed(amount: %s, seconds: %s)" % (f(max(tick, 1.0)), f(total_seconds)))
-    power, cost = s["PowerType"], s["ManaCost"]
-    if power == 0:
-        amount = cost * MANA_SHARE if cost else s["ManaCostPercentage"] * MANA_SHARE
-        cost_text = "Mana(%s)" % f(max(0.0, round(amount)))
-    elif power == 1:
-        cost_text = "Stamina(%s)" % f(float(round(cost / 10)))  # the original keeps rage in tenths
-    elif power == 3:
-        cost_text = "Stamina(%s)" % f(float(round(cost / 3)))
-    else:
-        return None
-    cd = max(s["RecoveryTime"], s["CategoryRecoveryTime"], cast.get(s["CastingTimeIndex"], 0), 1500) / 1000.0
-    reach = ranges.get(s["RangeIndex"], 0)
+        tick = round(dot[0] * 3000.0 / dot[1] / k, 1)
+        then.insert(0, "Bleed(amount: %s, seconds: %s)" % (f(max(tick, 1.0)), f(min(seconds, 60.0))))
+    cd = t.cooldown(s)
+    reach = t.ranges.get(s["RangeIndex"], 0)
+    down = lambda v: f(max(round(v / k, 1), 0.0 if v == 0 else 0.5))
     # What it is: a heal and a blow in one spell (a drain) is a blow.
     if hit or (then and not area and not heal and not buffs and (s["EffectImplicitTargetA1"] in ENEMY)):
         low, high = hit or (1, 1)
-        effect = "Damage(min: %s, max: %s, range: %s)" % (f(float(low)), f(float(high)), f(4.0 if reach <= 5 else float(round(reach))))
+        scaled = (down(low), down(high)) if hit else (f(1.0), f(1.0))
+        effect = "Damage(min: %s, max: %s, range: %s)" % (scaled[0], scaled[1], f(4.0 if reach <= 5 else float(round(reach))))
         what = "A blow with the weapon" if weapon else "Strikes the target with %s" % SCHOOL.get(s["School"], "magic")
     elif area:
-        effect = "Area(min: %s, max: %s, radius: %s)" % (f(float(area[0])), f(float(area[1])), f(float(round(area[2]))))
+        effect = "Area(min: %s, max: %s, radius: %s)" % (down(area[0]), down(area[1]), f(float(round(area[2]))))
         what = "Hurts every enemy near you with %s" % ("the weapon" if weapon else SCHOOL.get(s["School"], "magic"))
     elif heal:
-        effect = "Heal(min: %s, max: %s)" % (f(float(heal[0])), f(float(heal[1])))
+        effect = "Heal(min: %s, max: %s)" % (down(heal[0]), down(heal[1]))
         what = "Heals your wounds"
         if s["Effect1"] == 6:
             cd = max(cd, seconds)
@@ -145,8 +198,97 @@ def map_spell(s, class_name, ranges, radius, duration, cast):
     then = then + buffs
     clauses = {"Bl": "leaves a wound that bleeds", "St": "stuns it", "Sl": "slows it", "Ga": "strengthens you for a while"}
     clauses = [clauses[r[:2]] for r in then if r[:2] != "Ga" or effect != "Buff"]
-    text = what + (", and " + " and ".join(clauses) if clauses else "")
-    return {"cost": cost_text, "cooldown": cd, "effect": effect, "then": then, "description": text + "."}
+    return {"cost": t.cost(s), "cooldown": cd, "effect": effect, "then": then, "description": what + (", and " + " and ".join(clauses) if clauses else "") + "."}
+
+
+def tidy(text):
+    """The text of the original's spell for a tooltip: its first paragraph, with the values of other spells that the text could not name (`0614s2`, `0170d`, `$/10;29131o1`) said as
+    "some" and "a while"."""
+    text = text.split(chr(10))[0]
+    text = re.sub(r"\$[^ ,;:)]*[a-z0-9]", "some", text)
+    text = re.sub(r"\b\d{3,5}d\b", "a while", text)
+    text = re.sub(r"\b\d{3,5}[a-z]\d*\b", "some", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def classic(t, s):
+    """The fields of an entry that the game runs from the original's spell (`Effect::Classic`), with the riders for what needs the original's numbers; None if the
+    spell has nothing the game can do."""
+    if power(s) not in (0, 1, 3, -2):
+        return None
+    then = []
+    foe, any_unit, known = False, False, False
+    for n in (1, 2, 3):
+        kind, aura = s["Effect%d" % n], s["EffectApplyAuraName%d" % n]
+        a, misc = s["EffectImplicitTargetA%d" % n], s["EffectMiscValue%d" % n]
+        if not kind:
+            continue
+        foe |= a == 6
+        any_unit |= a == 25
+        if kind in KINDS or (kind in (6, 35) and aura in AURAS):
+            known = True
+        # A spell that casts another (a vanish casts a stealth): what that one does counts.
+        trigger = t.spells.get(s["EffectTriggerSpell%d" % n]) if kind == 64 else None
+        if trigger and any(trigger["Effect%d" % m] in KINDS or (trigger["Effect%d" % m] == 6 and trigger["EffectApplyAuraName%d" % m] in AURAS) for m in (1, 2, 3)):
+            known = True
+        # What is set down or called: a totem (the slot is the element), a trap, a well; a demon, the hunter's pet.
+        if kind in (87, 88, 89, 90) and misc:
+            spell = t.creature_spell.get(misc, 0)
+            radius = next((t.text.radius.get(t.spells[spell]["EffectRadiusIndex%d" % m], 0) for m in (1, 2, 3) if spell in t.spells and t.text.radius.get(t.spells[spell]["EffectRadiusIndex%d" % m], 0)), 20.0)
+            then.append("Place(entry: %d, spell: %d, kind: Totem, seconds: %s, radius: %s, slot: %d, uses: 0)" % (misc, spell, f(max(t.seconds(s), 5.0)), f(float(radius)), kind - 86))
+            known = True
+        obj = t.objects.get(misc) if kind in (104, 50) else None
+        if kind == 104 and obj and obj["type"] == 6:
+            then.append("Place(entry: 0, spell: %d, kind: Trap, seconds: 60.0, radius: %s, slot: 0, uses: 0)" % (obj["data3"], f(float(obj["data2"] or 5))))
+            known = True
+        if kind == 50 and obj and obj["type"] == 22:
+            then.append("Place(entry: 0, spell: %d, kind: Well, seconds: %s, radius: 6.0, slot: 0, uses: %d)" % (obj["data0"], f(max(t.seconds(s), 30.0)), obj["data1"]))
+            known = True
+        if kind == 56 and misc:
+            then.append("Summon(entry: %d, spell: %d, seconds: 0.0)" % (misc, t.creature_spell.get(misc, 0)))
+            known = True
+        if kind == 112 and misc:
+            then.append("Summon(entry: %d, spell: %d, seconds: 300.0)" % (misc, t.creature_spell.get(misc, 0)))
+            known = True
+        if kind == 56 and not misc:
+            then.append("CallPet")
+            known = True
+        if kind == 109:
+            then.append("RevivePet")
+            known = True
+        if kind == 6 and aura == 78:
+            display = t.text.steeds.get(misc)
+            speed = next((points(s, m)[0] for m in (1, 2, 3) if s["EffectApplyAuraName%d" % m] == 32), 60)
+            if display:
+                then.append("Mount(display: %d, percent: %d)" % (display, speed))
+                known = True
+    # What the tables leave to a script, and `procs.rs` knows by name.
+    if s["SpellName"] in ("Life Tap", "Execute", "Judgement", "Holy Shock") or "Blessing of Light" in s["SpellName"] or s["SpellName"].startswith("Seal of"):
+        known = True
+    if s["SpellName"] == "Dismiss Pet":
+        then.append("DismissPet")
+        known = True
+    if s["SpellName"] == "Mend Pet":
+        then.append("MendPet(25.0)")
+        known = True
+    if s["SpellName"] == "Tame Beast":
+        then.append("Tame")
+        known = True
+        foe = True
+    m = re.match(r"Create (Healthstone|Soulstone|Firestone|Spellstone)(?: \((\w+)\))?$", s["SpellName"])
+    if m:
+        item = t.items.get(((m.group(2) + " ") if m.group(2) else "") + m.group(1))
+        if item:
+            then.append("Conjure(item: %d, count: 1)" % item)
+            known = True
+    if not known:
+        return None
+    reach = t.ranges.get(s["RangeIndex"], 0)
+    # A spell for a creature needs it selected and within reach (a negative range: it is for one if one is selected, else for the character).
+    near = 4.0 if reach <= 5 else min(float(round(reach)), 45.0)
+    rng = near if foe else (-(30.0 if reach <= 5 else near) if any_unit else 0.0)
+    cost = t.cost(s) if power(s) != -2 else "Stamina(0.0)"
+    return {"cost": cost, "cooldown": t.cooldown(s), "effect": "Classic(range: %s)" % f(rng), "then": then, "description": tidy(t.text.describe(s["Id"]) or s["SpellName"])}
 
 
 def main():
@@ -155,10 +297,7 @@ def main():
     target = sys.argv[2] if len(sys.argv) > 2 else os.path.join(here, "..", "content")
     sql = os.path.join(folder, "db.sql")
     spells = {s["Id"]: s for s in classicdb.rows(sql, "spell_template")}
-    text = spelltext.Spells(folder)
-    cast = table(folder, "SpellCastTimes", lambda d, r: d.i32(r, 1))
-    icons = table(folder, "SpellIcon", lambda d, r: d.string(r, 1))
-    ranges = table(folder, "SpellRange", lambda d, r: d.f32(r, 2))
+    t = Tables(folder, spells)
 
     def resolve(spell):
         s = spells.get(spell)
@@ -182,8 +321,13 @@ def main():
                     old = taught[CLASSES[c["TrainerClass"]]].get(sp)
                     taught[CLASSES[c["TrainerClass"]]][sp] = min(old, level) if old else level
     for r in classicdb.rows(sql, "playercreateinfo_spell"):
-        if r["class"] in CLASSES and r["Spell"] in spells:
-            taught[CLASSES[r["class"]]].setdefault(r["Spell"], 1)
+        sp = resolve(r["Spell"])
+        if r["class"] in CLASSES and sp in spells:
+            taught[CLASSES[r["class"]]].setdefault(sp, 1)
+    extra = set()
+    for sp, class_name in EXTRA:
+        taught[class_name][sp] = spells[sp]["SpellLevel"]
+        extra.add(sp)
 
     def strip(path):
         """The text of a content file without its generated part, and where that part was."""
@@ -200,33 +344,41 @@ def main():
     have_names = {n.lower() for n in re.findall(r'\bname: "([^"]+)"', head)}
     have_ids = set(re.findall(r'\(id: "([^"]+)"', head)) | set(re.findall(r'\(id: "([^"]+)"', ihead))
     out, items, skipped = [], [], collections.defaultdict(list)
+    counts = collections.Counter()
     for class_name in CLASSES.values():
         firsts = {}
         for sp in taught[class_name]:
             s = spells[sp]
-            if s["SpellFamilyName"] != FAMILY[class_name]:
+            # (A spell that teaches another is not a spell to cast.)
+            # (The rogue's poisons are made by spells of no family.)
+            own = s["SpellFamilyName"] == FAMILY[class_name] or sp in extra or (class_name == "Rogue" and "Poison" in s["SpellName"] and 24 in (s["Effect1"], s["Effect2"], s["Effect3"]))
+            if not own or 36 in (s["Effect1"], s["Effect2"], s["Effect3"]):
                 continue
             if s["SpellName"] not in firsts or (s["SpellLevel"], sp) < (spells[firsts[s["SpellName"]]]["SpellLevel"], firsts[s["SpellName"]]):
                 firsts[s["SpellName"]] = sp
         out.append("\n    // %s: the spells the trainers of the class teach, first ranks (the skill and the level of the character are what makes them stronger).\n" % class_name)
         for name, sp in sorted(firsts.items(), key=lambda kv: (taught[class_name][kv[1]], kv[1])):
             s = spells[sp]
-            if name.lower() in have_names:
+            if name.lower() in have_names or s["Attributes"] & 0x40 or name in AUTO or name.startswith(("Teleport:", "Portal:")) or name == "Astral Recall":
                 continue
-            m = map_spell(s, class_name, ranges, text.radius, text.duration, cast)
+            learned = taught[class_name][sp]
+            m, kind = simple(t, s, learned), "own"
             if not m:
-                skipped[class_name].append(name)
+                m, kind = classic(t, s), "classic"
+            if not m:
+                sig = " ".join("%d/%d/%d" % (s["Effect%d" % n], s["EffectApplyAuraName%d" % n], s["EffectImplicitTargetA%d" % n]) for n in (1, 2, 3) if s["Effect%d" % n])
+                skipped[class_name].append("%s [%s]" % (name, sig) if os.environ.get("VERBOSE") else name)
                 continue
+            counts[kind] += 1
             sid = slug(name)
             if sid in have_ids:
                 sid += "_" + class_name.lower()
             have_ids.add(sid)
             have_names.add(name.lower())
-            level = rank_of(taught[class_name][sp])
-            icon = icons.get(s["SpellIconID"], "").rsplit("\\", 1)[-1] or "INV_Misc_QuestionMark"
+            level = rank_of(learned)
             rider = ", then: [%s]" % ", ".join(m["then"]) if m["then"] else ""
             out.append('    (id: %s, spell: %d, name: %s, class: %s, level: %d, icon: %s, cost: %s, cooldown: %s, effect: %s%s,\n        description: %s),\n'
-                       % (q(sid), sp, q(name), class_name, level, q(icon), m["cost"], f(round(m["cooldown"], 2)), m["effect"], rider, q(m["description"])))
+                       % (q(sid), sp, q(name), class_name, level, q(t.icon(s)), m["cost"], f(round(m["cooldown"], 2)), m["effect"], rider, q(m["description"])))
             quality = 1 if level < 25 else 2 if level < 60 else 3
             items.append('    (id: %s, name: %s, display: %d, quality: %d, kind: ("Tome", "%s"), handling: "Parchment_Paper", tome: Some(%s), sell: %d),\n'
                          % (q("tome_" + sid), q("Tome of " + name), DISPLAY[class_name], quality, class_name, q(sid), 100 + 25 * level))
@@ -234,7 +386,7 @@ def main():
         o.write(head + BEGIN + "".join(out) + END + tail)
     with open(items_path, "w", encoding="utf8", newline="\n") as o:
         o.write(ihead + BEGIN + "".join(items) + END + itail)
-    print("made %d spells with their tomes" % len(items))
+    print("made %d spells with their tomes (%d of the game's own kind, %d run from the original's)" % (len(items), counts["own"], counts["classic"]))
     for c, names in skipped.items():
         print("left out of %s (%d): %s" % (c, len(names), ", ".join(names)))
 

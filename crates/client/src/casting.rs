@@ -78,8 +78,9 @@ struct Flight {
     duration: f32,
     effect: Option<usize>,
     damage: f32,
-    /// What it puts on the creature if it hits.
+    /// What it puts on the creature if it hits, and the icon and dispel kind of the spell that puts it.
     then: Vec<Status>,
+    source: (String, String, u32),
 }
 
 /// How hard the earth pulls a missile down, yards per second per second (9.8 m/s^2; the character falls faster, for the game's sake).
@@ -126,6 +127,8 @@ pub struct Spellcaster {
     leap: Option<Vec3>,
     /// The sound of an arrow in flight plays (it ends when the last one lands).
     arrow_sound: bool,
+    /// The totems, traps and wells that stand in the world.
+    placed: crate::special::Placed,
 }
 
 /// How high above the feet a creature's chest is.
@@ -155,11 +158,16 @@ pub(crate) fn attachment(slot: Slot) -> u32 {
 
 impl Spellcaster {
     pub fn new(visuals: Vec<Visual>) -> Spellcaster {
-        Spellcaster { visuals, casting: None, flights: Vec::new(), arrows: Vec::new(), rng: 0xBEEF_1234, blocked: false, interrupted: false, leap: None, arrow_sound: false }
+        Spellcaster { visuals, casting: None, flights: Vec::new(), arrows: Vec::new(), rng: 0xBEEF_1234, blocked: false, interrupted: false, leap: None, arrow_sound: false, placed: Default::default() }
     }
 
     pub fn casting(&self) -> bool {
         self.casting.is_some()
+    }
+
+    /// The totems, traps and wells are taken away (another map is entered).
+    pub fn clear_placed(&mut self, effects: &mut crate::effects::Effects) {
+        self.placed.clear(effects);
     }
 
     /// Where a charge sends the character (render space), once.
@@ -182,13 +190,23 @@ impl Spellcaster {
         let def = content::spell(spell);
         let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z).length();
         let mut victim = None;
-        if let Effect::Damage { range, .. } = def.effect {
-            let target = ctx.wolves.as_ref().and_then(|w| w.target()).ok_or("You have no target.")?;
-            let at = ctx.wolves.as_ref().and_then(|w| w.enemy_at(target)).ok_or("Invalid target.")?;
-            if flat(at - feet) > range {
-                return Err("Out of range.");
+        let reach = match def.effect {
+            Effect::Damage { range, .. } => Some(range),
+            Effect::Classic { range } if range != 0.0 => Some(range),
+            _ => None,
+        };
+        if let Some(range) = reach {
+            // A negative range: the spell is for a creature if one is selected within reach, else for the character.
+            let optional = range < 0.0;
+            let target = ctx.wolves.as_ref().and_then(|w| w.target());
+            let at = target.and_then(|t| ctx.wolves.as_ref().and_then(|w| w.enemy_at(t)));
+            match (target, at) {
+                (Some(target), Some(at)) if flat(at - feet) <= range.abs() => victim = Some((target, at)),
+                _ if optional => {}
+                (None, _) => return Err("You have no target."),
+                (_, None) => return Err("Invalid target."),
+                _ => return Err("Out of range."),
             }
-            victim = Some((target, at));
         }
         let cost = ctx.panels.spell_cost(def.cost);
         let enough = match cost {
@@ -270,8 +288,10 @@ impl Spellcaster {
             ctx.panels.sound("SpellFizzleHoly");
             return ctx.panels.error(why);
         }
-        // A spell is cast on foot: the caster gets down from the steed.
-        ctx.player.dismount();
+        // A spell is cast on foot: the caster gets down from the steed (a shape he has taken he keeps).
+        if !ctx.player.is_form() {
+            ctx.player.dismount();
+        }
         let vis = self.visuals.get(spell).cloned().unwrap_or_default();
         if vis.cast_ms <= 0.0 {
             return self.go(ctx, spell, feet);
@@ -369,6 +389,7 @@ impl Spellcaster {
             ctx.panels.emit(Sfx::Release);
         }
         self.fly_arrows(ctx, dt);
+        self.placed.update(ctx, dt);
     }
 
     /// The arrows move on: each falls a little further, and stops at the first creature (it hurts it), wall or ground it meets.
@@ -426,7 +447,7 @@ impl Spellcaster {
         let missed = dice(&mut self.rng) < crate::levels::melee_miss(ctx.panels.progress.level, mob, ctx.panels.stats.hit);
         ctx.panels.train(a.skill, a.power);
         let at = ctx.wolves.as_ref().and_then(|w| w.enemy_at(who)).unwrap_or(a.pos);
-        self.land(ctx, Flight { vis: a.vis, pitched: true, target: who, last_seen: at, from: a.pos, age: 0.0, duration: 0.0, effect: None, damage: if missed { 0.0 } else { damage }, then: Vec::new() });
+        self.land(ctx, Flight { vis: a.vis, pitched: true, target: who, last_seen: at, from: a.pos, age: 0.0, duration: 0.0, effect: None, damage: if missed { 0.0 } else { damage }, then: Vec::new(), source: (String::new(), String::new(), 0) });
     }
 
     /// A shot of a ranged weapon is let go (it was drawn for `shot.power` of the full draw): a piece of the ammo is used up, and the arrow (or bullet) leaves the
@@ -476,7 +497,9 @@ impl Spellcaster {
                 text.damage_dealt(hit, f.damage as u32);
             }
             if let Some(wolves) = ctx.wolves.as_mut() {
+                wolves.set_source(&f.source.0, &f.source.1, f.source.2);
                 f.then.iter().for_each(|&s| wolves.afflict(f.target, s));
+                wolves.set_source("", "", 0);
             }
             // The spells of the ranged weapon that go off on a shot that lands.
             if let (true, Some(weapon), Some(wolves)) = (f.pitched, ctx.panels.inv.equipment[crate::items::RANGED], ctx.wolves.as_mut()) {
@@ -536,6 +559,14 @@ impl Spellcaster {
                 Self::show(ctx, &vis.impact, true, feet, yaw, 1.8, false);
                 Self::sound(ctx, vis.impact.sound);
             }
+            Effect::Classic { .. } => {
+                match victim {
+                    Some((_, at)) => drop(Self::show(ctx, &vis.impact, false, at - Vec3::Y * CHEST, 0.0, CHEST / 0.7, false)),
+                    _ => drop(Self::show(ctx, &vis.impact, true, feet, yaw, 1.8, false)),
+                }
+                Self::sound(ctx, vis.impact.sound);
+                crate::special::cast(ctx, spell, victim.map(|v| v.0));
+            }
             Effect::Damage { .. } => {}
         }
         // What it puts on the character, on everything it caught, and on the creature it hits (when it lands).
@@ -550,13 +581,25 @@ impl Spellcaster {
                 Rider::Bleed { amount, seconds } => then.push(Status::Over { amount: (amount * power).round().max(1.0), period: 3.0, seconds }),
                 Rider::Stun(seconds) => then.push(Status::Stun(seconds)),
                 Rider::Slow { share, seconds } => then.push(Status::Slow(share, seconds)),
+                Rider::Mount { display, percent } => ctx.panels.ride(display, percent),
+                Rider::Summon { .. } | Rider::CallPet | Rider::DismissPet | Rider::RevivePet | Rider::MendPet(_) | Rider::Tame => crate::special::pet_rider(ctx, *rider, victim.map(|v| v.0), feet, yaw),
+                Rider::Place { .. } => self.placed.place(ctx, def.class, &def.icon, *rider, feet),
+                Rider::Conjure { item, count } => {
+                    if let Some(i) = crate::items::all().iter().position(|it| it.id == format!("i{item}")) {
+                        ctx.panels.inv.add(crate::items::Stack { item: i, count, enchant: 0 });
+                        ctx.panels.notice(&format!("You create: {}.", crate::items::get(i).name));
+                    }
+                }
             }
         }
+        let source = (def.name.clone(), def.icon.clone(), content::classic_spell(def.spell).map_or(0, |s| s.dispel));
         if let (Effect::Area { radius, .. }, Some(wolves)) = (def.effect, ctx.wolves.as_mut()) {
+            wolves.set_source(&source.0, &source.1, source.2);
             then.iter().for_each(|&s| wolves.afflict_area(feet, radius, s));
+            wolves.set_source("", "", 0);
         }
         // The cast itself: the animation, the hands, the sound.
-        let directed = matches!(def.effect, Effect::Damage { .. });
+        let directed = matches!(def.effect, Effect::Damage { .. }) || (matches!(def.effect, Effect::Classic { .. }) && victim.is_some());
         ctx.player.cast_anim(vis.cast.anim.unwrap_or(if directed { 53 } else { 54 }) as u16);
         Self::show(ctx, &vis.cast, true, feet, yaw, 1.8, false);
         Self::sound(ctx, vis.cast.sound);
@@ -575,9 +618,9 @@ impl Spellcaster {
                         ctx.panels.emit(Sfx::Hold(entry));
                     }
                     let duration = (from.distance(to) / vis.speed.max(1.0)).max(0.1);
-                    self.flights.push(Flight { vis: vis.clone(), pitched: false, target, last_seen: at, from, age: 0.0, duration, effect, damage, then: then.clone() });
+                    self.flights.push(Flight { vis: vis.clone(), pitched: false, target, last_seen: at, from, age: 0.0, duration, effect, damage, then: then.clone(), source: source.clone() });
                 }
-                None => self.land(ctx, Flight { vis: vis.clone(), pitched: false, target, last_seen: at, from, age: 0.0, duration: 0.0, effect: None, damage, then: then.clone() }),
+                None => self.land(ctx, Flight { vis: vis.clone(), pitched: false, target, last_seen: at, from, age: 0.0, duration: 0.0, effect: None, damage, then: then.clone(), source: source.clone() }),
             }
         }
         ctx.panels.cooldowns[spell] = def.cooldown;

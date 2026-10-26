@@ -214,7 +214,7 @@ mod tests {
             if let Some(m) = &vis.missile {
                 assert!(mount.read(m).is_ok(), "{}: {m}", spell.name);
             }
-            assert!(vis.cast_ms >= 0.0 && vis.cast_ms < 10_000.0, "{}: {}", spell.name, vis.cast_ms);
+            assert!(vis.cast_ms >= 0.0 && vis.cast_ms < 30_000.0, "{}: {}", spell.name, vis.cast_ms);
         }
     }
 

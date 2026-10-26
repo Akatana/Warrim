@@ -95,10 +95,13 @@ impl State {
                 panels.refresh();
                 format!("learned {learned} recipes")
             }
-            Command::Spell(spell) => {
-                let all: Vec<usize> = (0..content.spells.len()).collect();
-                let learned = spell.as_slice().iter().chain(spell.is_none().then_some(&all[..]).into_iter().flatten()).filter(|&&s| panels.learn(s)).count();
-                format!("learned {learned} spells")
+            Command::Spell(spells) => {
+                let learned: Vec<usize> = spells.iter().copied().filter(|&s| panels.learn(s)).collect();
+                match (&learned[..], spells.len()) {
+                    ([one], _) => format!("learned {}", content.spells[*one].name),
+                    ([], 1) => format!("you know {} already", content.spells[spells[0]].name),
+                    _ => format!("learned {} spells", learned.len()),
+                }
             }
             Command::Teleport(north, west) => {
                 self.teleport(north, west, None);

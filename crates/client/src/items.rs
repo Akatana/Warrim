@@ -653,6 +653,11 @@ struct Gear {
     damage_versus: [i32; 11],
     mount_speed: f32,
     threat: f32,
+    /// The share of all damage taken that a spell holds back (a shield wall, barkskin), 0 to 1.
+    reduction: f32,
+    /// A spell lets the character fall softly, and breathe under water.
+    slow_fall: bool,
+    water_breathing: bool,
     /// Damage added to every blow of the weapon in the main hand (an enchantment).
     weapon_damage: i32,
 }
@@ -702,6 +707,10 @@ impl Gear {
             154 => self.skill.push((crate::skills::Skill::Sneaking.index(), amount)),
             130 => self.mount_speed += a,
             10 => self.threat += a,
+            105 => self.slow_fall = true,
+            82 => self.water_breathing = true,
+            // Damage taken, in negative percents.
+            87 if amount < 0 => self.reduction = (self.reduction + -a / 100.0).min(0.9),
             59 => (1..=10).filter(|t| misc >> (t - 1) & 1 == 1).for_each(|t| self.damage_versus[t] += amount),
             // (not an aura of the original: the damage that an enchantment adds to the weapon)
             1000 => self.weapon_damage += amount,
@@ -769,6 +778,11 @@ pub struct Stats {
     pub damage_versus: [i32; 11],
     pub mount_speed: f32,
     pub threat: f32,
+    /// The share of all damage taken that spells hold back.
+    pub reduction: f32,
+    /// Spells let the character fall softly and breathe under water.
+    pub slow_fall: bool,
+    pub water_breathing: bool,
 }
 
 /// Attack power per point of damage per second (`ATTACK_POWER_MAGIC_NUMBER`).
@@ -854,7 +868,7 @@ impl Stats {
             ((w.min + bonus) / 2.0, (w.max + bonus) / 2.0)
         });
         Stats { level, attributes, armor, attack_power, damage: (min + bonus + gear.weapon_damage as f32, max + bonus + gear.weapon_damage as f32), off_damage, speed, max_health, max_mana, max_stamina: (100.0 + agi) * (1.0 + perks.stamina / 100.0), attack: 5 * level as i32, resist, dodge, crit, spell_crit, parry: 5.0 + gear.parry + perks.parry + defense, block: if shield.is_some() { 5.0 + gear.block + defense } else { 0.0 }, block_value, health_regen, mana_regen, mana_regen_casting, ranged_attack_power, ranged,
-            spell_damage, healing: gear.healing + spell_power, hit: gear.hit + perks.hit, spell_hit: gear.spell_hit + perks.spell_hit, health_regen_always: gear.hp5 as f32 / 5.0, run_speed: (gear.run + perks.run_speed) / 100.0, skill_bonus, defense: gear.defense, damage_versus: gear.damage_versus, mount_speed: gear.mount_speed / 100.0, threat: gear.threat, ap_versus: gear.ap_versus, ranged_ap_versus: gear.ranged_ap_versus, spell_versus: gear.spell_versus }
+            spell_damage, healing: gear.healing + spell_power, hit: gear.hit + perks.hit, spell_hit: gear.spell_hit + perks.spell_hit, health_regen_always: gear.hp5 as f32 / 5.0, run_speed: (gear.run + perks.run_speed) / 100.0, skill_bonus, defense: gear.defense, damage_versus: gear.damage_versus, mount_speed: gear.mount_speed / 100.0, threat: gear.threat, reduction: gear.reduction, slow_fall: gear.slow_fall, water_breathing: gear.water_breathing, ap_versus: gear.ap_versus, ranged_ap_versus: gear.ranged_ap_versus, spell_versus: gear.spell_versus }
     }
 
     /// The share of the damage of a school of magic (the original's number: 1 holy, 2 fire, 3 nature, 4 frost, 5 shadow, 6 arcane) that its resistance stops
@@ -862,15 +876,16 @@ impl Stats {
     /// The attacker is taken to be of the character's level.
     pub fn resistance(&self, school: u32) -> f32 {
         match school {
-            2..=6 => (self.resist[school as usize - 1] as f32 / (5.0 * self.level as f32) * 0.75).clamp(0.0, 0.75),
-            _ => 0.0,
+            2..=6 => 1.0 - (1.0 - (self.resist[school as usize - 1] as f32 / (5.0 * self.level as f32) * 0.75).clamp(0.0, 0.75)) * (1.0 - self.reduction),
+            _ => self.reduction,
         }
     }
 
     /// The share of physical damage armor stops (`armor / (armor + 400 + 85 * level)`).
     pub fn mitigation(&self) -> f32 {
         let armor = self.armor as f32;
-        armor / (armor + 400.0 + 85.0 * self.level as f32)
+        let armor = armor / (armor + 400.0 + 85.0 * self.level as f32);
+        1.0 - (1.0 - armor) * (1.0 - self.reduction)
     }
 }
 

@@ -154,6 +154,15 @@ impl State {
     }
 }
 
+/// An aura on a creature as the target frame shows it: the name and icon of the spell, its dispel kind (1 magic, 2 curse, 3 disease, 4 poison; 0 none), the seconds left.
+#[derive(Clone, Debug)]
+pub struct Aura {
+    pub name: String,
+    pub icon: String,
+    pub dispel: u32,
+    pub left: f32,
+}
+
 /// What is put on a creature: damage over time (the damage of a tick, the seconds between ticks, the seconds it lasts), a stun for some seconds, or a slow
 /// that leaves it with a share of its pace for some seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -161,6 +170,18 @@ pub enum Status {
     Over { amount: f32, period: f32, seconds: f32 },
     Stun(f32),
     Slow(f32, f32),
+    /// Cannot move for some seconds (it still fights what is within its reach).
+    Root(f32),
+    /// Runs from the player in terror for some seconds.
+    Fear(f32),
+    /// Asleep for some seconds: any blow wakes it (sleep, sap, shackle, gouge).
+    Sleep(f32),
+    /// Turned into a sheep for some seconds: harmless, and the first blow turns it back.
+    Sheep(f32),
+    /// Out of this world for some seconds: it cannot be hurt.
+    Banish(f32),
+    /// Its blows are `dealt` times as hard and it takes `taken` times the damage, for some seconds (a curse, a shout, an armor torn).
+    Weaken { dealt: f32, taken: f32, seconds: f32 },
 }
 
 /// What the player is, to a creature that looks at him: where he is and faces, how well he is, what he is doing and which spells have hold of him.
@@ -217,6 +238,9 @@ pub enum Act {
     Stop,
     /// A spell went off.
     Cast(Cast),
+    /// (An ally) its blow lands on what it fights, for this much; and it casts a spell (of the original) at it.
+    Strike(f32),
+    Spell(u32),
     /// It summons creatures of this entry (for so many milliseconds; 0: until they die).
     Summon { entry: u32, ms: i32 },
     /// It calls the creatures of its faction within so many yards.
@@ -289,10 +313,29 @@ pub struct Mob {
     auras: Vec<(u32, f32)>,
     /// What the player's spells and the gear's put on it: damage over time (the damage of a tick, seconds between ticks, seconds to the next, seconds left),
     /// seconds stunned, the share of its pace a slow leaves it with and the seconds that lasts, and whether the damage over time killed it.
-    over: Vec<(f32, f32, f32, f32)>,
+    /// The last is the icon of the spell it came from: casting the same spell again renews it instead of adding another.
+    over: Vec<(f32, f32, f32, f32, String)>,
+    /// What of it the target frame lists.
+    debuffs: Vec<Aura>,
     stun: f32,
     slow: (f32, f32),
+    /// Seconds it cannot move, seconds it runs in fear, seconds it cannot be hurt, and what weakens it (dealt, taken, seconds left).
+    root: f32,
+    fear: f32,
+    banish: f32,
+    weak: (f32, f32, f32),
+    /// The stun is a sleep: a blow ends it (and turns a sheep back).
+    asleep: bool,
+    /// Its pockets were picked.
+    picked: bool,
+    /// It fights for the player (a pet, a raised corpse, a creature taken over for a while); and its corpse was raised.
+    pub ally: Option<Ally>,
+    raised: bool,
+    /// It was called by a quest to be fought, whatever its kind is.
+    forced_hostile: bool,
     slain_over: bool,
+    /// The damage of the ticks of damage over time since they were last told (the floating numbers).
+    ticked: Vec<f32>,
     /// What it did since the last step, for the game.
     out: Vec<Act>,
     /// Whether it fought at the last step (the start and the end of a fight are noticed from the change).
@@ -455,9 +498,20 @@ impl Mob {
             mana: def.brain.mana,
             auras: Vec::new(),
             over: Vec::new(),
+            debuffs: Vec::new(),
             stun: 0.0,
             slow: (1.0, 0.0),
+            root: 0.0,
+            fear: 0.0,
+            banish: 0.0,
+            weak: (1.0, 1.0, 0.0),
+            asleep: false,
+            picked: false,
+            ally: None,
+            raised: false,
+            forced_hostile: false,
             slain_over: false,
+            ticked: Vec::new(),
             out: Vec::new(),
             fought: false,
             pending: None,
@@ -569,6 +623,7 @@ impl Mob {
 
 }
 
+mod allies;
 mod behaviour;
 mod combat;
 mod creatures;
@@ -577,6 +632,8 @@ mod spells;
 #[cfg(test)]
 mod tests;
 
+use allies as ally;
+pub use allies::{Ally, PetCommand, PetOrders, Stance};
 pub use creatures::{screen_box, Creatures, Label, TargetView};
 pub(crate) use person::Person;
 use person::*;

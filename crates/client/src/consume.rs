@@ -78,6 +78,14 @@ pub enum Timed {
     Shield { amount: f32, school: u32 },
     /// Damage of blows that is taken up before the character is hurt, until it is used up.
     Absorb(f32),
+    /// A spell (of the original) that goes off on each blow the character lands: a seal.
+    Seal(u32),
+    /// The character's soul is kept (a soulstone): if he dies, he gets up where he fell, with this share of his health and mana.
+    Ward(f32),
+    /// A spell (of the original) that goes off on whoever strikes the character (a thorns, a lightning shield, a grasp that roots).
+    Struck(u32),
+    /// An enchantment (a row of `SpellItemEnchantment.dbc`) put on the weapon in the hand for a time: a poison, a blessing of the weapon.
+    Coat(u32),
 }
 
 #[derive(Default)]
@@ -88,6 +96,8 @@ pub struct Consumed {
     cooldowns: HashMap<usize, f32>,
     /// The weapon (an item) that a lure or a stone is on: it is gone when another is wielded. None until the first look after a save is loaded.
     temp_on: Option<usize>,
+    /// What the character's spells put on him, shown among the buffs: the icon (in `Interface\Icons`) and the seconds left.
+    pub shown: Vec<(String, f32)>,
     /// Seconds to go before the hearthstone takes the character home.
     pub hearth: Option<f32>,
     rng: u32,
@@ -161,6 +171,25 @@ impl Consumed {
         self.timed.iter().filter_map(|(t, _)| if let Timed::Shield { amount, school } = *t { Some((amount, school)) } else { None })
     }
 
+    /// The character died: the share of health and mana he gets up with, if his soul was kept (and it is spent).
+    pub fn take_ward(&mut self) -> Option<f32> {
+        let i = self.timed.iter().position(|(t, _)| matches!(t, Timed::Ward(_)))?;
+        match self.timed.remove(i).0 {
+            Timed::Ward(share) => Some(share),
+            _ => None,
+        }
+    }
+
+    /// The spells that go off on whoever strikes the character.
+    pub fn reactions(&self) -> Vec<u32> {
+        self.timed.iter().filter_map(|(t, _)| if let Timed::Struck(spell) = *t { Some(spell) } else { None }).collect()
+    }
+
+    /// The seals and coats that go off on a blow.
+    pub fn on_blow(&self) -> Vec<Timed> {
+        self.timed.iter().map(|(t, _)| *t).filter(|t| matches!(t, Timed::Seal(_) | Timed::Coat(_))).collect()
+    }
+
     /// A blow of `amount` meets what absorbs it: returns what is left of it, and the absorption is used as far as it went.
     pub fn absorb(&mut self, mut amount: f32) -> f32 {
         for (t, _) in &mut self.timed {
@@ -180,6 +209,12 @@ impl Consumed {
         self.rng ^= self.rng >> 17;
         self.rng ^= self.rng << 5;
         self.rng
+    }
+
+    /// A spell puts something on the character for `seconds`: its icon is shown with the buffs (a new one of the same spell takes the place of the old).
+    pub fn show(&mut self, icon: &str, seconds: f32) {
+        self.shown.retain(|(i, _)| i != icon);
+        self.shown.push((icon.to_string(), seconds));
     }
 
     /// Seconds before the item can be used again.
@@ -282,6 +317,10 @@ impl Consumed {
                 b.left -= dt;
             }
         }
+        self.shown.retain_mut(|(_, left)| {
+            *left -= dt;
+            *left > 0.0
+        });
         for (t, left) in &mut self.timed {
             if let Timed::Regen(per_second) = *t {
                 tick.heal += per_second * dt.min(*left);

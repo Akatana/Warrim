@@ -35,6 +35,7 @@ impl State {
         saved.map = Some(self.map.clone());
         saved.spent = panels.level_spent();
         saved.talents = panels.talent_ranks();
+        saved.pet = panels.pet.clone();
         Some(saved)
     }
 

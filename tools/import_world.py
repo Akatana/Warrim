@@ -289,8 +289,20 @@ def main():
     # A quest that an item begins (a letter, a note): the item is used to take it, and it is not offered by anybody.
     item_start = {i["startquest"]: i["entry"] for i in classicdb.rows(db, "item_template") if i["startquest"] and Loot.name(i["entry"]) in items}
     begins = {}
+    # The quests that give a warlock's demon (the imp, the voidwalker, the succubus, the felhunter) and teach a hunter to tame beasts, and the chains before them, are kept though
+    # they are for a class: the game has none, and the spells are tomes (`import_class_spells.py`) that these quests give.
+    pet_tomes = {688: "tome_summon_imp", 697: "tome_summon_voidwalker", 712: "tome_summon_succubus", 691: "tome_summon_felhunter", 23356: "tome_tame_beast"}
+    pet_quests, pending = set(), [e for e, x in quests.items() if x["RewSpell"] in pet_tomes]
+    while pending:
+        e = pending.pop()
+        if e not in quests or e in pet_quests:
+            continue
+        pet_quests.add(e)
+        pending.append(quests[e]["PrevQuestId"])
+    spell_names = {s["Id"]: s["SpellName"] for s in classicdb.rows(db, "spell_template")}
+    item_spell = {i["entry"]: i["spellid_1"] for i in classicdb.rows(db, "item_template")}
     for e, x in quests.items():
-        if x["RequiredClasses"] or x["RequiredSkill"]:
+        if (x["RequiredClasses"] and e not in pet_quests) or x["RequiredSkill"]:
             continue
         # Somebody who gives it and somebody who takes it back, whom one side can talk to both.
         starts = ["c%d" % i for i in start.get(e, [])] + ["g%d" % o for o in object_start.get(e, [])]
@@ -325,10 +337,25 @@ def main():
         for e in sorted(chosen, key=lambda e: (depth(e), e)):
             x = quests[e]
             goals, skipped = [], []
+            summons = tames = None
+            # A taming rod: used on the beast it names (`Tame <name>`), which then counts as killed for the quest.
+            rod = x["SrcItemId"] if e in pet_quests and x["RequiredClasses"] == 4 and spell_names.get(item_spell.get(x["SrcItemId"]), "").startswith("Tame ") else 0
+            if rod:
+                wild = spell_names[item_spell[rod]][len("Tame "):]
+                beast = min((c for c, t in templates.items() if t["Name"] == wild and c in placed and c in foes), default=None)
+                if beast is None:
+                    skipped.append("beast " + wild)
+                else:
+                    goals.append('Kill("c%d", 1)' % beast)
+                    tames = Loot.name(rod)
             for n in range(1, 5):
                 c, count = x["ReqCreatureOrGOId%d" % n], x["ReqCreatureOrGOCount%d" % n]
                 if c > 0:
-                    if c not in placed or c not in foes:
+                    # The demon of a binding is summoned by the quest's item and fought (a creature of its own that stands nowhere).
+                    called = e in pet_quests and "c%d" % c in made and c not in placed and x["SrcItemId"]
+                    if called:
+                        summons = (Loot.name(x["SrcItemId"]), "c%d" % c)
+                    elif c not in placed or c not in foes:
                         skipped.append("kill %d" % c)
                     goals.append('Kill("c%d", %d)' % (c, max(1, count)))
                 elif c < 0:
@@ -341,6 +368,8 @@ def main():
                         goal_objects[obj] = name
                         goals.append('Collect("o%d", %d)' % (obj, max(1, count)))
                 item, number = x["ReqItemId%d" % n], x["ReqItemCount%d" % n]
+                if item and item == rod:
+                    continue
                 if item:
                     name = Loot.name(item)
                     if name not in items:
@@ -384,6 +413,9 @@ def main():
             given = [(Loot.name(x["RewItemId%d" % n]), max(1, x["RewItemCount%d" % n])) for n in range(1, 5) if x["RewItemId%d" % n]]
             choice = [c for c in choice if c[0] in items]
             given = [c for c in given if c[0] in items]
+            # A spell that the quest teaches is the tome of it.
+            if x["RewSpell"] in pet_tomes:
+                given.append((pet_tomes[x["RewSpell"]], 1))
             if len(choice) == 1:
                 given, choice = choice + given, []
             # The window has ten places.
@@ -412,6 +444,10 @@ def main():
                 fields.append("requires: Some(%s)" % q("q%d" % x["PrevQuestId"]))
             if e in begins:
                 fields.append("begins_with: Some(%s)" % q(Loot.name(begins[e])))
+            if summons:
+                fields.append("summons: Some((%s, %s))" % (q(summons[0]), q(summons[1])))
+            if tames:
+                fields.append("tames: Some(%s)" % q(tames))
             fields.append("reward: (%s)" % ", ".join(reward))
             out.append("    (" + ", ".join(fields) + "),")
             texts[e] = x["Title"]

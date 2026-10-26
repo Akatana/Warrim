@@ -63,6 +63,16 @@ impl Mob {
             self.near.push(Friend { index: me, pos: self.pos, faction, dist: 0.0, health: self.health, max: self.def.health, auras: self.aura_ids() });
         }
         match self.state {
+            // In terror it runs from the player, whatever it was doing.
+            _ if self.fear > 0.0 && !self.is_dead() && self.state != State::Unborn => {
+                let away = if dist > 0.01 { -to / dist } else { Vec3::Z };
+                self.turn(away);
+                let step = self.walk(away * RUN_SPEED * dt, &blocked);
+                self.stepped(step);
+                if !self.state.fights() {
+                    self.state = State::Chase;
+                }
+            }
             State::Unborn => {}
             State::Dead(_) => self.tick_dead(dt),
             State::Flinch(t) => self.state = if t + dt >= FLINCH_TIME { State::Chase } else { State::Flinch(t + dt) },
@@ -71,7 +81,7 @@ impl Mob {
                 if self.def.is_hostile() && !self.def.brain.calm && (target - self.pos).length() < noticed {
                     self.state = State::Chase;
                     self.sounds.push(Cry::Aggro);
-                } else if self.def.attackable() || !self.route.is_empty() {
+                } else if self.attackable() || !self.route.is_empty() {
                     match self.state {
                         State::Wander(goal) => {
                             let left = flat(goal - self.pos);

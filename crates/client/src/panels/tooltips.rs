@@ -192,6 +192,24 @@ impl Panels {
         })
     }
 
+    /// The tooltip of a button of the target frame's auras: the spell's name, the kind of curse it is (in the colour of its border), and the time it has left.
+    fn target_aura_lines(&self, name: &str) -> Option<Vec<TipLine>> {
+        let (harmful, n) = match (name.strip_prefix("TargetFrameDebuff"), name.strip_prefix("TargetFrameBuff")) {
+            (Some(n), _) => (true, n),
+            (_, Some(n)) => (false, n),
+            _ => return None,
+        };
+        let list = if harmful { &self.target_auras.0 } else { &self.target_auras.1 };
+        let aura = list.get(n.parse::<usize>().ok()?.checked_sub(1)?)?;
+        let mut lines = vec![TipLine::new(aura.name.clone(), WHITE)];
+        if let Some((kind, color)) = [None, Some(("Magic", [0.2, 0.6, 1.0, 1.0])), Some(("Curse", [0.6, 0.0, 1.0, 1.0])), Some(("Disease", [0.6, 0.4, 0.0, 1.0])), Some(("Poison", [0.0, 0.6, 0.0, 1.0]))].get(aura.dispel as usize).copied().flatten() {
+            lines.push(TipLine::new(kind, color));
+        }
+        let left = aura.left.ceil() as u32;
+        lines.push(TipLine::new(if left >= 60 { format!("{} min remaining", left.div_ceil(60)) } else { format!("{left} sec remaining") }, WHITE));
+        Some(lines)
+    }
+
     /// The tooltip for the frame under the mouse, if it has one.
     pub(super) fn tooltip(&self) -> Option<Vec<TipLine>> {
         let hover = self.tree.hover?;
@@ -200,6 +218,9 @@ impl Panels {
             return Some(self.action_lines(action));
         }
         if let Some(lines) = self.talent_lines(name).or_else(|| self.trade_lines(name)).or_else(|| self.trainer_lines(name)) {
+            return Some(lines);
+        }
+        if let Some(lines) = self.target_aura_lines(name) {
             return Some(lines);
         }
         if let Some(slot) = SLOT_BUTTONS.iter().position(|b| *b == name) {

@@ -206,6 +206,8 @@ struct State {
     player: Option<Player>,
     audio: Option<Audio>,
     actionbar: Option<ActionBar>,
+    /// The pet bar, drawn while the player has a pet.
+    petbar: Option<crate::petbar::PetBar>,
     wolves: Option<Creatures>,
     chests: Option<Chests>,
     /// The props that quests send the player to pick up, and the map they are in.
@@ -250,6 +252,8 @@ struct State {
     god: bool,
     /// The free camera (`tfc`) is out, as it is while the editor is open.
     detached: bool,
+    /// The eyes of a spell are out of the character: the seconds left and how far from him they may go.
+    scout: Option<(f32, f32)>,
     restart: bool,
     /// The restart goes back to the list of characters, not into the game.
     logout: bool,

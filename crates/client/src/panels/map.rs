@@ -481,6 +481,20 @@ impl Panels {
         self.after_close();
     }
 
+    /// A spell tracks the creatures of a type: they show on the map until the same spell is cast again (or another one is).
+    pub fn track(&mut self, kind: u32) {
+        self.tracking = if self.tracking == Some(kind) { None } else { Some(kind) };
+        self.notice(if self.tracking.is_some() { "You can sense them now." } else { "You sense nothing now." });
+    }
+
+    /// Where the creatures that are tracked stand now (every frame).
+    pub fn set_tracking(&mut self, creatures: Option<&crate::creature::Creatures>) {
+        self.tracked = match (self.tracking, creatures) {
+            (Some(kind), Some(c)) => c.of_type(kind),
+            _ => Vec::new(),
+        };
+    }
+
     /// Where the player asked to travel (north, west, feet height if known) since the last call.
     pub fn take_travel(&mut self) -> Option<(f32, f32, Option<f32>)> {
         self.travel.take()
@@ -677,6 +691,19 @@ impl Panels {
             if let Some(texture) = self.tree.texture(ui, gpu, &mount, path) {
                 let size = if nearest == Some(distance(&t)) { 24.0 } else { 15.0 } * s;
                 ui.quad(Quad { texture, rect: [at.0 - size / 2.0, at.1 - size / 2.0, size, size], uv, color: WHITE, additive: false });
+            }
+        }
+        // What is tracked: a small round mark on each.
+        if on_zone {
+            if let Some(texture) = self.tree.texture(ui, gpu, &mount, r"Interface\TargetingFrame\UI-RaidTargetingIcons") {
+                for &p in &self.tracked {
+                    let [n, w, _] = render_to_wow(p);
+                    let at = self.map.place(rect, n, w);
+                    if inside(at, 4.0 * s) {
+                        let size = 11.0 * s;
+                        ui.quad(Quad { texture, rect: [at.0 - size / 2.0, at.1 - size / 2.0, size, size], uv: [0.25, 0.0, 0.5, 0.25], color: [1.0, 0.3, 0.3, 1.0], additive: false });
+                    }
+                }
             }
         }
         // The character: the arrow of the original (`Interface\Minimap\MinimapArrow.m2` is this picture on one square), turned to face where it does; the

@@ -33,6 +33,8 @@ pub struct Steed {
     pub display: u32,
     /// The footstep set its hooves sound from (`CreatureSoundData`).
     pub foot_set: u32,
+    /// It is the shape the character himself has taken (a druid's bear): nobody rides it, and it comes with sneaking.
+    pub form: bool,
 }
 
 /// The model file, the skins (texture slot, file), the size and the footstep set of the display row `display` of `CreatureDisplayInfo.dbc`.
@@ -53,13 +55,13 @@ fn look_of(mount: &Mount, display: u32) -> Result<(String, Vec<(u32, String)>, f
 
 impl Steed {
     /// The steed of display row `display` of `CreatureDisplayInfo.dbc`, which adds `percent` to the running speed.
-    pub fn load(mount: &Mount, cache: &ModelCache, renderer: &mut Renderer, gpu: &Gpu, display: u32, percent: i32) -> Result<Steed> {
+    pub fn load(mount: &Mount, cache: &ModelCache, renderer: &mut Renderer, gpu: &Gpu, display: u32, percent: i32, form: bool) -> Result<Steed> {
         let (model, skins, scale, foot_set) = look_of(mount, display)?;
         let skins: Vec<(u32, &str)> = skins.iter().map(|(slot, file)| (*slot, file.as_str())).collect();
         let m2 = M2::parse(&mount.read(&model)?).with_context(|| model.clone())?;
         let template = cache.creature(mount, &model, &skins)?;
         let entity = renderer.add_room_lit_entity(gpu, &template);
-        Ok(Steed { animator: Animator::new(&m2, 0x5EED), m2, template, entity, scale, clock_ms: 0.0, vertices: Vec::new(), percent, display, foot_set })
+        Ok(Steed { animator: Animator::new(&m2, 0x5EED), m2, template, entity, scale, clock_ms: 0.0, vertices: Vec::new(), percent, display, foot_set, form })
     }
 
     /// Advance the steed `dt` seconds with the player's `motion` and put it on the ground at `feet`, facing `yaw`. Returns where the rider sits.
@@ -125,5 +127,23 @@ mod tests {
         displays.dedup();
         let silent: Vec<u32> = displays.into_iter().filter(|&d| { let set = look_of(&mount, d).unwrap().3; !(0..40).any(|terrain| bank.footstep_in(set, terrain).is_some()) }).collect();
         assert!(silent.is_empty(), "steeds with no hoofbeats: {silent:?}");
+    }
+}
+
+#[cfg(test)]
+mod form_tests {
+    use super::*;
+
+    /// The beasts a druid or a shaman can turn into are creatures of the game's files, with their skins.
+    #[test]
+    fn every_shape_a_spell_takes_can_be_drawn() {
+        let Some(mount) = mpq::find_wow_dir().and_then(|d| Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
+        let cache = ModelCache::default();
+        for display in crate::procs::FORM_DISPLAYS {
+            let (model, skins, ..) = look_of(&mount, display).unwrap_or_else(|e| panic!("form {display}: {e:#}"));
+            assert!(mount.exists(&model) && skins.iter().all(|(_, f)| mount.exists(f)), "form {display}: {model}");
+            let skins: Vec<(u32, &str)> = skins.iter().map(|(slot, file)| (*slot, file.as_str())).collect();
+            cache.creature(&mount, &model, &skins).unwrap_or_else(|e| panic!("form {display}: {e:#}"));
+        }
     }
 }

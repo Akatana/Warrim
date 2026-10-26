@@ -428,6 +428,10 @@ pub struct Quest {
     pub races: u32,
     /// The item that begins it (a letter, a note: using it opens the quest); the quest is then not offered by its giver.
     pub begins_with: Option<usize>,
+    /// Using this item (an index) while the quest is taken calls the creature (an index) to fight, which counts for the quest's kills: the demon of a binding.
+    pub summons: Option<(usize, usize)>,
+    /// Using this item (an index) on the beast that the quest's kill goal names tames it for a while, and counts for that goal: a taming rod.
+    pub tames: Option<usize>,
 }
 
 /// A chest in the world (`content/chests.ron`).
@@ -656,6 +660,9 @@ pub enum Effect {
     Mana { min: f32, max: f32 },
     /// Does nothing by itself: what it puts on the caster is its `then`.
     Buff,
+    /// Does what the original's spell does (`classic_spells.ron`, run by `special.rs`): to the selected creature within `range` yards if the spell is for an
+    /// enemy, to the caster when `range` is 0.
+    Classic { range: f32 },
 }
 
 /// What a spell does besides its damage, to what it hurts (the creature it hits, or every one it catches) or to the caster. Seconds are game seconds.
@@ -671,6 +678,34 @@ pub enum Rider {
     /// For `seconds` the caster has `amount` more of what the aura gives: aura 0 to 4 an attribute (`amount` per level of the character), else an
     /// equipment aura of `procs.rs` (99 attack power, 52 critical blows, 71 critical spells of the schools in `misc`).
     Gain { aura: u16, misc: i32, amount: f32, seconds: f32 },
+    /// The caster gets on a steed (the display row of `CreatureDisplayInfo.dbc`, and the speed it adds in percent), or down from it.
+    Mount { display: u32, percent: i32 },
+    /// Items (an entry of the original's items) are made in the pack.
+    Conjure { item: u32, count: u32 },
+    /// A creature of the original (its entry) comes to be the caster's pet: it follows him and fights what fights him, casting `spell` (of the original; 0 for none) from afar,
+    /// for `seconds` (0: until it is sent away).
+    Summon { entry: u32, spell: u32, seconds: f32 },
+    /// The pet the caster has (tamed, or the last one called) comes; is sent away; gets up again; is healed (the share of its health, in percent).
+    CallPet,
+    DismissPet,
+    RevivePet,
+    MendPet(f32),
+    /// The beast that is selected becomes the caster's pet.
+    Tame,
+    /// A totem, a trap or a well is set where the caster stands (see `PlaceKind`): the creature whose model it shows (0: by the kind), the spell of the original it casts, the
+    /// seconds it stands, the yards it reaches, the element of a totem (1 to 4: one of each at a time) and the times a well gives.
+    Place { entry: u32, spell: u32, kind: PlaceKind, seconds: f32, radius: f32, slot: u8, uses: u8 },
+}
+
+/// What is set down by a spell.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+pub enum PlaceKind {
+    /// Casts its spell every moment for the caster and against his enemies near it.
+    Totem,
+    /// Waits for an enemy to come near, casts its spell on it and is gone (its spell may go on for a time).
+    Trap,
+    /// Heals the caster who stands near it, a number of times.
+    Well,
 }
 
 /// A spell of a class (`content/spells.ron`). `level` is the rank of the class skill that its tome asks for to be learned: 1, the
@@ -871,6 +906,11 @@ pub fn reload(mount: &Mount) -> Result<()> {
     anyhow::ensure!(old.spells.len() == new.spells.len() && old.spells.iter().zip(&new.spells).all(|(a, b)| a.id == b.id && a.spell == b.spell), "the spells changed");
     install(new);
     Ok(())
+}
+
+/// What a polymorphed creature looks like: the first sheep of the content (None if there is none).
+pub fn sheep_kind() -> Option<usize> {
+    get().creatures.iter().position(|c| c.name == "Sheep" && matches!(c.body, Body::Beast { .. }))
 }
 
 /// The content. In the tests it loads itself, with the game data if it is installed.
@@ -1105,6 +1145,11 @@ pub struct RawQuest {
     pub races: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub begins_with: Option<String>,
+    /// The item (an id) that calls the creature (an id) to be fought, and the item that tames the beast of the kill goal (see `Quest`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summons: Option<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tames: Option<String>,
 }
 
 /// What a creature or chest drops (`content/loot.ron`): copper from low to high, and items with a count (low, high) and a chance in percent.
@@ -1754,7 +1799,10 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
             let start_items = q.start_items.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count, enchant: 0 })).collect::<Result<Vec<_>>>()?;
             let requires = q.requires.as_deref().map(|r| quest_numbers.get(r).copied().with_context(|| format!("requires {r}, which must come earlier in the file"))).transpose()?;
             let begins_with = q.begins_with.as_deref().map(item).transpose()?;
-            Ok(Quest { id: q.id.clone(), title: q.title.clone(), giver: creature(&q.giver)?, turn_in: creature(&q.turn_in)?, details: q.details.clone(), objective: q.objective.clone(), progress: q.progress.clone(), completion: q.completion.clone(), goals, copper: q.reward.copper, xp: q.reward.xp, items: reward_items, choice, requires, level: q.level, start_items, min_level: q.min_level, races: q.races, begins_with })
+            let summons = q.summons.as_ref().map(|(i, c)| Ok::<_, anyhow::Error>((item(i)?, creature(c)?))).transpose()?;
+            let tames = q.tames.as_deref().map(item).transpose()?;
+            ensure!(tames.is_none() || goals.iter().any(|g| matches!(g, Goal::Kill { .. })), "a taming rod and no beast to tame");
+            Ok(Quest { id: q.id.clone(), title: q.title.clone(), giver: creature(&q.giver)?, turn_in: creature(&q.turn_in)?, details: q.details.clone(), objective: q.objective.clone(), progress: q.progress.clone(), completion: q.completion.clone(), goals, copper: q.reward.copper, xp: q.reward.xp, items: reward_items, choice, requires, level: q.level, start_items, min_level: q.min_level, races: q.races, begins_with, summons, tames })
         };
         let quest = build().with_context(|| format!("quest {id}"))?;
         quest_numbers.insert(quest.id.clone(), quests.len());
@@ -1908,6 +1956,8 @@ mod tests {
             // Kills are of hostile creatures and items to collect can actually be had.
             for g in &q.goals {
                 match *g {
+                    // (The demon of a binding is called by the quest's item, and stands nowhere.)
+                    Goal::Kill { creature, .. } if q.summons.is_some_and(|s| s.1 == creature) => {}
                     Goal::Kill { creature, .. } => {
                         let cr = &c.creatures[creature];
                         assert!(cr.hostile || cr.neutral || cr.horde.is_some_and(|h| h.0 || h.1), "{}: kills a creature that cannot be fought", q.title);

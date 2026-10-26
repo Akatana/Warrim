@@ -30,7 +30,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("gold", "gold <amount>", "add gold (a negative amount takes it)"),
     ("skill", "skill <name|all> <rank|max>", "set the rank of a skill"),
     ("item", "item <id or name> [count]", "put an item in the backpack"),
-    ("spell", "spell <id|all>", "learn a spell"),
+    ("spell", "spell <id|name|class|all>", "learn a spell, every spell of a class (mage, warlock...), or all"),
     ("recipes", "recipes <trade|all>", "learn every recipe of a trade"),
     ("tp", "tp <place> | tp <north> <west>", "teleport to a place or to coordinates"),
     ("heal", "heal", "fill health, mana and stamina"),
@@ -54,7 +54,8 @@ pub enum Command {
     Gold(i64),
     Skill(Option<Skill>, u32),
     Item(usize, u32),
-    Spell(Option<usize>),
+    /// Teach these spells (indexes).
+    Spell(Vec<usize>),
     Recipes(Option<Skill>),
     Teleport(f32, f32),
     Heal,
@@ -198,11 +199,28 @@ pub fn parse(line: &str) -> Result<Command, String> {
             Some(skill) => Command::Recipes(Some(skill_named(skill).filter(|s| s.is_profession()).ok_or(format!("no trade {skill}"))?)),
             None => return Err(usage()),
         },
-        "spell" => match args.first().map(|s| s.to_lowercase()).as_deref() {
-            Some("all") => Command::Spell(None),
-            Some(id) => Command::Spell(Some(c.spells.iter().position(|s| s.id.eq_ignore_ascii_case(id)).ok_or(format!("no spell {id}"))?)),
-            None => return Err(usage()),
-        },
+        "spell" => {
+            let what = args.join(" ").to_lowercase();
+            if what.is_empty() {
+                return Err(usage());
+            }
+            let named = |s: &content::SpellDef| s.id.eq_ignore_ascii_case(&what) || s.name.to_lowercase() == what;
+            if what == "all" {
+                Command::Spell((0..c.spells.len()).collect())
+            } else if let Some(i) = c.spells.iter().position(named) {
+                Command::Spell(vec![i])
+            } else if let Some(class) = crate::skills::ALL.iter().find(|s| s.is_class() && s.name().to_lowercase() == what) {
+                Command::Spell((0..c.spells.len()).filter(|&i| c.spells[i].class == *class).collect())
+            } else {
+                // A part of a name that only one spell has.
+                let part: Vec<usize> = (0..c.spells.len()).filter(|&i| c.spells[i].name.to_lowercase().contains(&what)).collect();
+                match part[..] {
+                    [one] => Command::Spell(vec![one]),
+                    [] => return Err(format!("no spell {what}")),
+                    _ => return Err(format!("{} spells have \"{what}\" in their names: {}", part.len(), part.iter().take(6).map(|&i| c.spells[i].name.as_str()).collect::<Vec<_>>().join(", "))),
+                }
+            }
+        }
         "tp" => match args {
             [place] => {
                 let poi = c.pois.iter().find(|p| p.id.eq_ignore_ascii_case(place)).ok_or(format!("no place {place}"))?;
@@ -378,6 +396,20 @@ impl Console {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `spell` teaches one spell by its id or its name, every spell of a class, or all of them.
+    #[test]
+    fn spell_teaches_by_id_name_class_or_all() {
+        let n = |line: &str| match parse(line) {
+            Ok(Command::Spell(list)) => list.len(),
+            other => panic!("{line}: {:?}", other.map(|_| ())),
+        };
+        let c = content::get();
+        assert_eq!((n("spell fireball"), n("spell Fireball"), n("spell Arcane Intellect"), n("spell arcane intell")), (1, 1, 1, 1));
+        assert_eq!(n("spell mage"), c.spells.iter().filter(|s| s.class == crate::skills::Skill::Mage).count());
+        assert_eq!(n("spell all"), c.spells.len());
+        assert!(parse("spell nonsense").is_err() && parse("spell").is_err());
+    }
 
     #[test]
     fn commands_complete_by_prefix() {

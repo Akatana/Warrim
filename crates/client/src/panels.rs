@@ -64,6 +64,27 @@ const DOLL_STEP: f32 = 0.4;
 
 const WHITE: [f32; 4] = [1.0; 4];
 
+/// What a spell asks of the game beyond what the panels hold; the game does it at the next frame (`Panels::take_requests`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Request {
+    /// Take what is on the character of these kinds (bit `n` for kind `n`: 1 magic, 2 curse, 3 disease, 4 poison) off him.
+    Cleanse(u32),
+    /// The creatures that fight the character lose him.
+    Vanish,
+    /// Forward this many yards at once.
+    Blink(f32),
+    /// Leap at a place (render space).
+    Leap(Vec3),
+    /// A creature (an index into the content's creatures) is called to be fought before him (the demon of a binding).
+    Foe(usize),
+    /// The beast of this kind (an index) that he has selected is tamed for a while, and counts as killed for his quest.
+    Tame(usize),
+    /// The character's eyes leave him: the seconds, and how far (yards) they go.
+    Scout { seconds: f32, reach: f32 },
+    /// Take the shape of the beast of this display row, which adds this percent to the running speed (or give it back).
+    Form { display: u32, percent: i32 },
+}
+
 pub struct Panels {
     /// Who the character is, for the texts that name it.
     name: String,
@@ -137,11 +158,20 @@ pub struct Panels {
     pub consumed: crate::consume::Consumed,
     /// The spells of creatures that have hold of the character, shown with the buffs: the icon (its file) and the seconds left.
     afflicted: Vec<(String, f32)>,
+    /// The harmful and the helpful auras of the target, as the target frame lists them (for the tooltips of its buttons).
+    target_auras: (Vec<crate::creature::Aura>, Vec<crate::creature::Aura>),
     calm: bool,
     /// Health and mana that were given at once and are for the player to take (`take_restores`).
     restored: (f32, f32),
     /// A mount item was used (`take_steed`): its display and speed bonus.
     steed: Option<(u32, i32)>,
+    /// What spells asked of the game since the last frame.
+    pub requests: Vec<Request>,
+    /// The id of the creature that is the character's pet.
+    pub pet: Option<String>,
+    /// The type of creature the character tracks (shown on the world map), and where those are now (render space).
+    tracking: Option<u32>,
+    tracked: Vec<Vec3>,
     /// Whether the character rides (set by the game), and the mount being cast: seconds left, the steed's display and speed bonus.
     mounted: bool,
     mount_cast: Option<(f32, (u32, i32))>,
@@ -353,13 +383,7 @@ impl Panels {
         }
         // Creatures here have no mana to show.
         tree.show("TargetFrameManaBar", false);
-        // No auras, and no target of the target.
-        for i in 1..=16 {
-            tree.show(&format!("TargetFrameDebuff{i}"), false);
-        }
-        for i in 1..=5 {
-            tree.show(&format!("TargetFrameBuff{i}"), false);
-        }
+        // No target of the target (the auras are listed by `set_target`).
         tree.show("TargetofTargetFrame", false);
         for part in ["TargetFrameDropDown", "TargetLeaderIcon", "TargetPVPIcon", "TargetRaidTargetIcon"] {
             tree.show(part, false);
@@ -413,7 +437,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), forgotten: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, lure: (None, false), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, destroying: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), forgotten: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), target_auras: Default::default(), calm: true, restored: (0.0, 0.0), steed: None, requests: Vec::new(), pet: None, tracking: None, tracked: Vec::new(), mounted: false, mount_cast: None, lure: (None, false), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, destroying: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
         panels.refresh();
         Ok(panels)
     }

@@ -161,6 +161,56 @@ impl Panels {
         self.tree.set_region_hidden("TargetDeadText", !v.dead);
         self.tree.set_region_tint("TargetFrameNameBackground", if v.hostile { [1.0, 0.0, 0.0, 1.0] } else if v.neutral { [1.0, 1.0, 0.0, 1.0] } else { [0.0, 1.0, 0.0, 1.0] });
         self.tree.set_bar("TargetFrameHealthBar", v.fraction, Some([0.0, 1.0, 0.0, 1.0]));
+        self.set_target_auras(&v);
+    }
+
+    /// The auras of the target as `TargetDebuffButton_Update` lists them: the icons of its helpful ones (5) and harmful ones (16, their borders in the colour of their dispel kind),
+    /// the harmful ones first under a hostile target and the helpful ones first under a friendly one, the first six harmful ones larger while they are fewer than six.
+    fn set_target_auras(&mut self, v: &crate::creature::TargetView) {
+        // `DebuffTypeColor` of BuffFrame.lua: none, magic, curse, disease, poison.
+        const COLORS: [[f32; 4]; 5] = [[0.8, 0.0, 0.0, 1.0], [0.2, 0.6, 1.0, 1.0], [0.6, 0.0, 1.0, 1.0], [0.6, 0.4, 0.0, 1.0], [0.0, 0.6, 0.0, 1.0]];
+        let icon = |name: &str| format!(r"Interface\Icons\{name}");
+        for i in 1..=5 {
+            let button = format!("TargetFrameBuff{i}");
+            match v.buffs.get(i - 1) {
+                Some(aura) => {
+                    self.tree.show(&button, true);
+                    self.tree.set_texture(&format!("{button}Icon"), Some(&icon(&aura.icon)));
+                }
+                None => self.tree.show(&button, false),
+            }
+        }
+        for i in 1..=16 {
+            let button = format!("TargetFrameDebuff{i}");
+            match v.debuffs.get(i - 1) {
+                Some(d) => {
+                    self.tree.show(&button, true);
+                    self.tree.set_texture(&format!("{button}Icon"), Some(&icon(&d.icon)));
+                    self.tree.set_region_tint(&format!("{button}Border"), COLORS[(d.dispel as usize).min(4)]);
+                    // The seconds it has left are written in the corner (where a stack's count would be).
+                    let text = self.lasts_text(d.left).replace(' ', "");
+                    self.tree.set_text(&format!("{button}Count"), &text);
+                    self.tree.set_region_hidden(&format!("{button}Count"), false);
+                }
+                None => self.tree.show(&button, false),
+            }
+        }
+        self.target_auras = (v.debuffs.clone(), v.buffs.clone());
+        if v.hostile || v.neutral {
+            self.tree.set_point("TargetFrameDebuff1", Point::TopLeft, Some("TargetFrame"), Some(Point::BottomLeft), 5.0, 32.0);
+            self.tree.set_point("TargetFrameBuff1", Point::TopLeft, Some("TargetFrameDebuff7"), Some(Point::BottomLeft), 0.0, -2.0);
+        } else {
+            self.tree.set_point("TargetFrameBuff1", Point::TopLeft, Some("TargetFrame"), Some(Point::BottomLeft), 5.0, 32.0);
+            self.tree.set_point("TargetFrameDebuff1", Point::TopLeft, Some("TargetFrameBuff1"), Some(Point::BottomLeft), 0.0, -2.0);
+        }
+        let (size, border) = if v.debuffs.len() >= 6 { (17.0, 19.0) } else { (21.0, 23.0) };
+        for i in 1..=5 {
+            self.tree.set_size(&format!("TargetFrameBuff{i}"), Some(size), Some(size));
+        }
+        for i in 1..=6 {
+            self.tree.set_size(&format!("TargetFrameDebuff{i}"), Some(size), Some(size));
+            self.tree.set_region_size(&format!("TargetFrameDebuff{i}Border"), Some(border), Some(border));
+        }
     }
 
     /// Say which spells of creatures have hold of the character (every frame): their icons are shown with the buffs.
@@ -168,9 +218,20 @@ impl Panels {
         self.afflicted = list.iter().map(|a| (format!(r"Interface\Icons\{}", a.icon), a.left)).collect();
     }
 
+    /// The seconds left as a buff button writes them: `12s`, `5m`, `1h`.
+    fn lasts_text(&self, left: f32) -> String {
+        let lasts = left.ceil() as u32;
+        match lasts {
+            3600.. => self.string("HOUR_ONELETTER_ABBR").replace("%d", &(lasts / 3600).to_string()),
+            60.. => self.string("MINUTE_ONELETTER_ABBR").replace("%d", &(lasts / 60).to_string()),
+            _ => self.string("SECOND_ONELETTER_ABBR").replace("%d", &lasts.to_string()),
+        }
+    }
+
     /// Show the buffs as the icons of `BuffFrame`.
     pub(super) fn update_buffs(&mut self) {
         let mut buffs: Vec<(String, f32)> = self.consumed.buffs.iter().map(|b| (crate::items::get(b.item).icon.to_string(), b.left)).collect();
+        buffs.extend(self.consumed.shown.iter().map(|(icon, left)| (format!(r"Interface\Icons\{icon}"), *left)));
         buffs.extend(self.afflicted.iter().cloned());
         self.tree.show("BuffFrame", !buffs.is_empty());
         let durations = self.show_durations();
@@ -181,12 +242,7 @@ impl Panels {
                     self.tree.show(&button, true);
                     self.tree.set_texture(&format!("{button}Icon"), Some(icon));
                     self.tree.set_region_hidden(&format!("{button}Duration"), !durations);
-                    let lasts = left.ceil() as u32;
-                    let text = match lasts {
-                        3600.. => self.string("HOUR_ONELETTER_ABBR").replace("%d", &(lasts / 3600).to_string()),
-                        60.. => self.string("MINUTE_ONELETTER_ABBR").replace("%d", &(lasts / 60).to_string()),
-                        _ => self.string("SECOND_ONELETTER_ABBR").replace("%d", &lasts.to_string()),
-                    };
+                    let text = self.lasts_text(*left);
                     self.tree.set_text(&format!("{button}Duration"), &text);
                 }
                 None => self.tree.show(&button, false),
@@ -226,7 +282,7 @@ impl Panels {
     /// Queue the open panels, the carried item and the tooltip for drawing.
     pub fn draw(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32)) {
         self.update_buffs();
-        if !self.any_open() && !self.target_shown() && !self.cast_bar_visible() && !self.breath_shown && self.consumed.buffs.is_empty() && self.afflicted.is_empty() {
+        if !self.any_open() && !self.target_shown() && !self.cast_bar_visible() && !self.breath_shown && self.consumed.buffs.is_empty() && self.consumed.shown.is_empty() && self.afflicted.is_empty() {
             return;
         }
         let mount = self.mount.clone();
