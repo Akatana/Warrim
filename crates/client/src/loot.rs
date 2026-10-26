@@ -14,6 +14,13 @@ impl Loot {
         self.copper == 0 && self.items.is_empty()
     }
 
+    /// A kill may also drop a tome (`TOME_CHANCE` percent): one of `tomes` (what the character can learn and does not have).
+    pub fn add_tome(&mut self, tomes: &[usize], rng: &mut u32) {
+        if !tomes.is_empty() && (random(rng, 100_000) as f32) / 1000.0 < TOME_CHANCE {
+            self.items.push(Stack { item: tomes[random(rng, tomes.len() as u32) as usize], count: 1, enchant: 0 });
+        }
+    }
+
     /// Take out the quest items nobody wants: a quest item drops only while an active quest still needs it (`wanted`, from
     /// `QuestLog::wanted`).
     pub fn only_wanted(&mut self, wanted: &[usize]) {
@@ -25,6 +32,9 @@ impl Loot {
 pub fn is_quest_item(item: usize) -> bool {
     items::get(item).quest
 }
+
+/// The chance in percent that any kill drops a tome that the character can learn and does not have (`Panels::learnable_tomes`), on top of its drop table.
+pub const TOME_CHANCE: f32 = 3.0;
 
 /// What a kind of creature can drop (`content/loot.ron`): a copper range, and items (by index) with a count range and
 /// a chance in percent.
@@ -69,6 +79,20 @@ mod tests {
         none.only_wanted(&[]);
         wanted.only_wanted(&[meat]);
         assert_eq!((none.items, wanted.items, wanted.copper), (vec![Stack { item: cloth, count: 1, enchant: 0 }], loot.items, 3));
+    }
+
+    #[test]
+    fn a_kill_drops_a_tome_now_and_then_but_only_from_the_ones_it_is_given() {
+        let tomes = [items::find("tome_fireball"), items::find("tome_wrath")];
+        let mut rng = 777;
+        let rolls: Vec<Loot> = (0..20_000).map(|_| { let mut l = Loot::default(); l.add_tome(&tomes, &mut rng); l }).collect();
+        let dropped = rolls.iter().filter(|l| !l.items.is_empty()).count() as f32 / rolls.len() as f32;
+        assert!((dropped - TOME_CHANCE / 100.0).abs() < 0.01, "{dropped}");
+        assert!(rolls.iter().flat_map(|l| &l.items).all(|s| tomes.contains(&s.item) && s.count == 1));
+        // Nothing to learn, nothing dropped.
+        let mut none = Loot::default();
+        (0..1000).for_each(|_| none.add_tome(&[], &mut rng));
+        assert!(none.is_empty());
     }
 
     #[test]

@@ -633,14 +633,12 @@ mod tests {
     }
 
     #[test]
-    fn every_spell_has_its_tome_somewhere_to_be_found_and_a_basic_one_asks_for_nothing() {
+    fn every_spell_has_its_tome_and_a_basic_one_asks_for_nothing() {
         let c = content::get();
         for (i, spell) in c.spells.iter().enumerate().filter(|(_, s)| !s.talent) {
             let tome = c.items.iter().position(|it| it.tome == Some(i));
             let tome = tome.unwrap_or_else(|| panic!("{} has no tome", spell.name));
-            // Found: dropped by a creature that stands in the world or in a chest, or known from the start.
-            let dropped = c.loot.values().any(|t| t.items.iter().any(|d| d.0 == tome));
-            assert!(dropped || c.start.spells.contains(&i), "{} cannot be found", spell.name);
+            // Found: any kill may drop the tomes of what the class skill allows (`Loot::add_tome`), so a tome only has to ask for a rank that can be reached.
             // A basic spell's tome asks for nothing; a greater one asks for a rank that the skill can reach.
             assert!(spell.level == 1 || (2..=crate::skills::MAX).contains(&spell.level));
         }

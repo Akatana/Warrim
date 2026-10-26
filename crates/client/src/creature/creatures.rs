@@ -83,6 +83,8 @@ pub struct Creatures {
     target: Option<usize>,
     /// The quest items that the active quests want (`QuestLog::wanted`): what dies now may drop them, and no other quest item.
     wanted: Vec<usize>,
+    /// The tomes that the character can learn and does not have (`Panels::learnable_tomes`): any kill may drop one of them.
+    tomes: Vec<usize>,
     /// Whether the creatures that die fall as ragdolls (the interface options).
     pub ragdolls: bool,
     /// The animations the creatures' spells ask for.
@@ -124,7 +126,7 @@ impl Creatures {
         }
         let _ = renderer;
         let _ = gpu;
-        Ok(Creatures { rigs, creatures: Vec::new(), sites, grid, by_kind, free: Vec::new(), pending: HashMap::new(), mount: mount.clone(), cache: ModelCache::default(), budget: MAKE_PER_FRAME, scan: SCAN, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, wanted: Vec::new(), ragdolls: true, anims: SpellAnims::new() })
+        Ok(Creatures { rigs, creatures: Vec::new(), sites, grid, by_kind, free: Vec::new(), pending: HashMap::new(), mount: mount.clone(), cache: ModelCache::default(), budget: MAKE_PER_FRAME, scan: SCAN, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, wanted: Vec::new(), tomes: Vec::new(), ragdolls: true, anims: SpellAnims::new() })
     }
 
     /// The creatures at their places that have a model: (kind id, north and west of the place, where it is now in render space).
@@ -468,7 +470,7 @@ impl Creatures {
             // What the damage over time slew is a kill of the player's.
             if std::mem::take(&mut c.mob.slain_over) {
                 self.deaths.push(kind);
-                c.mob.loot = c.mob.loot.take().map(|mut l| { l.only_wanted(&self.wanted); l }).filter(|l| !l.is_empty());
+                c.mob.settle_loot(&self.wanted, &self.tomes);
             }
             for act in acts {
                 match act {
@@ -664,7 +666,7 @@ impl Creatures {
                 ids.push(i);
                 if c.mob.is_dead() {
                     self.deaths.push(c.mob.kind);
-                    c.mob.loot = c.mob.loot.take().map(|mut l| { l.only_wanted(&self.wanted); l }).filter(|l| !l.is_empty());
+                    c.mob.settle_loot(&self.wanted, &self.tomes);
                 }
             }
         }
@@ -718,7 +720,7 @@ impl Creatures {
         c.mob.hurt(damage);
         if c.mob.is_dead() {
             self.deaths.push(c.mob.kind);
-            c.mob.loot = c.mob.loot.take().map(|mut l| { l.only_wanted(&self.wanted); l }).filter(|l| !l.is_empty());
+            c.mob.settle_loot(&self.wanted, &self.tomes);
         }
         self.target = Some(i);
         Some(c.mob.pos + Vec3::Y * 0.9)
@@ -833,6 +835,11 @@ impl Creatures {
             }
             c.marks.into_iter().flatten().for_each(|e| renderer.remove_entity(e));
         }
+    }
+
+    /// Say which tomes a kill may drop now (every frame, before anything dies).
+    pub fn set_tomes(&mut self, tomes: Vec<usize>) {
+        self.tomes = tomes;
     }
 
     /// Say which quest items are wanted by the quests being worked on (every frame, before anything dies).

@@ -21,6 +21,20 @@ impl Panels {
         self.notice(&format!("You have learned a new spell: {}.", def.name));
     }
 
+    /// The tomes that a kill may drop: those of spells that are not known yet, whose class skill is high enough, and that are not in the pack already.
+    pub fn learnable_tomes(&self) -> Vec<usize> {
+        static TOMES: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
+        let all = TOMES.get_or_init(|| content::get().items.iter().enumerate().filter(|(_, it)| it.tome.is_some()).map(|(i, _)| i).collect());
+        all.iter()
+            .copied()
+            .filter(|&item| {
+                let spell = crate::items::get(item).tome.unwrap_or_default();
+                let def = content::spell(spell);
+                !self.known.contains(&spell) && self.skills.rank(def.class) >= def.level && !self.inv.bag.iter().flatten().any(|s| s.item == item)
+            })
+            .collect()
+    }
+
     /// Whether the mouse carries an item (which is drawn instead of the pointer).
     pub fn carrying(&self) -> bool {
         self.inv.cursor.is_some()

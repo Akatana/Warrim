@@ -672,6 +672,7 @@ impl State {
                 let [north, west, _] = render_to_wow(feet);
                 panels.arrive(&self.map, north, west);
                 wolves.set_wanted(panels.quests.wanted(&panels.inv));
+                wolves.set_tomes(panels.learnable_tomes());
                 panels.update_quests();
                 let _t = crate::profile::scope("name labels");
                 panels.draw_labels(&mut self.renderer.ui, &self.gpu, size, &wolves.labels(&render_camera, size, self.names, |from, to| self.world.ray_hit(from, to).is_some()));

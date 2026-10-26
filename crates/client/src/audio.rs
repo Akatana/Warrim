@@ -289,7 +289,11 @@ impl SoundBank {
     }
 
     /// The footstep of a footstep set (`CreatureSoundData` field 9) on a terrain type.
+    /// Set 0 means "none" (chickens): the table still has rows for it, all the treant's stomp.
     pub fn footstep_in(&self, set: u32, terrain: u32) -> Option<u32> {
+        if set == 0 {
+            return None;
+        }
         self.footsteps.get(&(set, *self.terrain_sounds.get(&terrain)?)).copied()
     }
 
@@ -349,8 +353,7 @@ impl SoundBank {
 
     /// The foot of creature kind `kind` on a terrain type.
     pub fn cry_footstep(&self, kind: usize, terrain: u32) -> Option<u32> {
-        let set = self.cries.get(kind)?.as_ref()?.footstep_set;
-        self.footsteps.get(&(set, *self.terrain_sounds.get(&terrain)?)).copied()
+        self.footstep_in(self.cries.get(kind)?.as_ref()?.footstep_set, terrain)
     }
 }
 
@@ -1230,6 +1233,7 @@ mod tests {
             ids.extend([bank.named(&up).unwrap_or_else(|| panic!("no sound {up}")), bank.named(&down).unwrap_or_else(|| panic!("no sound {down}"))]);
         }
         assert!(bank.cry_footstep(wolf, 5).is_some() && bank.cry_footstep(wolf, 0).is_some(), "wolves have footsteps on grass and dirt");
+        assert!(bank.footstep_in(0, 5).is_none(), "footstep set 0 is silent, not the treant's stomp");
         ids.sort_unstable();
         ids.dedup();
         let (mut files, mut missing, mut bad) = (0, Vec::new(), Vec::new());

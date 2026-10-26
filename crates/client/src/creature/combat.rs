@@ -13,6 +13,14 @@ impl Mob {
         matches!(self.state, State::Dead(_) | State::Unborn)
     }
 
+    /// The corpse's loot once the kill is told: only the quest items that are wanted, and maybe a tome that the character can learn.
+    pub fn settle_loot(&mut self, wanted: &[usize], tomes: &[usize]) {
+        let mut loot = self.loot.take().unwrap_or_default();
+        loot.only_wanted(wanted);
+        loot.add_tome(tomes, &mut self.rng);
+        self.loot = Some(loot).filter(|l| !l.is_empty());
+    }
+
     /// The player's sword hits for `damage`: it flinches, turns on whoever hit it, or dies. A spell being cast is only held up by it.
     pub fn hurt(&mut self, damage: f32) {
         if self.is_dead() {
