@@ -29,8 +29,9 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("xp", "xp <amount>", "gain experience"),
     ("gold", "gold <amount>", "add gold (a negative amount takes it)"),
     ("skill", "skill <name|all> <rank|max>", "set the rank of a skill"),
-    ("item", "item <id> [count]", "put an item in the backpack"),
+    ("item", "item <id or name> [count]", "put an item in the backpack"),
     ("spell", "spell <id|all>", "learn a spell"),
+    ("recipes", "recipes <trade|all>", "learn every recipe of a trade"),
     ("tp", "tp <place> | tp <north> <west>", "teleport to a place or to coordinates"),
     ("heal", "heal", "fill health, mana and stamina"),
     ("respec", "respec", "take back every talent point (and the spells talents taught)"),
@@ -54,6 +55,7 @@ pub enum Command {
     Skill(Option<Skill>, u32),
     Item(usize, u32),
     Spell(Option<usize>),
+    Recipes(Option<Skill>),
     Teleport(f32, f32),
     Heal,
     Respec,
@@ -89,34 +91,44 @@ fn skill_named(name: &str) -> Option<Skill> {
 }
 
 /// What the words after `words[0]` may be at argument `n` (counting from 0).
-fn arguments(command: &str, n: usize) -> Vec<String> {
+fn arguments(command: &str, n: usize) -> Vec<(String, String)> {
     let c = content::get();
-    match (command, n) {
-        ("item", 0) => c.items.iter().map(|i| i.id.to_string()).collect(),
+    // An item is found by its name as well as by its id: what it completes to, and what it is searched by and shown as.
+    if (command, n) == ("item", 0) {
+        return c.items.iter().map(|i| (i.id.to_string(), format!("{}  {}", i.id, i.name))).collect();
+    }
+    let plain: Vec<String> = match (command, n) {
         ("spell", 0) => c.spells.iter().map(|s| s.id.clone()).chain(["all".into()]).collect(),
         ("skill", 0) => skills::ALL.iter().map(|s| s.id().to_lowercase()).chain(["all".into()]).collect(),
         ("skill", 1) => vec!["max".into()],
+        ("recipes", 0) => skills::ALL.iter().filter(|s| s.is_profession()).map(|s| s.id().to_lowercase()).chain(["all".into()]).collect(),
         ("tp", 0) => c.pois.iter().map(|p| p.id.clone()).collect(),
         ("time", 0) => vec!["auto".into()],
         _ => Vec::new(),
-    }
+    };
+    plain.into_iter().map(|v| (v.clone(), v)).collect()
 }
 
-/// The ways to finish the last word of `line`: names that start with it, or else that contain it.
-fn candidates(line: &str) -> Vec<String> {
+/// The ways to finish the last word of `line`, each with how it is shown: names that start with it, or else that contain it (an item's name counts).
+fn labelled(line: &str) -> Vec<(String, String)> {
     let words: Vec<&str> = line.split_whitespace().collect();
     // After a space the word being typed is a new, empty one.
     let (done, word) = if line.is_empty() || line.ends_with(char::is_whitespace) { (&words[..], "") } else { (&words[..words.len() - 1], words[words.len() - 1]) };
-    let pool: Vec<String> = match done.split_first() {
-        None => COMMANDS.iter().map(|c| c.0.to_string()).collect(),
+    let pool: Vec<(String, String)> = match done.split_first() {
+        None => COMMANDS.iter().map(|c| (c.0.to_string(), c.0.to_string())).collect(),
         Some((command, rest)) => arguments(command, rest.len()),
     };
     let word = word.to_lowercase();
-    let mut found: Vec<String> = pool.iter().filter(|n| n.to_lowercase().starts_with(&word)).cloned().collect();
+    let mut found: Vec<(String, String)> = pool.iter().filter(|n| n.0.to_lowercase().starts_with(&word)).cloned().collect();
     if found.is_empty() {
-        found = pool.into_iter().filter(|n| n.to_lowercase().contains(&word)).collect();
+        found = pool.into_iter().filter(|n| n.1.to_lowercase().contains(&word)).collect();
     }
     found
+}
+
+/// What the last word of `line` can be completed to.
+fn candidates(line: &str) -> Vec<String> {
+    labelled(line).into_iter().map(|c| c.0).collect()
 }
 
 /// A whole number, from a word.
@@ -145,11 +157,12 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "xp" => Command::Xp(number(args.first(), "amount")?.clamp(0, u32::MAX as i64) as u32),
         "gold" => Command::Gold(number(args.first(), "amount")?),
         "skill" => {
+            // (A skill takes the most it can: 100, and 300 for a trade.)
             let rank = match args.get(1).map(|r| r.to_lowercase()).as_deref() {
-                Some("max") => skills::MAX as i64,
+                Some("max") => skills::PROFESSION_MAX as i64,
                 _ => number(args.get(1), "rank")?,
             };
-            let rank = rank.clamp(1, skills::MAX as i64) as u32;
+            let rank = rank.clamp(1, skills::PROFESSION_MAX as i64) as u32;
             match args.first().map(|s| s.to_lowercase()).as_deref() {
                 Some("all") => Command::Skill(None, rank),
                 Some(skill) => Command::Skill(Some(skill_named(skill).ok_or(format!("no skill {skill}"))?), rank),
@@ -157,11 +170,34 @@ pub fn parse(line: &str) -> Result<Command, String> {
             }
         }
         "item" => {
-            let id = args.first().ok_or_else(usage)?;
-            let item = c.items.iter().position(|i| i.id.eq_ignore_ascii_case(id)).ok_or(format!("no item {id}"))?;
-            let count = if args.len() > 1 { number(args.get(1), "count")?.clamp(1, 1000) as u32 } else { 1 };
+            // `item <id> [count]`, or by the name (as many words as it has): `item fishing pole`, `item shiny bauble 5`.
+            let (words, count) = match args.split_last() {
+                Some((last, rest)) if !rest.is_empty() && last.parse::<i64>().is_ok() => (rest, number(Some(last), "count")?.clamp(1, 1000) as u32),
+                _ => (args, 1),
+            };
+            if words.is_empty() {
+                return Err(usage());
+            }
+            let query = words.join(" ").to_lowercase();
+            let exact = c.items.iter().position(|i| i.id.eq_ignore_ascii_case(&query)).or_else(|| c.items.iter().position(|i| i.name.eq_ignore_ascii_case(&query)));
+            let item = match exact {
+                Some(i) => i,
+                None => {
+                    let like: Vec<usize> = (0..c.items.len()).filter(|&i| c.items[i].name.to_lowercase().contains(&query)).collect();
+                    match like.as_slice() {
+                        [one] => *one,
+                        [] => return Err(format!("no item {query}")),
+                        many => return Err(format!("{} items have that in the name, such as {}: say more of it, or use the id", many.len(), many.iter().take(3).map(|&i| format!("{} ({})", c.items[i].name, c.items[i].id)).collect::<Vec<_>>().join(", "))),
+                    }
+                }
+            };
             Command::Item(item, count)
         }
+        "recipes" => match args.first().map(|s| s.to_lowercase()).as_deref() {
+            Some("all") => Command::Recipes(None),
+            Some(skill) => Command::Recipes(Some(skill_named(skill).filter(|s| s.is_profession()).ok_or(format!("no trade {skill}"))?)),
+            None => return Err(usage()),
+        },
         "spell" => match args.first().map(|s| s.to_lowercase()).as_deref() {
             Some("all") => Command::Spell(None),
             Some(id) => Command::Spell(Some(c.spells.iter().position(|s| s.id.eq_ignore_ascii_case(id)).ok_or(format!("no spell {id}"))?)),
@@ -303,8 +339,12 @@ impl Console {
         let s = size.1 as f32 / UI_HEIGHT;
         let width = size.0 as f32;
         let shown = self.log.len().min(SHOWN_LINES);
-        let hints = candidates(&self.line);
-        let hints = &hints[..hints.len().min(SUGGESTIONS)];
+        let all = labelled(&self.line);
+        let mut hints: Vec<String> = all.iter().take(SUGGESTIONS).map(|h| h.1.clone()).collect();
+        if all.len() > SUGGESTIONS {
+            hints.push(format!("... and {} more: type more of the name", all.len() - SUGGESTIONS));
+        }
+        let hints = &hints[..];
         let height = (shown + 1) as f32 * LINE + 10.0;
         let top = 0.0;
         let fill = |ui: &mut Ui, rect: [f32; 4], color: [f32; 4]| ui.quad(Quad { texture: WHITE, rect, uv: FULL_UV, color, additive: false });
@@ -357,12 +397,25 @@ mod tests {
     }
 
     #[test]
+    fn an_item_is_found_by_its_name_too() {
+        let c = content::get();
+        let pole = c.items.iter().position(|i| i.id == "i6256").unwrap();
+        assert_eq!(parse("item i6256"), Ok(Command::Item(pole, 1)));
+        assert_eq!(parse("item Fishing Pole"), Ok(Command::Item(pole, 1)));
+        assert_eq!(parse("item fishing pole 3"), Ok(Command::Item(pole, 3)));
+        assert!(parse("item shiny bauble 20").is_ok());
+        assert!(parse("item zzz no such").is_err() && parse("item sword").unwrap_err().contains("items have that in the name"));
+        // The words of a name find it among the ways to finish the word, shown with the name.
+        assert!(labelled("item pole").iter().any(|l| l.0 == "i6256" && l.1.contains("Fishing Pole")));
+    }
+
+    #[test]
     fn lines_are_read() {
         assert_eq!(parse("tgm"), Ok(Command::GodMode));
         assert_eq!((parse("tcl"), parse("TFC")), (Ok(Command::Collision), Ok(Command::FreeCamera)));
         assert_eq!(parse("LEVEL 99"), Ok(Command::Level(MAX_LEVEL)));
         assert_eq!(parse("gold -5"), Ok(Command::Gold(-5)));
-        assert_eq!(parse("skill swords max"), Ok(Command::Skill(Some(Skill::Swords), skills::MAX)));
+        assert_eq!(parse("skill swords max"), Ok(Command::Skill(Some(Skill::Swords), skills::PROFESSION_MAX)));
         assert_eq!(parse("skill all 10"), Ok(Command::Skill(None, 10)));
         assert_eq!(parse("tp 1.5 -2"), Ok(Command::Teleport(1.5, -2.0)));
         assert_eq!(parse("time 25"), Ok(Command::Time(Some(1.0))));

@@ -24,7 +24,14 @@ pub(super) fn creatures(g: &mut Gui, d: &mut Data, p: &mut Pick, pv: &mut Previe
         return;
     };
     let items = &d.cur.items;
-    form(g, p, PANE_X, top, PANE_W, bottom, |g, y, _| creature_form(g, y, PANE_X, PANE_W, c, pv, items));
+    // What the creature teaches is taken out of the map for the form and put back (if it teaches anything) under the id it has then.
+    let mut taught = d.cur.lessons.remove(&c.id).unwrap_or_default();
+    let (others, mut lesson) = (&d.cur.lessons, p.lesson);
+    form(g, p, PANE_X, top, PANE_W, bottom, |g, y, _| creature_form(g, y, PANE_X, PANE_W, c, pv, items, &mut taught, others, &mut lesson));
+    p.lesson = lesson;
+    if !taught.is_empty() {
+        d.cur.lessons.insert(c.id.clone(), taught);
+    }
 }
 
 /// The picture of the creature, and beside it what changes how it looks. A beast: the model, from all those of the game, and its
@@ -201,7 +208,7 @@ fn talk_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature) {
     let Some(gossip) = &mut c.gossip else { return };
     text_area_row(g, y, x, w, "Greeting", 120, 3, &mut gossip.greeting);
     hint(g, y, x, "$N stands for the player's name.");
-    let kinds: Vec<String> = ["Says something", "Opens the shop", "Teaches a skill"].iter().map(|s| s.to_string()).collect();
+    let kinds: Vec<String> = ["Says something", "Opens the shop", "Teaches a skill", "Opens the lessons"].iter().map(|s| s.to_string()).collect();
     let mut remove = None;
     for (i, o) in gossip.options.iter_mut().enumerate() {
         text_row(g, y, x, w, &format!("Menu line {}", i + 1), 130 + i, &mut o.text);
@@ -209,6 +216,7 @@ fn talk_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature) {
             CreatureAction::Say(_) => &kinds[0],
             CreatureAction::Vendor => &kinds[1],
             CreatureAction::Train { .. } => &kinds[2],
+            CreatureAction::Teach => &kinds[3],
         };
         g.text(x, *y + 3.0, LABEL_WIDTH, "  Choosing it", DIM);
         let by = g.arrows(x + LABEL_WIDTH, *y, 200.0, now);
@@ -216,6 +224,7 @@ fn talk_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature) {
             o.action = match kinds.iter().position(|k| k == step(&kinds, now, by)) {
                 Some(0) => CreatureAction::Say("...".into()),
                 Some(1) => CreatureAction::Vendor,
+                Some(3) => CreatureAction::Teach,
                 _ => CreatureAction::Train { skill: crate::skills::Skill::Riding, rank: 75, needs: 0, level: 40, cost: 900_000 },
             };
         }
@@ -228,6 +237,7 @@ fn talk_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature) {
                 text_area_row(g, y, x, w, "  Answer", 160 + i, 3, text);
             }
             CreatureAction::Vendor => hint(g, y, x, "Shows what the creature sells (\"Sells\" above)."),
+            CreatureAction::Teach => hint(g, y, x, "Shows the recipes the creature teaches, for a price (classic_trainers.ron)."),
             CreatureAction::Train { skill, rank, needs, level, cost } => {
                 let names: Vec<String> = crate::skills::ALL.iter().map(|s| s.name().to_string()).collect();
                 let mut taught = skill.name().to_string();
@@ -251,7 +261,8 @@ fn talk_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature) {
     *y += ROW + 3.0;
 }
 
-pub(super) fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature, pv: &mut Preview, items: &[RawItem]) {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature, pv: &mut Preview, items: &[RawItem], taught: &mut Vec<content::Lesson>, others: &std::collections::BTreeMap<String, Vec<content::Lesson>>, lesson: &mut usize) {
     look_panel(g, y, x, w, c, pv, items);
     text_row(g, y, x, w, "Id", 100, &mut c.id);
     hint(g, y, x, "What spawns, quests and loot call it by; renaming it leaves them pointing at nothing until they are changed too.");
@@ -301,6 +312,9 @@ pub(super) fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut Ra
     }
     if section(g, y, x, w, "creature-talk", "Conversation", c.gossip.is_some()) {
         talk_form(g, y, x, w, c);
+    }
+    if section(g, y, x, w, "creature-lessons", "Teaches a trade", !taught.is_empty()) {
+        super::lessons::lessons_form(g, y, x, w, c, taught, others, lesson);
     }
     if section(g, y, x, w, "creature-fight", "Fighting (advanced)", !c.brain.events.is_empty()) {
         fighting_form(g, y, x, w, c);

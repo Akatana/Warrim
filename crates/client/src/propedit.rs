@@ -448,7 +448,7 @@ mod tests {
     use super::*;
 
     fn prop(rotation: [f32; 3]) -> Prop {
-        Prop { model: "x.m2".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (-8900.0, -100.0, 80.0), rotation, scale: 1.0 }
+        Prop { model: "x.m2".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, at: (-8900.0, -100.0, 80.0), rotation, scale: 1.0 }
     }
 
     fn eye() -> Eye {

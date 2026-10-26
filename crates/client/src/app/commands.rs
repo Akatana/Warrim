@@ -82,11 +82,18 @@ impl State {
             }
             Command::Item(item, count) => {
                 let def = crate::items::get(item);
-                if !panels.inv.add(crate::items::Stack { item, count }) {
+                if !panels.inv.add(crate::items::Stack { item, count, enchant: 0 }) {
                     return Err("no room in the backpack".into());
                 }
                 panels.refresh();
                 format!("{count} x {}", def.name)
+            }
+            Command::Recipes(trade) => {
+                // (the trade is learned too, to the artisan, as `skill` does)
+                content.recipes.iter().filter(|r| trade.is_none_or(|t| r.skill == t)).for_each(|r| panels.skills.teach(r.skill, 4));
+                let learned = content.recipes.iter().filter(|r| trade.is_none_or(|t| r.skill == t) && !r.auto).filter(|r| panels.recipes.learn(r.spell)).count();
+                panels.refresh();
+                format!("learned {learned} recipes")
             }
             Command::Spell(spell) => {
                 let all: Vec<usize> = (0..content.spells.len()).collect();

@@ -22,6 +22,28 @@ pub enum Action {
     Vendor,
     /// The creature teaches `skill` up to `rank`, for `cost` copper, to a character of at least `level` who already has rank `needs` of it.
     Train { skill: crate::skills::Skill, rank: u32, needs: u32, level: u32, cost: u32 },
+    /// The creature teaches the recipes of its lessons (`classic_trainers.ron`, the trainer window).
+    Teach,
+}
+
+/// A recipe a trade trainer teaches: the spell of the recipe, the price in copper, the skill rank it asks for and the level.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lesson {
+    pub spell: u32,
+    pub cost: u32,
+    #[serde(default)]
+    pub skill: Option<(crate::skills::Skill, u32)>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub level: u32,
+    /// For a lesson that is a step of a trade itself (apprentice 1, journeyman 2, expert 3, artisan 4): the trade and the step; `spell` is the spell of the step, whose name it has.
+    #[serde(default)]
+    pub step: Option<(crate::skills::Skill, u32)>,
+}
+
+/// What each trade trainer teaches, by the id of its kind (`content/classic_trainers.ron`, made by `tools/import_trainers.py`).
+fn read_lessons() -> Result<BTreeMap<String, Vec<Lesson>>> {
+    ron::from_str(&source("classic_trainers.ron", include_str!("../../../content/classic_trainers.ron"))).context("classic_trainers.ron")
 }
 
 /// A line the player can choose when talking to a creature.
@@ -310,6 +332,9 @@ pub struct Prop {
     /// Loose clutter (a bottle, a mug): it is drawn apart from the map, falls, is pushed by the player who walks into it and is carried while the interact key is held.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub physics: bool,
+    /// A place to work at for the trades: the station it is (a row of `SpellFocusObject.dbc`: 1 anvil, 2 loom, 3 forge, 4 cooking fire, 663 alchemy lab); 0 for none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub station: u32,
     pub at: (f32, f32, f32),
     pub rotation: [f32; 3],
     pub scale: f32,
@@ -457,6 +482,89 @@ pub struct Node {
     pub facing: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub respawn: Option<f32>,
+}
+
+/// What an enchantment gives to the worn item it is put on: its name, and the effects the game models (as the worn spells of items have;
+/// `classic_enchants.ron`, made by `tools/import_enchants.py`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Enchant {
+    pub name: String,
+    pub effects: Vec<crate::items::UseEffect>,
+    /// Spells that go off on a blow of the weapon it is on: the spell, its blows a minute, else its percent (0 for neither: the weapon's own chance).
+    #[serde(default)]
+    pub procs: Vec<(u32, f32, f32)>,
+    /// The glow it gives the weapon it is on (a row of `ItemVisuals.dbc`; 0 for none).
+    #[serde(default)]
+    pub visual: u16,
+    /// Worn spells that go off when the wearer is struck (the absorptions of shields), by their spell of the original.
+    #[serde(default)]
+    pub spells: Vec<u32>,
+}
+
+/// What the water of an area holds for a fishing pole: its table of loot and the skill it asks for (none when it is not above nought).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Water {
+    pub table: String,
+    pub skill: i32,
+}
+
+/// A recipe as the file `classic_recipes.ron` has it (made by `tools/import_recipes.py`).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRecipe {
+    spell: u32,
+    name: String,
+    skill: crate::skills::Skill,
+    ranks: (u32, u32, u32, u32),
+    #[serde(default)]
+    item: String,
+    #[serde(default = "one_to_one")]
+    count: (u32, u32),
+    #[serde(default)]
+    enchant: u32,
+    #[serde(default)]
+    worn: (i32, u32, u32),
+    #[serde(default)]
+    reagents: Vec<(String, u32)>,
+    #[serde(default)]
+    tools: Vec<String>,
+    #[serde(default)]
+    focus: u32,
+    #[serde(default)]
+    cast: u32,
+    #[serde(default)]
+    auto: bool,
+}
+
+fn one_to_one() -> (u32, u32) {
+    (1, 1)
+}
+
+/// What a trade makes (`recipes.rs` has the rules): a spell of the original that makes an item, or puts an enchantment on a worn one, from reagents, with
+/// tools and at a station.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recipe {
+    /// Its row of `Spell.dbc`.
+    pub spell: u32,
+    pub name: String,
+    pub skill: crate::skills::Skill,
+    /// The skill it asks for, and the ranks at which it is yellow, green and grey (below the yellow one it is orange).
+    pub ranks: (u32, u32, u32, u32),
+    /// What it makes (an item) and how many (lowest, highest).
+    pub item: Option<usize>,
+    pub count: (u32, u32),
+    /// Instead: the enchantment (a row of `SpellItemEnchantment.dbc`) and the worn items it fits: item class, mask of subclasses, mask of inventory types.
+    pub enchant: u32,
+    pub worn: (i32, u32, u32),
+    pub reagents: Vec<(usize, u32)>,
+    /// Items to carry (the hammer, the knife), the station to stand at (a row of `SpellFocusObject.dbc`: 1 anvil, 2 loom, 3 forge, 4 cooking fire), the cast in milliseconds.
+    pub tools: Vec<usize>,
+    pub focus: u32,
+    pub cast: u32,
+    /// Known with the skill, without being taught.
+    pub auto: bool,
 }
 
 /// Seconds until a node is back when it says nothing of its own.
@@ -639,6 +747,8 @@ pub struct ClassicSpell {
     pub stack: u32,
     /// Proc flags, chance and charges.
     pub proc: (u32, u32, u32),
+    /// The kind of item it asks to be worn: the item class and the mask of the subclasses (a sharpening stone: the sharp weapons).
+    pub equipped: Option<(i32, u32)>,
     /// Items (entries) and how many of them it uses up.
     pub reagents: Vec<(u32, u32)>,
     pub effects: Vec<ClassicEffect>,
@@ -719,6 +829,17 @@ pub struct Content {
     /// The place in `node_kinds` of each kind, by id.
     pub node_numbers: std::collections::HashMap<String, usize>,
     pub nodes: Vec<Node>,
+    /// What the trades make, and the place in `recipes` of each by its spell.
+    pub recipes: Vec<Recipe>,
+    pub recipe_numbers: std::collections::HashMap<u32, usize>,
+    /// What the trade trainers teach, by the id of the creature's kind.
+    pub lessons: BTreeMap<String, Vec<Lesson>>,
+    /// The loot table (what a skinning knife gets) of each creature kind that can be skinned, by the id of the kind.
+    pub skins: BTreeMap<String, String>,
+    /// What the water of each area (a row of `AreaTable.dbc`) gives to a fishing pole.
+    pub fishing: BTreeMap<u32, Water>,
+    /// What the enchantments of Enchanting give, by their row of `SpellItemEnchantment.dbc`.
+    pub enchants: BTreeMap<u32, Enchant>,
     pub start: Start,
 }
 
@@ -1288,6 +1409,9 @@ pub struct Overlay {
     pub chests: Part<ChestDef>,
     pub pois: Part<Poi>,
     pub node_kinds: Part<NodeKind>,
+    /// What the teachers teach, by the id of the creature: those it changed or made, and those it took away.
+    pub lessons: BTreeMap<String, Vec<Lesson>>,
+    pub lessons_removed: Vec<String>,
     /// The loot tables by id: those it changed or made, and those it removed.
     pub loot_removed: Vec<String>,
     pub loot: BTreeMap<String, RawTable>,
@@ -1327,6 +1451,8 @@ impl Overlay {
             chests: Part::between(&base.chests, &current.chests),
             pois: Part::between(&base.pois, &current.pois),
             node_kinds: Part::between(&base.node_kinds, &current.node_kinds),
+            lessons_removed: base.lessons.keys().filter(|k| !current.lessons.contains_key(*k)).cloned().collect(),
+            lessons: current.lessons.iter().filter(|(k, v)| base.lessons.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), v.clone())).collect(),
             loot_removed: base.loot.keys().filter(|k| !current.loot.contains_key(*k)).cloned().collect(),
             loot: current.loot.iter().filter(|(k, v)| base.loot.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), v.clone())).collect(),
             spawns_removed,
@@ -1388,13 +1514,17 @@ pub struct Raws {
     pub props: Vec<Prop>,
     pub node_kinds: Vec<NodeKind>,
     pub nodes: Vec<Node>,
+    /// What the teachers teach, by the id of the creature.
+    pub lessons: BTreeMap<String, Vec<Lesson>>,
     pub loot: BTreeMap<String, RawTable>,
 }
 
 impl Raws {
     /// What the content files hold.
     pub fn files() -> Result<Raws> {
+        let lessons = read_lessons()?;
         Ok(Raws {
+            lessons: lessons.clone(),
             items: {
                 let mut items: Vec<RawItem> = ron::from_str(&source("items.ron", include_str!("../../../content/items.ron"))).context("items.ron")?;
                 items.extend(ron::from_str::<Vec<RawItem>>(&source("classic_items.ron", include_str!("../../../content/classic_items.ron"))).context("classic_items.ron")?);
@@ -1415,6 +1545,13 @@ impl Raws {
                         (Some(said), Some(own)) => own.greeting = said.greeting,
                         (Some(said), none) => *none = Some(said),
                         _ => {}
+                    }
+                }
+                // A trade trainer's menu has the line that opens its lessons.
+                for c in classic.iter_mut().filter(|c| lessons.contains_key(&c.id)) {
+                    let gossip = c.gossip.get_or_insert_with(|| Gossip { greeting: "Greetings, $N.".into(), options: Vec::new() });
+                    if !gossip.options.iter().any(|o| o.action == Action::Teach) {
+                        gossip.options.push(GossipOption { text: "Train me.".into(), action: Action::Teach });
                     }
                 }
                 creatures.extend(classic);
@@ -1449,6 +1586,8 @@ impl Raws {
             nodes: ron::from_str(&source("classic_nodes.ron", include_str!("../../../content/classic_nodes.ron"))).context("classic_nodes.ron")?,
             loot: {
                 let mut loot: BTreeMap<String, RawTable> = ron::from_str(&source("loot.ron", include_str!("../../../content/loot.ron"))).context("loot.ron")?;
+                loot.extend(ron::from_str::<BTreeMap<String, RawTable>>(&source("classic_fishing_loot.ron", include_str!("../../../content/classic_fishing_loot.ron"))).context("classic_fishing_loot.ron")?);
+                loot.extend(ron::from_str::<BTreeMap<String, RawTable>>(&source("classic_skin_loot.ron", include_str!("../../../content/classic_skin_loot.ron"))).context("classic_skin_loot.ron")?);
                 loot.extend(ron::from_str::<BTreeMap<String, RawTable>>(&source("classic_node_loot.ron", include_str!("../../../content/classic_node_loot.ron"))).context("classic_node_loot.ron")?);
                 loot.extend(ron::from_str::<BTreeMap<String, RawTable>>(&source("classic_loot.ron", include_str!("../../../content/classic_loot.ron"))).context("classic_loot.ron")?);
                 loot.extend(ron::from_str::<BTreeMap<String, RawTable>>(&source("classic_creature_loot.ron", include_str!("../../../content/classic_creature_loot.ron"))).context("classic_creature_loot.ron")?);
@@ -1464,6 +1603,8 @@ impl Raws {
         overlay.chests.apply(&mut self.chests);
         overlay.pois.apply(&mut self.pois);
         overlay.node_kinds.apply(&mut self.node_kinds);
+        self.lessons.retain(|k, _| !overlay.lessons_removed.contains(k));
+        self.lessons.extend(overlay.lessons.iter().map(|(k, v)| (k.clone(), v.clone())));
         self.loot.retain(|k, _| !overlay.loot_removed.contains(k));
         self.loot.extend(overlay.loot.iter().map(|(k, v)| (k.clone(), v.clone())));
         patched(&mut self.spawns, &overlay.spawns_removed, &overlay.spawns_added);
@@ -1496,7 +1637,7 @@ pub fn check(raws: &Raws) -> Result<()> {
 
 /// Cross-check the lists and the rest of the content files and make the content of them.
 pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
-    let Raws { items: raw_items, creatures: raw_creatures, quests: raw_quests, spawns, chests, pois, props, node_kinds, nodes, loot: raw_loot } = raws;
+    let Raws { items: raw_items, creatures: raw_creatures, quests: raw_quests, spawns, chests, pois, props, node_kinds, nodes, lessons, loot: raw_loot } = raws;
     let display_dbc = mount.map(|m| -> Result<Dbc> { Ok(Dbc::parse(&m.read(r"DBFilesClient\ItemDisplayInfo.dbc")?)?) }).transpose().context("ItemDisplayInfo.dbc")?;
     let display = display_dbc.as_ref().zip(mount).map(|(dbc, mount)| Displays::new(dbc, mount));
     let spells: Vec<SpellDef> = ron::from_str(&source("spells.ron", include_str!("../../../content/spells.ron"))).context("spells.ron")?;
@@ -1606,11 +1747,11 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
                 })
                 .collect::<Result<Vec<_>>>()?;
             ensure!(goals.iter().all(|g| matches!(g, Goal::Kill { count, .. } | Goal::Collect { count, .. } if *count > 0) || matches!(g, Goal::Reach { radius, .. } if *radius > 0.0)), "a goal of zero");
-            let reward_items = q.reward.items.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count })).collect::<Result<Vec<_>>>()?;
-            let choice = q.reward.choice.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count })).collect::<Result<Vec<_>>>()?;
+            let reward_items = q.reward.items.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count, enchant: 0 })).collect::<Result<Vec<_>>>()?;
+            let choice = q.reward.choice.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count, enchant: 0 })).collect::<Result<Vec<_>>>()?;
             // The window has ten places for them.
             ensure!(reward_items.len() + choice.len() <= 10 && choice.len() != 1, "too many reward items, or a choice of one");
-            let start_items = q.start_items.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count })).collect::<Result<Vec<_>>>()?;
+            let start_items = q.start_items.iter().map(|(name, count)| Ok(Stack { item: item(name)?, count: *count, enchant: 0 })).collect::<Result<Vec<_>>>()?;
             let requires = q.requires.as_deref().map(|r| quest_numbers.get(r).copied().with_context(|| format!("requires {r}, which must come earlier in the file"))).transpose()?;
             let begins_with = q.begins_with.as_deref().map(item).transpose()?;
             Ok(Quest { id: q.id.clone(), title: q.title.clone(), giver: creature(&q.giver)?, turn_in: creature(&q.turn_in)?, details: q.details.clone(), objective: q.objective.clone(), progress: q.progress.clone(), completion: q.completion.clone(), goals, copper: q.reward.copper, xp: q.reward.xp, items: reward_items, choice, requires, level: q.level, start_items, min_level: q.min_level, races: q.races, begins_with })
@@ -1639,9 +1780,9 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         let slot = *slot;
         let index = item(id)?;
         ensure!(slot < SLOTS && items[index].wear.fits(slot), "{id} cannot be worn in slot {slot}");
-        equipment.push((slot, Stack { item: index, count: 1 }));
+        equipment.push((slot, Stack { item: index, count: 1, enchant: 0 }));
     }
-    let bag = raw_start.bag.iter().map(|(id, count)| Ok(Stack { item: item(id)?, count: *count })).collect::<Result<Vec<_>>>()?;
+    let bag = raw_start.bag.iter().map(|(id, count)| Ok(Stack { item: item(id)?, count: *count, enchant: 0 })).collect::<Result<Vec<_>>>()?;
     ensure!(bag.len() <= items::BACKPACK_SIZE, "the starting kit does not fit the backpack");
     let known = raw_start.spells.iter().map(|id| spells.iter().position(|s| s.id == *id).with_context(|| format!("start: unknown spell {id}"))).collect::<Result<Vec<_>>>()?;
     for p in &props {
@@ -1664,6 +1805,30 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         ensure!(node_numbers.contains_key(&n.kind), "a node of unknown kind {}", n.kind);
         ensure!(n.at.0.is_finite() && n.at.1.is_finite() && n.at.2.is_finite() && n.respawn.is_none_or(|r| r > 0.0), "node of kind {}: place or time", n.kind);
     }
+    let raw_recipes: Vec<RawRecipe> = ron::from_str(&source("classic_recipes.ron", include_str!("../../../content/classic_recipes.ron"))).context("classic_recipes.ron")?;
+    let recipes = raw_recipes
+        .into_iter()
+        .map(|r| {
+            let reagents = r.reagents.iter().map(|(id, n)| Ok((item(id)?, *n))).collect::<Result<Vec<_>>>()?;
+            let tools = r.tools.iter().map(|id| item(id)).collect::<Result<Vec<_>>>()?;
+            ensure!(!r.item.is_empty() || r.enchant != 0, "a recipe makes nothing");
+            ensure!(r.count.0 >= 1 && r.count.0 <= r.count.1 && r.ranks.1 <= r.ranks.2 && r.ranks.2 <= r.ranks.3, "ranks or count");
+            ensure!(r.skill.is_profession(), "not a profession");
+            Ok(Recipe { spell: r.spell, skill: r.skill, ranks: r.ranks, item: if r.item.is_empty() { None } else { Some(item(&r.item)?) }, count: r.count, enchant: r.enchant, worn: r.worn, reagents, tools, focus: r.focus, cast: r.cast, auto: r.auto, name: r.name })
+        })
+        .collect::<Result<Vec<_>>>()
+        .context("classic_recipes.ron")?;
+    let recipe_numbers: std::collections::HashMap<u32, usize> = recipes.iter().enumerate().map(|(i, r)| (r.spell, i)).collect();
+    ensure!(recipe_numbers.len() == recipes.len(), "classic_recipes.ron: a spell is used twice");
+    let skins: BTreeMap<String, String> = ron::from_str(&source("classic_skins.ron", include_str!("../../../content/classic_skins.ron"))).context("classic_skins.ron")?;
+    ensure!(skins.values().all(|t| raw_loot.contains_key(t)), "classic_skins.ron: a table of skinning that does not exist");
+    let fishing: BTreeMap<u32, Water> = ron::from_str(&source("classic_fishing.ron", include_str!("../../../content/classic_fishing.ron"))).context("classic_fishing.ron")?;
+    ensure!(fishing.values().all(|w| raw_loot.contains_key(&w.table)), "classic_fishing.ron: a table of fishing that does not exist");
+    let enchants: BTreeMap<u32, Enchant> = ron::from_str(&source("classic_enchants.ron", include_str!("../../../content/classic_enchants.ron"))).context("classic_enchants.ron")?;
+    ensure!(recipes.iter().all(|r| r.enchant == 0 || enchants.contains_key(&r.enchant)), "a recipe puts an enchantment on that classic_enchants.ron does not have");
+    for (id, list) in &lessons {
+        ensure!(list.iter().all(|l| if l.step.is_some() { classic_index.contains_key(&l.spell) } else { recipe_numbers.contains_key(&l.spell) }), "trainer {id}: a lesson is no recipe or step");
+    }
     let (mut giving, mut taking): (std::collections::HashMap<usize, Vec<usize>>, std::collections::HashMap<usize, Vec<usize>>) = Default::default();
     let mut item_quests: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     for (i, q) in quests.iter().enumerate() {
@@ -1673,7 +1838,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         }
         taking.entry(q.turn_in).or_default().push(i);
     }
-    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, start: Start { spells: known, money: raw_start.money, equipment, bag } })
+    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, start: Start { spells: known, money: raw_start.money, equipment, bag } })
 }
 
 #[cfg(test)]

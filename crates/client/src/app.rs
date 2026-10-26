@@ -43,6 +43,8 @@ mod environment;
 mod events;
 mod frame;
 mod input;
+mod crafting;
+mod fishing;
 mod interact;
 mod portals;
 mod session;
@@ -59,15 +61,46 @@ const DEFAULT_NAME: &str = "Adventurer";
 const CHEST_LOOT: usize = 1_000_000;
 /// Loot window numbers from this one up are the nodes' (veins and herbs).
 const NODE_LOOT: usize = 2_000_000;
+/// The loot window of what a line brought in (nothing is left on the water).
+const FISH_LOOT: usize = 3_000_000;
 
 /// How fast the editor's camera flies at first (yards a second; the wheel changes it).
 const FREE_SPEED: f32 = 25.0;
 
 /// A gathering being cast: the node, the seconds left and the models the original shows in the hands meanwhile.
 struct Gather {
-    node: usize,
+    job: Job,
     left: f32,
     glows: Vec<(usize, u32)>,
+}
+
+/// What is being worked at: a node to gather, or a recipe to make (a place in the content) with how many times more after this one.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Job {
+    Node(usize),
+    Make { recipe: usize, more: u32 },
+    /// The hide of the corpse of creature `n`.
+    Skin(usize),
+    /// The line is out.
+    Fish,
+    /// A lure or a stone (the item) goes on the weapon.
+    Lure(usize),
+}
+
+/// Work that begins when the character has drawn the weapons: the line to cast to a spot, a lure to put on.
+#[derive(Clone, Copy)]
+enum Later {
+    Fish(Vec3),
+    Lure(usize),
+}
+
+/// The bobber of a line: its model, where it lies, seconds to the bite, seconds the bite lasts and its own clock.
+struct Bobber {
+    entity: usize,
+    pos: Vec3,
+    bite_in: f32,
+    bite_left: Option<f32>,
+    time: f32,
 }
 
 /// The editor's camera: it flies without bumping into anything, and the player stays where he was (the creatures cannot hurt him
@@ -114,6 +147,19 @@ struct App {
 /// The places of the props that are beds in `map`.
 fn bed_spots(props: &[content::Prop], map: &str) -> Vec<Vec3> {
     props.iter().filter(|p| p.sleep && p.map.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(map))).map(|p| crate::coords::wow_to_render([p.at.0, p.at.1, p.at.2])).collect()
+}
+
+/// Where the stations of the trades (anvils, forges, cooking fires) stand in `map`.
+fn station_spots(props: &[content::Prop], map: &str) -> Vec<(u32, Vec3)> {
+    props.iter().filter(|p| p.station != 0 && p.map.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(map))).map(|p| (p.station, crate::coords::wow_to_render([p.at.0, p.at.1, p.at.2]))).collect()
+}
+
+/// How near a station has to be for the trade to be done at it, yards (the original's objects say 5 to 10).
+const STATION_RANGE: f32 = 10.0;
+
+/// Whether a station of this kind (a row of `SpellFocusObject.dbc`) is within reach of `feet`.
+fn near_station(stations: &[(u32, Vec3)], feet: Vec3, kind: u32) -> bool {
+    stations.iter().any(|&(k, p)| k == kind && (p.x - feet.x).hypot(p.z - feet.z) <= STATION_RANGE && (p.y - feet.y).abs() < 6.0)
 }
 
 /// Whether a bed is within reach of `feet`.
@@ -172,8 +218,14 @@ struct State {
     /// The veins and herbs of the map, and the one being gathered (its place and the seconds left of the cast).
     nodes: Option<crate::nodes::Nodes>,
     gather: Option<Gather>,
+    /// The bobber of the line that is out.
+    bobber: Option<Bobber>,
+    /// What waits for the hand to reach the weapons.
+    later: Option<Later>,
     /// Where the beds are (render space): the props flagged `sleep`.
     beds: Vec<Vec3>,
+    /// Where the stations of the trades are (render space): the props with a `station`, with its kind.
+    stations: Vec<(u32, Vec3)>,
     /// A lootable corpse that can also be dragged, and when the interact key went down on it: a tap loots it, holding drags it.
     pending_loot: Option<(usize, Instant)>,
     map: String,

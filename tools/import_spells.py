@@ -74,6 +74,8 @@ def entry_text(s, spells, cast, icons, ranges, duration, radius):
         out.append("duration: %d" % duration[s["DurationIndex"]])
     if s["ProcFlags"]:
         out.append("proc: (%d, %d, %d)" % (s["ProcFlags"], s["ProcChance"], s["ProcCharges"]))
+    if s["EquippedItemClass"] >= 0:
+        out.append("equipped: Some((%d, %d))" % (s["EquippedItemClass"], s["EquippedItemSubClassMask"]))
     reagents = [(s["Reagent%d" % n], s["ReagentCount%d" % n]) for n in range(1, 9) if s["Reagent%d" % n] > 0]
     if reagents:
         out.append("reagents: [%s]" % ", ".join("(%d, %d)" % r for r in reagents))

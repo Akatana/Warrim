@@ -6,11 +6,13 @@ use super::*;
 use crate::actionbar::{Action, BASIC};
 use crate::content::{Cost, Effect, Rider};
 use crate::skills::{self, Group, Skill};
+use super::trade;
 
 pub const SPELLBOOK: &str = "SpellBookFrame";
 const SPELL_BUTTONS: usize = 12;
 const SKILL_ROWS: usize = 12;
 const SKILLS: &str = "SkillFrame";
+const RECIPES_BUTTON: &str = "SkillRecipesButton";
 /// The headings of the skills list, in the order of the original's (class, trades, weapons, armor).
 const GROUPS: [Group; 6] = [Group::Class, Group::Professions, Group::Secondary, Group::Weapon, Group::Armor, Group::General];
 
@@ -31,6 +33,11 @@ pub struct CastBar {
     shown: bool,
 }
 
+/// Whether the trade has a window of what it makes (the ones with recipes that make items).
+fn opens_a_window(skill: Skill, known: &skills::Skills) -> bool {
+    skill.is_profession() && known.knows(skill) && content::get().recipes.iter().any(|r| r.skill == skill)
+}
+
 /// A line of the skills list.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Row {
@@ -47,6 +54,13 @@ pub struct SkillList {
     pub shown: bool,
 }
 
+impl SkillList {
+    /// For the headless picture: this skill is the one selected.
+    pub fn preview(&mut self, skill: Skill) {
+        self.selected = Some(skill);
+    }
+}
+
 impl Default for SkillList {
     fn default() -> SkillList {
         SkillList { offset: 0, selected: None, folded: [false; GROUPS.len()], shown: false }
@@ -54,13 +68,17 @@ impl Default for SkillList {
 }
 
 /// The rows of the list: each heading, and under it its skills unless it is folded.
-fn rows(folded: &[bool; GROUPS.len()]) -> Vec<Row> {
+fn rows(folded: &[bool; GROUPS.len()], known: &skills::Skills) -> Vec<Row> {
     let mut out = Vec::new();
     for (g, group) in GROUPS.iter().enumerate() {
+        // The trades that are not learned are not listed, and a heading with none under it is left out.
+        let mut of: Vec<Skill> = skills::ALL.iter().copied().filter(|s| s.group() == *group && known.knows(*s)).collect();
+        if of.is_empty() {
+            continue;
+        }
         out.push(Row::Header(*group));
         if !folded[g] {
             // In the order of the alphabet, as the original lists them.
-            let mut of: Vec<Skill> = skills::ALL.iter().copied().filter(|s| s.group() == *group).collect();
             of.sort_by_key(|s| s.name());
             out.extend(of.into_iter().map(Row::Skill));
         }
@@ -124,6 +142,12 @@ pub fn setup(tree: &mut Tree) -> Result<()> {
     for i in 1..=SKILL_ROWS {
         tree.set_region_hidden(&format!("SkillRankFrame{i}FillBar"), true);
     }
+    // A button under the detail of a trade that opens the window of what it makes.
+    tree.instantiate_template("UIPanelButtonTemplate", RECIPES_BUTTON, SKILLS)?;
+    tree.set_size(RECIPES_BUTTON, Some(110.0), Some(22.0));
+    tree.set_point(RECIPES_BUTTON, Point::Bottom, Some(SKILLS), Some(Point::Bottom), 0.0, 80.0);
+    tree.set_text(&format!("{RECIPES_BUTTON}Text"), "Recipes");
+    tree.show(RECIPES_BUTTON, false);
     // The skills tab beside the character's.
     tree.show("CharacterFrameTab4", true);
     tree.set_point("CharacterFrameTab4", Point::Left, Some("CharacterFrameTab1"), Some(Point::Right), -16.0, 0.0);
@@ -238,6 +262,7 @@ impl Panels {
         if on {
             self.tree.show(CHARACTER, false);
             self.tree.show(TALENTS, false);
+            self.tree.show(trade::TRADE, false);
             self.close_loot();
             self.close_gossip();
             self.close_merchant();
@@ -423,7 +448,7 @@ impl Panels {
         if !self.skill_list.shown {
             return;
         }
-        let rows = rows(&self.skill_list.folded);
+        let rows = rows(&self.skill_list.folded, &self.skills);
         self.skill_list.offset = self.skill_list.offset.min(rows.len().saturating_sub(SKILL_ROWS));
         for i in 1..=SKILL_ROWS {
             let (label, bar) = (format!("SkillTypeLabel{i}"), format!("SkillRankFrame{i}"));
@@ -461,13 +486,13 @@ impl Panels {
 
     /// One bar of the list, or the detail's: the name, the rank out of the top, and the fill.
     fn fill_skill_bar(&mut self, bar: &str, skill: Skill) {
-        let rank = self.skills.rank(skill);
-        let cap = skill.cap(rank);
+        let (rank, bonus) = (self.skills.pure(skill), self.skills.bonus(skill));
+        let cap = self.skills.cap(skill);
         self.tree.set_bar(bar, rank as f32 / cap as f32, Some([0.0, 0.0, 1.0, 0.5]));
         self.tree.set_region_tint(&format!("{bar}Background"), [0.0, 0.0, 0.75, 0.5]);
         self.tree.set_text(&format!("{bar}SkillName"), skill.name());
         self.tree.set_text_color(&format!("{bar}SkillName"), GOLD);
-        self.tree.set_text(&format!("{bar}SkillRank"), &format!("{rank}/{cap}"));
+        self.tree.set_text(&format!("{bar}SkillRank"), &if bonus == 0 { format!("{rank}/{cap}") } else { format!("{rank}/{cap} ({bonus:+})") });
         self.tree.set_text_color(&format!("{bar}SkillRank"), WHITE);
         self.tree.set_region_point(&format!("{bar}SkillName"), Point::Left, Some(bar), Some(Point::Left), 6.0, 1.0);
         self.tree.set_region_point(&format!("{bar}SkillRank"), Point::Left, Some(&format!("{bar}SkillName")), Some(Point::Right), 13.0, 0.0);
@@ -476,13 +501,21 @@ impl Panels {
     /// `SkillDetailFrame_SetStatusBar`: the selected skill's bar and what it is for.
     fn fill_skill_detail(&mut self) {
         let Some(skill) = self.skill_list.selected else {
+            self.tree.show(RECIPES_BUTTON, false);
             self.tree.show("SkillDetailStatusBar", false);
             self.tree.set_text("SkillDetailDescriptionText", "");
             return;
         };
         self.tree.show("SkillDetailStatusBar", true);
+        self.tree.show(RECIPES_BUTTON, opens_a_window(skill, &self.skills));
         self.fill_skill_bar("SkillDetailStatusBar", skill);
         self.tree.set_text("SkillDetailDescriptionText", &skill.description());
+    }
+
+    /// For the headless picture: the skills tab with a trade selected (`--panel skills,recipes`).
+    pub fn recipes_preview(&mut self) {
+        self.skill_list.selected = Some(Skill::Blacksmithing);
+        self.fill_skills();
     }
 
     /// The wheel over the skills list scrolls it by rows. False when the tab is not showing.
@@ -538,12 +571,17 @@ impl Panels {
                 self.skill_list.folded = [all; GROUPS.len()];
                 self.fill_skills();
             }
+            RECIPES_BUTTON => {
+                if let Some(skill) = self.skill_list.selected.filter(|&s| opens_a_window(s, &self.skills)) {
+                    self.open_trade(skill);
+                }
+            }
             "SkillListScrollFrameScrollBarScrollUpButton" | "SkillListScrollFrameScrollBarScrollDownButton" => {
                 self.skills_wheel(if name.ends_with("UpButton") { 1.0 } else { -1.0 });
             }
             _ => {
                 if let Some(i) = name.strip_prefix("SkillTypeLabel").and_then(|n| n.parse::<usize>().ok()) {
-                    if let Some(&Row::Header(group)) = rows(&self.skill_list.folded).get(self.skill_list.offset + i - 1) {
+                    if let Some(&Row::Header(group)) = rows(&self.skill_list.folded, &self.skills).get(self.skill_list.offset + i - 1) {
                         let g = GROUPS.iter().position(|&x| x == group).unwrap_or(0);
                         self.skill_list.folded[g] = !self.skill_list.folded[g];
                         self.fill_skills();
@@ -551,7 +589,7 @@ impl Panels {
                     return true;
                 }
                 if let Some(i) = name.strip_prefix("SkillRankFrame").and_then(|n| n.strip_suffix("Border")).and_then(|n| n.parse::<usize>().ok()) {
-                    if let Some(&Row::Skill(skill)) = rows(&self.skill_list.folded).get(self.skill_list.offset + i - 1) {
+                    if let Some(&Row::Skill(skill)) = rows(&self.skill_list.folded, &self.skills).get(self.skill_list.offset + i - 1) {
                         self.skill_list.selected = Some(skill);
                         self.fill_skills();
                     }
@@ -576,11 +614,15 @@ mod tests {
 
     #[test]
     fn the_list_has_a_heading_for_each_group_and_what_is_folded_is_left_out() {
-        let all = rows(&[false; GROUPS.len()]);
+        let mut known = skills::Skills::new();
+        // None of the trades is learned at the start: they are not listed, nor their headings.
+        assert_eq!(rows(&[false; GROUPS.len()], &known).len(), GROUPS.len() - 2 + skills::ALL.iter().filter(|s| !s.is_profession()).count());
+        skills::ALL.iter().filter(|s| s.is_profession()).for_each(|&s| known.teach(s, 1));
+        let all = rows(&[false; GROUPS.len()], &known);
         assert_eq!(all.len(), GROUPS.len() + skills::ALL.len());
         assert_eq!(all[0], Row::Header(Group::Class));
         // Folded, a heading has nothing under it; listed, its skills are in the order of the alphabet.
-        let folded = rows(&[true, false, false, false, false, false]);
+        let folded = rows(&[true, false, false, false, false, false], &known);
         assert_eq!(folded.len(), GROUPS.len() + skills::ALL.iter().filter(|s| s.group() != Group::Class).count());
         let names: Vec<&str> = folded.iter().filter_map(|r| if let Row::Skill(s) = r { Some(s.name()) } else { None }).collect();
         assert_eq!(names, ["Alchemy", "Blacksmithing", "Enchanting", "Engineering", "Herbalism", "Leatherworking", "Mining", "Skinning", "Tailoring", "Cooking", "First Aid", "Fishing", "Axes", "Block", "Bows", "Crossbows", "Daggers", "Fist Weapons", "Guns", "Maces", "Polearms", "Spears", "Staves", "Swords", "Thrown", "Two-Handed Axes", "Two-Handed Maces", "Two-Handed Swords", "Unarmed", "Wands", "Cloth", "Leather", "Mail", "Plate Mail", "Diving", "Lockpicking", "Riding", "Stealth", "Swimming"]);

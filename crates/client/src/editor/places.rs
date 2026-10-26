@@ -362,7 +362,7 @@ pub(super) fn steps_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, steps: &mut V
 /// an unknown kind or a place without ground.
 pub(super) fn node_prop(kinds: &[content::NodeKind], n: &content::Node, ground: Ground) -> Option<Prop> {
     let kind = kinds.iter().find(|k| k.id == n.kind)?;
-    Some(Prop { model: kind.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (n.at.0, n.at.1, ground(-n.at.1, -n.at.0)?), rotation: [0.0, n.facing, 0.0], scale: kind.scale })
+    Some(Prop { model: kind.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, at: (n.at.0, n.at.1, ground(-n.at.1, -n.at.0)?), rotation: [0.0, n.facing, 0.0], scale: kind.scale })
 }
 
 /// The kinds of nodes: what a vein or an herb is called, which profession gathers it at what rank, how it looks, what it gives and how often it can be gathered.
@@ -571,6 +571,8 @@ fn props(g: &mut Gui, d: &mut Data, p: &mut Pick, placer: &mut Placer, me: Place
                     value_row(g, y, x, w, "Back after (s)", 50, &mut k.respawn);
                 }
             }
+            value_row(g, y, x, w, "Station", 51, &mut q.station);
+            hint(g, y, x, "A place the trades work at: 1 anvil, 2 loom, 3 forge, 4 cooking fire, 663 alchemy lab; 0: none.");
             toggle_row(g, y, x, "Bed", &mut q.sleep, "Yes, sleep here", "No");
             toggle_row(g, y, x, "Physics", &mut q.physics, "Yes, loose", "No");
             hint(g, y, x, "Loose: it can be pushed (hold E) and falls over.");

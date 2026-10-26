@@ -27,6 +27,7 @@ use std::str::FromStr;
 mod creature_tab;
 mod gui;
 mod item_tab;
+mod lessons;
 mod pickers;
 mod placer;
 mod places;
@@ -151,6 +152,8 @@ struct Pick {
     salt: usize,
     /// The list is to scroll to the selected line when it is next drawn (a click in the world chose it).
     reveal: bool,
+    /// The lesson selected in the form of a teacher.
+    lesson: usize,
 }
 
 struct Data {
@@ -182,7 +185,7 @@ fn stand(d: &Data, sel: Sel, ground: Ground) -> Option<Prop> {
         Sel::Chest(i) => d.cur.chests.get(i).map(|c| (c.id.clone(), c.at, c.facing))?,
         Sel::Node(i) => return places::node_prop(&d.cur.node_kinds, d.cur.nodes.get(i)?, ground),
     };
-    Some(Prop { model: name, map: None, zone: None, pickup: None, sleep: false, physics: false, at: (at.0, at.1, ground(-at.1, -at.0)?), rotation: [0.0, -facing, 0.0], scale: 1.0 })
+    Some(Prop { model: name, map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, at: (at.0, at.1, ground(-at.1, -at.0)?), rotation: [0.0, -facing, 0.0], scale: 1.0 })
 }
 
 /// Put what the gizmo moved back.
@@ -249,7 +252,7 @@ impl Editor {
         let mut salt = 0;
         let mut pick = || {
             salt += 1;
-            Pick { selected: 0, scroll: 0, form_scroll: 0.0, find: String::new(), salt, reveal: false }
+            Pick { selected: 0, scroll: 0, form_scroll: 0.0, find: String::new(), salt, reveal: false, lesson: 0 }
         };
         Ok(Editor {
             open: false,
@@ -649,7 +652,7 @@ impl Editor {
             (d, p) if self.open && p.placing => p.hover.and_then(|at| match p.aim {
                 Aim::Prop if placeable(&p.model) && p.mount.exists(&p.model) => {
                     let [north, west, height] = render_to_wow(at + Vec3::Y * p.lift);
-                    Some(Want::Prop(Prop { model: p.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (north, west, height), rotation: [0.0, p.turn, 0.0], scale: p.scale }))
+                    Some(Want::Prop(Prop { model: p.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, at: (north, west, height), rotation: [0.0, p.turn, 0.0], scale: p.scale }))
                 }
                 Aim::Prop => None,
                 Aim::Chest => Some(Want::Chest(p.chest.clone(), at, p.turn.to_radians())),
@@ -709,7 +712,7 @@ impl Editor {
         let (turn, scale, lift) = (self.placer.turn, self.placer.scale, self.placer.lift);
         match self.placer.aim {
             Aim::Prop => {
-                d.cur.props.push(Prop { model: self.placer.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (north, west, height + lift), rotation: [0.0, turn, 0.0], scale });
+                d.cur.props.push(Prop { model: self.placer.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, at: (north, west, height + lift), rotation: [0.0, turn, 0.0], scale });
                 let p = &mut self.pick[7];
                 p.selected = d.cur.props.len() - 1;
                 p.scroll = d.cur.props.len().saturating_sub(10);
@@ -925,13 +928,37 @@ mod tests {
         assert_eq!(Overlay::read().unwrap(), overlay);
         assert!(std::fs::read_to_string(dir.join("editor.ron")).unwrap().contains("Written by the in-game editor"));
         // The props go to their own file, which reads back as they were written.
-        let barn = Prop { model: r"World\wmo\Azeroth\Buildings\Human_Barn_Silo\barn.wmo".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (-8915.0, -150.0, 85.0), rotation: [0.0, 90.0, 0.0], scale: 1.5 };
+        let barn = Prop { model: r"World\wmo\Azeroth\Buildings\Human_Barn_Silo\barn.wmo".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, at: (-8915.0, -150.0, 85.0), rotation: [0.0, 90.0, 0.0], scale: 1.5 };
         content::write_props(std::slice::from_ref(&barn)).unwrap();
         let text = std::fs::read_to_string(dir.join("props.ron")).unwrap();
         assert_eq!(ron::from_str::<Vec<Prop>>(&text).unwrap(), vec![barn]);
         assert!(!dir.join("props.ron.tmp").exists());
         std::env::remove_var("RSWORLD_CONTENT");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_teacher_with_lessons_is_kept_in_the_overlay_and_a_bad_lesson_is_caught() {
+        use crate::content::Lesson;
+        use crate::skills::Skill;
+        let base = Raws::files().unwrap();
+        let mut cur = base.clone();
+        let mut teacher = cur.creatures.iter().find(|c| c.id == "trader_aldric").unwrap().clone();
+        teacher.id = "miner".into();
+        cur.creatures.push(teacher);
+        cur.lessons.insert("miner".into(), vec![Lesson { spell: 2581, cost: 10, skill: None, level: 0, step: Some((Skill::Mining, 1)) }]);
+        // Another teacher is made to teach nothing.
+        let silent = cur.lessons.keys().next().unwrap().clone();
+        cur.lessons.remove(&silent);
+        let overlay = Overlay::between(&base, &cur);
+        assert_eq!((overlay.lessons.len(), overlay.lessons_removed.len()), (1, 1));
+        let back: Overlay = ron::from_str(&ron::ser::to_string_pretty(&overlay, ron::ser::PrettyConfig::default()).unwrap()).unwrap();
+        let again = base.clone().with(&back);
+        assert_eq!(again.lessons, cur.lessons);
+        content::check(&again).unwrap();
+        // A step that no spell of the game names, and a recipe that is none, are caught before they are saved.
+        cur.lessons.get_mut("miner").unwrap()[0].spell = 4_000_000;
+        assert!(content::check(&cur).is_err());
     }
 
     #[test]
@@ -959,7 +986,7 @@ mod tests {
         }
         cur.pois.push(content::Poi { id: "pup_den".into(), name: "Pup Den".into(), at: (-8900.0, -100.0), radius: 20.0, icon: 4, height: None });
         // Two props, one of them the same as the other (a copy stays a copy).
-        let barn = Prop { model: r"World\wmo\Azeroth\Buildings\Human_Barn_Silo\barn.wmo".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (-8915.0, -150.0, 85.0), rotation: [0.0, 90.0, 0.0], scale: 1.0 };
+        let barn = Prop { model: r"World\wmo\Azeroth\Buildings\Human_Barn_Silo\barn.wmo".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, at: (-8915.0, -150.0, 85.0), rotation: [0.0, 90.0, 0.0], scale: 1.0 };
         cur.props.extend([barn.clone(), barn]);
         // A node kind made (like the first, another name and size), a node of it put down and another one taken away.
         let mut kind = cur.node_kinds[0].clone();
@@ -998,7 +1025,7 @@ mod tests {
         picked.props[0].pickup.as_mut().unwrap().item = "nothing".into();
         assert!(content::check(&picked).is_err(), "an unknown item cannot be picked up");
         // A bed is a flag that is only written when set.
-        let mut bed = Prop { model: "x.m2".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (0.0, 0.0, 0.0), rotation: [0.0; 3], scale: 1.0 };
+        let mut bed = Prop { model: "x.m2".into(), map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, at: (0.0, 0.0, 0.0), rotation: [0.0; 3], scale: 1.0 };
         assert!(!ron::to_string(&bed).unwrap().contains("sleep"));
         bed.sleep = true;
         let text = ron::to_string(&bed).unwrap();

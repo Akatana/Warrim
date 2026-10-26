@@ -61,6 +61,8 @@ fn run(spell: &ClassicSpell, level: u32, dice: &mut dyn FnMut() -> u32, out: &mu
                 let amount = points as i32;
                 let timed = match e.aura {
                     15 => Some(vec![Timed::Shield { amount: points, school: spell.school }]),
+                    // An absorption of blows (physical ones: the first school bit).
+                    69 if e.misc & 1 != 0 => Some(vec![Timed::Absorb(points)]),
                     8 => Some(vec![Timed::Regen(points / period)]),
                     29 => Some((0..5).filter(|s| e.misc == -1 || e.misc == *s).map(|s| Timed::Gear(UseEffect::Boost(s as u8, amount, 0.0))).collect()),
                     22 if e.misc == 1 => Some(vec![Timed::Gear(UseEffect::Boost(5, amount, 0.0))]),
@@ -76,8 +78,18 @@ fn run(spell: &ClassicSpell, level: u32, dice: &mut dyn FnMut() -> u32, out: &mu
 
 /// The spells of a weapon that go off when it lands a blow (`speed` seconds between its swings): the chance is the spell's per-minute rate over the swings, else its own
 /// chance, else (for the many with a chance over 100) a chance that grows with the weapon's slowness (CMaNGOS `GetWeaponProcChance`).
-pub fn on_hit(item: usize, speed: f32, level: u32, dice: &mut dyn FnMut() -> u32, out: &mut Vec<Outcome>) {
-    for s in items::get(item).spells.iter().filter(|s| s.trigger == 2) {
+pub fn on_hit(weapon: Stack, speed: f32, level: u32, dice: &mut dyn FnMut() -> u32, out: &mut Vec<Outcome>) {
+    // What an enchantment of the weapon casts: by blows a minute, else by its own percent (CMaNGOS `CastItemCombatSpell`).
+    if let Some(e) = content::get().enchants.get(&weapon.enchant) {
+        for &(id, ppm, percent) in &e.procs {
+            let Some(spell) = content::classic_spell(id) else { continue };
+            let chance = if ppm > 0.0 { speed * ppm / 0.6 } else if percent > 0.0 { percent } else { speed * 1.8 };
+            if rolled(dice, chance) {
+                run(spell, level, dice, out, 0);
+            }
+        }
+    }
+    for s in items::get(weapon.item).spells.iter().filter(|s| s.trigger == 2) {
         let Some(spell) = content::classic_spell(s.spell) else { continue };
         let chance = if s.ppm > 0.0 {
             speed * s.ppm / 0.6
@@ -97,8 +109,10 @@ pub fn on_hit(item: usize, speed: f32, level: u32, dice: &mut dyn FnMut() -> u32
 pub fn struck(equipment: &[Option<Stack>], shields: &[(f32, u32)], level: u32, dice: &mut dyn FnMut() -> u32, out: &mut Vec<Outcome>) {
     out.extend(shields.iter().map(|&(amount, school)| Outcome::Hurt { school, amount }));
     for stack in equipment.iter().flatten() {
-        for s in items::get(stack.item).spells.iter().filter(|s| s.trigger == 1) {
-            let Some(spell) = content::classic_spell(s.spell) else { continue };
+        // The worn spells of the item, and those of its enchantment.
+        let enchanted = content::get().enchants.get(&stack.enchant).into_iter().flat_map(|e| e.spells.iter().copied());
+        for id in items::get(stack.item).spells.iter().filter(|s| s.trigger == 1).map(|s| s.spell).chain(enchanted) {
+            let Some(spell) = content::classic_spell(id) else { continue };
             for (n, e) in spell.effects.iter().enumerate() {
                 match e.aura {
                     15 => out.push(Outcome::Hurt { school: spell.school, amount: spell.points(n, level, dice()).max(0.0) }),
@@ -178,9 +192,31 @@ mod tests {
     fn a_weapon_spell_goes_off_by_its_chance() {
         let item = items::all().iter().position(|i| i.spells.iter().any(|s| s.trigger == 2 && s.ppm > 0.0 && content::classic_spell(s.spell).is_some_and(|c| c.effects.iter().any(|e| e.kind == 2)))).expect("a weapon with a ppm");
         let (mut hit, mut none) = (Vec::new(), Vec::new());
-        on_hit(item, 2.0, 30, &mut dice(&[0]), &mut hit);
-        on_hit(item, 2.0, 30, &mut dice(&[9999]), &mut none);
+        let weapon = Stack { item, count: 1, enchant: 0 };
+        on_hit(weapon, 2.0, 30, &mut dice(&[0]), &mut hit);
+        on_hit(weapon, 2.0, 30, &mut dice(&[9999]), &mut none);
         assert!(hit.iter().any(|o| matches!(o, Outcome::Hurt { .. })) && none.is_empty(), "{hit:?}");
+    }
+
+    /// An enchantment that casts on a blow: Fiery Weapon burns by blows a minute, and no enchantment means no spell.
+    #[test]
+    fn an_enchantment_casts_on_a_blow() {
+        let c = content::get();
+        let (&fiery, _) = c.enchants.iter().find(|(_, e)| e.name == "Fiery Weapon").expect("Fiery Weapon");
+        let sword = items::find("longsword");
+        let (mut hit, mut none, mut plain) = (Vec::new(), Vec::new(), Vec::new());
+        on_hit(Stack { item: sword, count: 1, enchant: fiery }, 2.0, 30, &mut dice(&[0]), &mut hit);
+        on_hit(Stack { item: sword, count: 1, enchant: fiery }, 2.0, 30, &mut dice(&[9999]), &mut none);
+        on_hit(Stack { item: sword, count: 1, enchant: 0 }, 2.0, 30, &mut dice(&[0]), &mut plain);
+        assert!(hit.iter().any(|o| matches!(o, Outcome::Hurt { school: 2, .. })), "{hit:?}");
+        assert!(none.is_empty() && plain.is_empty());
+        // Lifestealing leeches and Crusader heals.
+        let named = |name: &str| *c.enchants.iter().find(|(_, e)| e.name == name).map(|(id, _)| id).unwrap();
+        let (mut leech, mut crusader) = (Vec::new(), Vec::new());
+        on_hit(Stack { item: sword, count: 1, enchant: named("Lifestealing") }, 2.0, 30, &mut dice(&[0]), &mut leech);
+        on_hit(Stack { item: sword, count: 1, enchant: named("Crusader") }, 2.0, 30, &mut dice(&[0]), &mut crusader);
+        assert!(leech.iter().any(|o| matches!(o, Outcome::Leech(_))), "{leech:?}");
+        assert!(crusader.iter().any(|o| matches!(o, Outcome::Heal(_))), "{crusader:?}");
     }
 
     /// A damage shield and a spell that hits back when the character is struck are in the gear of the original; a roll of 0 always meets a chance.

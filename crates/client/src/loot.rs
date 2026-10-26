@@ -49,7 +49,7 @@ impl DropTable {
         for &(item, (low, high), percent) in &self.items {
             if (random(rng, 100_000) as f32) / 1000.0 < percent {
                 let count = (low + random(rng, high - low + 1)).min(items::get(item).stack);
-                items.push(Stack { item, count });
+                items.push(Stack { item, count, enchant: 0 });
             }
         }
         Loot { copper, items }
@@ -64,11 +64,11 @@ mod tests {
     fn quest_items_drop_only_for_a_quest_that_wants_them() {
         let (meat, cloth) = (items::find("tough_wolf_meat"), items::find("linen_cloth"));
         assert!(is_quest_item(meat) && !is_quest_item(cloth));
-        let loot = Loot { copper: 3, items: vec![Stack { item: meat, count: 2 }, Stack { item: cloth, count: 1 }] };
+        let loot = Loot { copper: 3, items: vec![Stack { item: meat, count: 2, enchant: 0 }, Stack { item: cloth, count: 1, enchant: 0 }] };
         let (mut none, mut wanted) = (loot.clone(), loot.clone());
         none.only_wanted(&[]);
         wanted.only_wanted(&[meat]);
-        assert_eq!((none.items, wanted.items, wanted.copper), (vec![Stack { item: cloth, count: 1 }], loot.items, 3));
+        assert_eq!((none.items, wanted.items, wanted.copper), (vec![Stack { item: cloth, count: 1, enchant: 0 }], loot.items, 3));
     }
 
     #[test]

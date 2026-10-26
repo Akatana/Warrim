@@ -588,6 +588,11 @@ impl Character {
         self.animator.start_upper(&self.m2, id, seconds);
     }
 
+    /// Play animation `id` once on the upper body at its own pace.
+    pub fn play_natural(&mut self, id: u16) {
+        self.animator.start_once(&self.m2, id);
+    }
+
     /// The sheathing animation, over `seconds`.
     pub fn sheath(&mut self, seconds: f32) {
         self.animator.start_sheath(&self.m2, seconds);

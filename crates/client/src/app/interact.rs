@@ -26,6 +26,10 @@ impl State {
     /// The interact key: loot the nearest corpse in reach, or else talk to the nearest friendly creature. The mouse
     /// is free while a window is open.
     pub(super) fn interact(&mut self) {
+        // With the line out, the key reels it in.
+        if matches!(self.gather, Some(Gather { job: Job::Fish, .. })) {
+            return self.reel_in();
+        }
         if self.panels.as_ref().is_none_or(|p| p.any_open()) || self.lock.is_some() || self.gather.is_some() {
             return;
         }
@@ -34,6 +38,8 @@ impl State {
         let chest = self.chests.as_ref().and_then(|c| c.near(feet, OPEN_RANGE));
         let pickup = self.pickups.as_ref().zip(self.panels.as_ref()).and_then(|(p, panels)| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv)));
         let node = self.nodes.as_ref().and_then(|n| n.near(feet, OPEN_RANGE));
+        let skin = self.wolves.as_ref().and_then(|w| w.skinnable_near(feet, LOOT_RANGE));
+        let fish = if self.has_pole() { self.water_ahead() } else { None };
         let talk = self.wolves.as_ref().and_then(|w| w.talkable_near(feet, TALK_RANGE));
         // Loose props are carried for as long as the key is held (let go in `input.rs`); the key repeating while one is held does nothing else.
         if self.bodies.as_ref().is_some_and(|b| b.holding()) {
@@ -49,7 +55,7 @@ impl State {
         if self.pending_loot.is_some() {
             return;
         }
-        if corpse.is_none() && chest.is_none() && pickup.is_none() && node.is_none() && body.is_none() && drag.is_none() && near_bed(&self.beds, &self.world, feet) {
+        if corpse.is_none() && chest.is_none() && pickup.is_none() && node.is_none() && skin.is_none() && fish.is_none() && body.is_none() && drag.is_none() && near_bed(&self.beds, &self.world, feet) {
             if let Some(panels) = &mut self.panels {
                 panels.ask_sleep();
             }
@@ -64,10 +70,14 @@ impl State {
             self.use_pickup(i);
         } else if let Some(i) = node {
             self.use_node(i);
+        } else if let Some(i) = skin {
+            self.start_skin(i);
         } else if let Some(i) = talk {
             self.talk_to(i);
         } else if let (Some(h), Some(bodies)) = (body.or(drag), &mut self.bodies) {
             bodies.grab(h);
+        } else if let Some(spot) = fish {
+            self.start_fishing(spot);
         }
     }
 
@@ -90,6 +100,8 @@ impl State {
         if let Some(loot) = wolves.loot(i).cloned() {
             panels.open_loot(i, loot);
             self.set_grab(false);
+        } else if wolves.skin_of(i).is_some() {
+            self.start_skin(i);
         }
     }
 
@@ -108,7 +120,7 @@ impl State {
     pub(super) fn use_pickup(&mut self, i: usize) {
         let (Some(pickups), Some(panels)) = (&mut self.pickups, &mut self.panels) else { return };
         if let Some(item) = pickups.take(i) {
-            panels.inv.add(crate::items::Stack { item, count: 1 });
+            panels.inv.add(crate::items::Stack { item, count: 1, enchant: 0 });
             let text = panels.string("LOOT_ITEM_PUSHED_SELF").replacen("%s", crate::items::get(item).name, 1);
             panels.notice(&text);
             panels.sound("ChestOpen");
@@ -125,6 +137,9 @@ impl State {
             return;
         }
         let Some(kind) = nodes.kind(i) else { return };
+        if !panels.must_know(kind.skill) {
+            return;
+        }
         if panels.skills.rank(kind.skill) < kind.rank {
             let text = panels.string("SPELL_FAILED_MIN_SKILL").replacen("%s", kind.skill.name(), 1).replacen("%d", &kind.rank.to_string(), 1);
             return panels.error(&text);
@@ -139,11 +154,11 @@ impl State {
         // What the original shows for the spell: the work animation, the pick in the hand, the sound.
         let (vis, feet) = (&crate::visuals::gathering(&self.mount)[if mining { 0 } else { 1 }], self.camera.pos - Vec3::Y * EYE_HEIGHT);
         let glows = self.in_ctx(|ctx| crate::casting::Spellcaster::gather_begin(ctx, vis, feet)).unwrap_or_default();
-        self.gather = Some(Gather { node: i, left: seconds, glows });
+        self.gather = Some(Gather { job: Job::Node(i), left: seconds, glows });
     }
 
     /// Run `f` with what the spells work on (the character, the windows, the effects); none while the game has no character.
-    fn in_ctx<R>(&mut self, f: impl FnOnce(&mut crate::casting::Ctx) -> R) -> Option<R> {
+    pub(super) fn in_ctx<R>(&mut self, f: impl FnOnce(&mut crate::casting::Ctx) -> R) -> Option<R> {
         let (Some(player), Some(panels)) = (&mut self.player, &mut self.panels) else { return None };
         let mut ctx = crate::casting::Ctx { player, panels, wolves: None, text: None, effects: &mut self.effects, renderer: &mut self.renderer, gpu: &self.gpu, world: &self.world };
         Some(f(&mut ctx))
@@ -151,6 +166,9 @@ impl State {
 
     /// The gathering stops (done, broken, or the world was made again): its models go and the character stands as before.
     pub(super) fn end_gather(&mut self) {
+        if let Some(b) = self.bobber.take() {
+            self.renderer.remove_entity(b.entity);
+        }
         if let Some(g) = self.gather.take() {
             self.in_ctx(|ctx| crate::casting::Spellcaster::gather_end(ctx, &g.glows));
         }
@@ -159,7 +177,7 @@ impl State {
     /// One step of gathering: moving or a fight breaks it; at the end the profession may rise and the node's loot is shown.
     pub(super) fn step_gather(&mut self, dt: f32) {
         let Some(g) = &mut self.gather else { return };
-        let (i, glows) = (g.node, g.glows.clone());
+        let (job, glows) = (g.job, g.glows.clone());
         g.left -= dt;
         let left = g.left;
         if self.moving || self.in_combat {
@@ -171,9 +189,26 @@ impl State {
         }
         if left > 0.0 {
             self.in_ctx(|ctx| crate::casting::Spellcaster::gather_follow(ctx, &glows));
+            if job == Job::Fish {
+                self.step_bobber(dt);
+            }
             return;
         }
         self.end_gather();
+        let i = match job {
+            Job::Node(i) => i,
+            Job::Make { recipe, more } => return self.finish_make(recipe, more),
+            Job::Skin(creature) => return self.finish_skin(creature),
+            // The line ran out: it comes back.
+            Job::Fish => return panels_cast_stop(self),
+            Job::Lure(item) => {
+                panels_cast_stop(self);
+                if let Some(panels) = &mut self.panels {
+                    panels.finish_lure(item);
+                }
+                return;
+            }
+        };
         let (Some(panels), Some(nodes)) = (&mut self.panels, &mut self.nodes) else { return };
         panels.cast_stop();
         let Some(kind) = nodes.kind(i) else { return };
@@ -253,7 +288,7 @@ impl State {
         let Some(at) = at else { return false };
         let distance = Vec3::new(at.x - feet.x, 0.0, at.z - feet.z).length();
         let (range, far) = match hover {
-            Hover::Creature(i) if self.wolves.as_ref().is_some_and(|w| w.loot(i).is_some()) => (LOOT_RANGE, "ERR_LOOT_TOO_FAR"),
+            Hover::Creature(i) if self.wolves.as_ref().is_some_and(|w| w.loot(i).is_some() || w.skin_of(i).is_some()) => (LOOT_RANGE, "ERR_LOOT_TOO_FAR"),
             Hover::Creature(_) => (TALK_RANGE, "ERR_USE_TOO_FAR"),
             Hover::Chest(_) | Hover::Pickup(_) | Hover::Node(_) => (OPEN_RANGE, "ERR_USE_TOO_FAR"),
         };
@@ -314,5 +349,12 @@ impl State {
             }
             None => {}
         }
+    }
+}
+
+/// The cast bar of a line that ran out goes.
+fn panels_cast_stop(state: &mut State) {
+    if let Some(panels) = &mut state.panels {
+        panels.cast_stop();
     }
 }

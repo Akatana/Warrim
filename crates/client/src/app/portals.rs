@@ -91,6 +91,7 @@ impl State {
         self.map = map.to_string();
         self.fires = Default::default();
         self.beds = bed_spots(&content::get().props, map);
+        self.stations = station_spots(&content::get().props, map);
         self.load_pickups();
         self.load_nodes();
         self.load_creatures();

@@ -208,7 +208,7 @@ pub enum UseEffect {
     /// Health and mana restored over some seconds (food, drink, bandages): the total and the seconds.
     HealOver(i32, f32),
     ManaOver(i32, f32),
-    /// A stat raised for some seconds (0 for as long as it is worn): 0 to 4 the strength, agility, stamina, intellect and spirit, 5 the armor, 6 the health.
+    /// A stat raised for some seconds (0 for as long as it is worn): 0 to 4 the strength, agility, stamina, intellect and spirit, 5 the armor, 6 the health, 7 the mana.
     Boost(u8, i32, f32),
     /// The hearthstone: back to the place the character is bound to.
     Hearth,
@@ -216,6 +216,10 @@ pub enum UseEffect {
     Mount(u32, i32),
     /// What a worn item gives, by the aura of the original: its number, the `misc` (the schools of a spell bonus) and the amount (see `Gear::add`).
     Equip(u16, i32, i32),
+    /// A recipe, pattern, plan or formula: using it teaches the spell (of `recipes.rs`) that makes something.
+    Teach(u32),
+    /// Something put on the weapon in the hand for some seconds (a lure on a fishing pole, a sharpening stone): an enchantment of `Content::enchants` and the seconds.
+    Temp(u32, f32),
 }
 
 /// What an item does besides what it is: a spell of the original that it casts when used (0), worn (1), or on a blow (2),
@@ -401,6 +405,8 @@ pub enum Refusal {
 pub struct Stack {
     pub item: usize,
     pub count: u32,
+    /// The enchantment put on it (a row of `SpellItemEnchantment.dbc`, `Content::enchants`), 0 for none: it goes with the item wherever it is carried.
+    pub enchant: u32,
 }
 
 pub struct Inventory {
@@ -496,7 +502,7 @@ impl Inventory {
     pub fn click_bag(&mut self, slot: usize) {
         match (self.cursor, self.bag[slot]) {
             (None, _) => self.cursor = self.bag[slot].take(),
-            (Some(c), Some(b)) if c.item == b.item && get(c.item).stack > 1 => {
+            (Some(c), Some(b)) if c.item == b.item && c.enchant == b.enchant && get(c.item).stack > 1 => {
                 let room = get(b.item).stack - b.count;
                 let moved = c.count.min(room);
                 self.bag[slot] = Some(Stack { count: b.count + moved, ..b });
@@ -537,7 +543,7 @@ impl Inventory {
     /// always true (the weight, not the room, is what limits what can be carried).
     pub fn add(&mut self, mut stack: Stack) -> bool {
         let max = get(stack.item).stack;
-        for b in self.bag.iter_mut().flatten().filter(|b| b.item == stack.item && b.count < max) {
+        for b in self.bag.iter_mut().flatten().filter(|b| b.item == stack.item && b.enchant == stack.enchant && b.count < max) {
             let moved = (max - b.count).min(stack.count);
             b.count += moved;
             stack.count -= moved;
@@ -574,7 +580,7 @@ impl Inventory {
 
     /// Buy one of `item` from a merchant at its price: refused (nothing changes) when the purse or the pack is too small.
     pub fn buy(&mut self, item: usize) -> Result<(), Refusal> {
-        self.pay(Stack { item, count: get(item).buy_count }, get(item).buy)
+        self.pay(Stack { item, count: get(item).buy_count, enchant: 0 }, get(item).buy)
     }
 
     /// Take `stack` for `price` copper (a purchase, or a buyback).
@@ -640,6 +646,15 @@ struct Gear {
     mp5: i32,
     hp5: i32,
     resist: [i32; 6],
+    /// What the gear adds to skills (the place of the skill, how much), to defense, to the damage of blows against a type of creature, and the percents it adds to the
+    /// speed of mounts and to threat.
+    skill: Vec<(usize, i32)>,
+    defense: i32,
+    damage_versus: [i32; 11],
+    mount_speed: f32,
+    threat: f32,
+    /// Damage added to every blow of the weapon in the main hand (an enchantment).
+    weapon_damage: i32,
 }
 
 impl Gear {
@@ -677,6 +692,19 @@ impl Gear {
             141 => self.ranged_haste += a,
             31 => self.run = self.run.max(a),
             22 => schools(&mut |s| if s >= 1 { self.resist[s - 1] += amount }),
+            // A skill (the skill line is `misc`; defense has none of the game's own), the stealth level (taken as sneaking skill), the speed of mounts and threat in percent, and
+            // the damage of blows against the types of creatures of `misc`.
+            30 => match crate::skills::Skill::of_line(misc as u32) {
+                Some(skill) => self.skill.push((skill.index(), amount)),
+                None if misc == 95 => self.defense += amount,
+                None => {}
+            },
+            154 => self.skill.push((crate::skills::Skill::Sneaking.index(), amount)),
+            130 => self.mount_speed += a,
+            10 => self.threat += a,
+            59 => (1..=10).filter(|t| misc >> (t - 1) & 1 == 1).for_each(|t| self.damage_versus[t] += amount),
+            // (not an aura of the original: the damage that an enchantment adds to the weapon)
+            1000 => self.weapon_damage += amount,
             _ => {}
         }
     }
@@ -734,6 +762,13 @@ pub struct Stats {
     pub spell_versus: [i32; 11],
     /// The share of the running speed the worn items add (0.08 for 8 percent).
     pub run_speed: f32,
+    /// What the worn items add to each skill, to defense, to the damage of blows against a type of creature (1 to 10), the share they add to the speed of mounts, and
+    /// the percent of threat they add (the game has no threat: one creature fights one player).
+    pub skill_bonus: [i32; crate::skills::COUNT],
+    pub defense: i32,
+    pub damage_versus: [i32; 11],
+    pub mount_speed: f32,
+    pub threat: f32,
 }
 
 /// Attack power per point of damage per second (`ATTACK_POWER_MAGIC_NUMBER`).
@@ -770,6 +805,7 @@ impl Stats {
                 UseEffect::Boost(stat @ 0..=4, amount, _) => attributes[stat as usize] += amount,
                 UseEffect::Boost(5, amount, _) => armor += amount,
                 UseEffect::Boost(6, amount, _) => health += amount,
+                UseEffect::Boost(7, amount, _) => mana += amount,
                 UseEffect::Equip(aura, misc, amount) => gear.add(aura, misc, amount),
                 _ => {}
             }
@@ -795,7 +831,11 @@ impl Stats {
         // CMaNGOS (`GetDodgeFromAgility`, `GetMeleeCritFromAgility`, `GetSpellCritFromIntellect`, `OCTRegenHPPerSpirit`, `OCTRegenMPPerSpirit`) for a paladin.
         let lv = level.clamp(1, 60) as f32;
         let rate = 4.6 * (60.0 - lv) / 59.0 + 20.0 * (lv - 1.0) / 59.0;
-        let dodge = 0.75 + agi / rate + gear.dodge + perks.dodge;
+        // Each point of defense (the gear's) adds 0.04% to dodging, parrying and blocking.
+        let defense = gear.defense as f32 * 0.04;
+        let dodge = 0.75 + agi / rate + gear.dodge + perks.dodge + defense;
+        let mut skill_bonus = [0; crate::skills::COUNT];
+        gear.skill.iter().for_each(|&(skill, amount)| skill_bonus[skill] += amount);
         let crit = agi / rate + gear.crit + perks.crit;
         let spell_crit = gear.spell_crit.map(|g| 3.70 + int / (14.77 + 0.65 * level as f32) + g + perks.spell_crit);
         let (health_regen, mana_regen_casting) = (spi * 0.25 * (1.0 + perks.health_regen / 100.0), gear.mp5 as f32 / 5.0);
@@ -813,8 +853,8 @@ impl Stats {
             let bonus = attack_power as f32 / ATTACK_POWER_PER_DPS * w.speed;
             ((w.min + bonus) / 2.0, (w.max + bonus) / 2.0)
         });
-        Stats { level, attributes, armor, attack_power, damage: (min + bonus, max + bonus), off_damage, speed, max_health, max_mana, max_stamina: (100.0 + agi) * (1.0 + perks.stamina / 100.0), attack: 5 * level as i32, resist, dodge, crit, spell_crit, parry: 5.0 + gear.parry + perks.parry, block: if shield.is_some() { 5.0 + gear.block } else { 0.0 }, block_value, health_regen, mana_regen, mana_regen_casting, ranged_attack_power, ranged,
-            spell_damage, healing: gear.healing + spell_power, hit: gear.hit + perks.hit, spell_hit: gear.spell_hit + perks.spell_hit, health_regen_always: gear.hp5 as f32 / 5.0, run_speed: (gear.run + perks.run_speed) / 100.0, ap_versus: gear.ap_versus, ranged_ap_versus: gear.ranged_ap_versus, spell_versus: gear.spell_versus }
+        Stats { level, attributes, armor, attack_power, damage: (min + bonus + gear.weapon_damage as f32, max + bonus + gear.weapon_damage as f32), off_damage, speed, max_health, max_mana, max_stamina: (100.0 + agi) * (1.0 + perks.stamina / 100.0), attack: 5 * level as i32, resist, dodge, crit, spell_crit, parry: 5.0 + gear.parry + perks.parry + defense, block: if shield.is_some() { 5.0 + gear.block + defense } else { 0.0 }, block_value, health_regen, mana_regen, mana_regen_casting, ranged_attack_power, ranged,
+            spell_damage, healing: gear.healing + spell_power, hit: gear.hit + perks.hit, spell_hit: gear.spell_hit + perks.spell_hit, health_regen_always: gear.hp5 as f32 / 5.0, run_speed: (gear.run + perks.run_speed) / 100.0, skill_bonus, defense: gear.defense, damage_versus: gear.damage_versus, mount_speed: gear.mount_speed / 100.0, threat: gear.threat, ap_versus: gear.ap_versus, ranged_ap_versus: gear.ranged_ap_versus, spell_versus: gear.spell_versus }
     }
 
     /// The share of the damage of a school of magic (the original's number: 1 holy, 2 fire, 3 nature, 4 frost, 5 shadow, 6 arcane) that its resistance stops
@@ -903,12 +943,12 @@ mod tests {
         assert!((s.block_value - (get(inv.equipment[OFF_HAND].unwrap().item).block as f32 + 0.1)).abs() < 1e-4);
         // "Restores 3 mana per 5 sec." on a wrist piece: regained always, on top of the spirit's.
         let mut with_mp5 = inv.equipment;
-        with_mp5[8] = Some(Stack { item: find("i9448"), count: 1 });
+        with_mp5[8] = Some(Stack { item: find("i9448"), count: 1, enchant: 0 });
         let m = Stats::of(&with_mp5, 1, &[0; 7], &[]);
         assert!((m.mana_regen_casting - 0.6).abs() < 1e-4 && (m.mana_regen - s.mana_regen - 0.6).abs() < 1e-4);
         // A ring of +7 damage and healing, gloves of 1% crit and attack power, a shield of 2% more block: what the spells of worn items add.
         let mut gear = inv.equipment;
-        (gear[10], gear[9], gear[OFF_HAND]) = (Some(Stack { item: find("i862"), count: 1 }), Some(Stack { item: find("i867"), count: 1 }), Some(Stack { item: find("i2040"), count: 1 }));
+        (gear[10], gear[9], gear[OFF_HAND]) = (Some(Stack { item: find("i862"), count: 1, enchant: 0 }), Some(Stack { item: find("i867"), count: 1, enchant: 0 }), Some(Stack { item: find("i2040"), count: 1, enchant: 0 }));
         let g = Stats::of(&gear, 1, &[0; 7], &[]);
         assert_eq!((g.healing, g.spell_damage), (7, [0, 7, 7, 7, 7, 7, 7]));
         assert!((g.crit - s.crit - 1.0).abs() < 1e-4 && g.attack_power > s.attack_power && g.block == 7.0);
@@ -937,23 +977,60 @@ mod tests {
     }
 
     #[test]
+    fn enchantments_add_skills_defense_mount_speed_threat_and_damage_against_a_kind_of_creature() {
+        let c = content::get();
+        let of = |name: &str| c.enchants.values().find(|e| e.name == name).unwrap_or_else(|| panic!("no {name}")).effects.clone();
+        let no = [None; SLOTS];
+        let stats = |effects: Vec<UseEffect>| Stats::of(&no, 20, &[0; 7], &effects);
+        let (base, mining, herbs, stealth, defense, mount, threat, beasts) = (stats(vec![]), stats(of("Mining +5")), stats(of("Herbalism +2")), stats(of("Increased Stealth")), stats(of("Defense +3")), stats(of("Minor Mount Speed Increase")), stats(of("Threat +2%")), stats(of("Beastslaying +6")));
+        use crate::skills::Skill;
+        assert_eq!((mining.skill_bonus[Skill::Mining.index()], herbs.skill_bonus[Skill::Herbalism.index()], stealth.skill_bonus[Skill::Sneaking.index()]), (5, 2, 5));
+        assert!(defense.defense == 3 && defense.dodge > base.dodge && defense.parry > base.parry, "{} {}", defense.dodge, base.dodge);
+        assert!((mount.mount_speed - 0.02).abs() < 1e-6 && (threat.threat - 2.0).abs() < 1e-6, "{} {}", mount.mount_speed, threat.threat);
+        assert_eq!((beasts.damage_versus[1], beasts.damage_versus[2]), (6, 0));
+        // What is worn on the character counts when a skill is asked what it can do, not when it is trained.
+        let mut skills = crate::skills::Skills::new();
+        skills.set_bonus(mining.skill_bonus);
+        assert_eq!((skills.rank(Skill::Mining), skills.pure(Skill::Mining)), (6, 1));
+    }
+
+    #[test]
+    fn an_enchantment_stays_on_its_item_through_every_move_and_keeps_it_from_stacking() {
+        let enchant = *content::get().enchants.keys().next().unwrap();
+        let sword = find("longsword");
+        let mut inv = Inventory::new();
+        inv.equipment[MAIN_HAND] = Some(Stack { item: sword, count: 1, enchant });
+        // Taken off into the pack and put on again: it is still enchanted.
+        inv.unequip(MAIN_HAND);
+        assert!(inv.bag.iter().flatten().any(|s| s.item == sword && s.enchant == enchant));
+        let slot = inv.bag.iter().position(|s| s.is_some_and(|s| s.item == sword && s.enchant == enchant)).unwrap();
+        inv.equip_from_bag(slot, 60).unwrap();
+        assert_eq!(inv.equipment[MAIN_HAND].map(|s| s.enchant), Some(enchant));
+        // Two potions that differ in nothing but an enchantment never share a stack.
+        let mut plain = Inventory::new();
+        plain.add(Stack { item: find("linen_cloth"), count: 1, enchant });
+        plain.add(Stack { item: find("linen_cloth"), count: 1, enchant: 0 });
+        assert_eq!(plain.bag.iter().flatten().filter(|s| s.item == find("linen_cloth")).count(), 2);
+    }
+
+    #[test]
     fn items_are_added_to_stacks_then_free_slots_and_a_full_pack_grows() {
         let mut inv = Inventory::new();
         // 3 linen in slot 3: 10 more join it.
-        assert!(inv.add(Stack { item: find("linen_cloth"), count: 10 }));
-        assert_eq!(inv.bag[3], Some(Stack { item: find("linen_cloth"), count: 13 }));
+        assert!(inv.add(Stack { item: find("linen_cloth"), count: 10, enchant: 0 }));
+        assert_eq!(inv.bag[3], Some(Stack { item: find("linen_cloth"), count: 13, enchant: 0 }));
         // 20 more fill that stack (to 20) and the rest starts a new one in the first free slot (7, after the five items of the starting kit, the lockpicks and the mining pick).
-        assert!(inv.add(Stack { item: find("linen_cloth"), count: 20 }));
-        assert_eq!((inv.bag[3], inv.bag[7]), (Some(Stack { item: find("linen_cloth"), count: 20 }), Some(Stack { item: find("linen_cloth"), count: 13 })));
+        assert!(inv.add(Stack { item: find("linen_cloth"), count: 20, enchant: 0 }));
+        assert_eq!((inv.bag[3], inv.bag[7]), (Some(Stack { item: find("linen_cloth"), count: 20, enchant: 0 }), Some(Stack { item: find("linen_cloth"), count: 13, enchant: 0 })));
         // Fill every free slot with non-stacking items: the next one makes a new row instead of being refused.
         while let Some(free) = inv.bag.iter().position(Option::is_none) {
-            inv.bag[free] = Some(Stack { item: find("hearthstone"), count: 1 });
+            inv.bag[free] = Some(Stack { item: find("hearthstone"), count: 1, enchant: 0 });
         }
         let before = inv.bag.clone();
-        assert!(inv.add(Stack { item: find("hatchet"), count: 1 }));
+        assert!(inv.add(Stack { item: find("hatchet"), count: 1, enchant: 0 }));
         assert_eq!((inv.bag.len(), inv.bag[before.len()].map(|s| s.item)), (before.len() + 2 * BACKPACK_COLUMNS, Some(find("hatchet"))));
         // A stack with room still takes more.
-        assert!(inv.add(Stack { item: find("linen_cloth"), count: 7 }) && inv.bag[7].map(|s| s.count) == Some(20));
+        assert!(inv.add(Stack { item: find("linen_cloth"), count: 7, enchant: 0 }) && inv.bag[7].map(|s| s.count) == Some(20));
         assert_eq!(inv.bag[..7], before[..7]);
         // Taking the items out shrinks the pack back to the size it started with.
         for slot in 0..before.len() + 1 {
@@ -968,7 +1045,7 @@ mod tests {
         let mut inv = Inventory::new();
         let (before, linen) = (inv.weight(), find("linen_cloth"));
         assert!(before > 0.0, "the starting kit weighs something");
-        inv.add(Stack { item: linen, count: 20 });
+        inv.add(Stack { item: linen, count: 20, enchant: 0 });
         assert!((inv.weight() - before - 20.0 * get(linen).weight).abs() < 1e-4);
         let capacity = carry_capacity(22);
         assert_eq!(burden_slowdown(capacity, capacity), 0.0);
@@ -982,11 +1059,11 @@ mod tests {
     fn items_are_counted_and_taken_from_the_last_stacks_first() {
         let mut inv = Inventory::new();
         let linen = find("linen_cloth");
-        inv.bag[8] = Some(Stack { item: linen, count: 20 });
+        inv.bag[8] = Some(Stack { item: linen, count: 20, enchant: 0 });
         assert_eq!(inv.count(linen), 23);
         assert!(!inv.remove(linen, 24) && inv.count(linen) == 23, "too few: nothing changes");
         assert!(inv.remove(linen, 21));
-        assert_eq!((inv.bag[8], inv.bag[3]), (None, Some(Stack { item: linen, count: 2 })));
+        assert_eq!((inv.bag[8], inv.bag[3]), (None, Some(Stack { item: linen, count: 2, enchant: 0 })));
         assert!(inv.remove(linen, 2) && inv.bag[3].is_none());
     }
 
@@ -1001,20 +1078,20 @@ mod tests {
         assert!(inv.bag.iter().flatten().filter(|s| s.item == boots).count() == 2);
         // A full pack makes room (the purse is what limits buying).
         while let Some(free) = inv.bag.iter().position(Option::is_none) {
-            inv.bag[free] = Some(Stack { item: find("hearthstone"), count: 1 });
+            inv.bag[free] = Some(Stack { item: find("hearthstone"), count: 1, enchant: 0 });
         }
         inv.money = 1000;
         assert_eq!(inv.buy(find("hatchet")), Ok(()));
         inv.money = 1000;
         // Selling pays the whole stack; the hearthstone is worth nothing to a merchant.
         let linen = inv.bag.iter().position(|s| s.is_some_and(|s| s.item == find("linen_cloth"))).unwrap();
-        assert_eq!(inv.sell(linen), Some((Stack { item: find("linen_cloth"), count: 3 }, 39)));
+        assert_eq!(inv.sell(linen), Some((Stack { item: find("linen_cloth"), count: 3, enchant: 0 }, 39)));
         assert_eq!((inv.bag[linen], inv.money), (None, 1039));
         let stone = inv.bag.iter().position(|s| s.is_some_and(|s| s.item == find("hearthstone"))).unwrap();
         assert_eq!(inv.sell(stone), None);
         assert_eq!(inv.sell(linen), None);
         // Buying it back costs what it fetched.
-        assert_eq!(inv.pay(Stack { item: find("linen_cloth"), count: 3 }, 39), Ok(()));
+        assert_eq!(inv.pay(Stack { item: find("linen_cloth"), count: 3, enchant: 0 }, 39), Ok(()));
         assert_eq!(inv.money, 1000);
     }
 
@@ -1024,13 +1101,13 @@ mod tests {
         let (sword, dagger) = (find("longsword"), find("thorne_dagger"));
         assert!(Stats::of(&inv.equipment, 1, &[0; 7], &[]).off_damage.is_none());
         inv.equipment[OFF_HAND] = None;
-        inv.cursor = Some(Stack { item: dagger, count: 1 });
+        inv.cursor = Some(Stack { item: dagger, count: 1, enchant: 0 });
         inv.click_equipment(OFF_HAND, 60).unwrap();
         let stats = Stats::of(&inv.equipment, 1, &[0; 7], &[]);
         let (min, max) = stats.off_damage.expect("no off-hand damage");
         assert!(min >= 3.0 && max >= 5.5 && max < stats.damage.1, "{min} {max}");
         // Right-click from the pack still takes the main hand; a two-hander sends the dagger back to the pack.
-        inv.add(Stack { item: sword, count: 1 });
+        inv.add(Stack { item: sword, count: 1, enchant: 0 });
         let slot = inv.bag.iter().position(|b| b.is_some_and(|b| b.item == sword)).unwrap();
         inv.equip_from_bag(slot, 60).unwrap();
         assert_eq!(inv.equipment[OFF_HAND].map(|s| s.item), Some(dagger));
@@ -1057,14 +1134,14 @@ mod tests {
         assert!(inv.equipment[CHEST].is_none() && inv.bag.iter().flatten().any(|s| s.item == find("worn_leather_vest")));
         // Linen cloth stacks up to its limit.
         inv.click_bag(3);
-        assert_eq!(inv.cursor, Some(Stack { item: find("linen_cloth"), count: 3 }));
+        assert_eq!(inv.cursor, Some(Stack { item: find("linen_cloth"), count: 3, enchant: 0 }));
         inv.click_bag(11);
         inv.click_bag(11);
         inv.click_bag(11);
-        assert_eq!(inv.bag[11], Some(Stack { item: find("linen_cloth"), count: 3 }));
-        inv.cursor = Some(Stack { item: find("linen_cloth"), count: 19 });
+        assert_eq!(inv.bag[11], Some(Stack { item: find("linen_cloth"), count: 3, enchant: 0 }));
+        inv.cursor = Some(Stack { item: find("linen_cloth"), count: 19, enchant: 0 });
         inv.click_bag(11);
-        assert_eq!((inv.bag[11], inv.cursor), (Some(Stack { item: find("linen_cloth"), count: 20 }), Some(Stack { item: find("linen_cloth"), count: 2 })));
+        assert_eq!((inv.bag[11], inv.cursor), (Some(Stack { item: find("linen_cloth"), count: 20, enchant: 0 }), Some(Stack { item: find("linen_cloth"), count: 2, enchant: 0 })));
         inv.put_cursor_away();
         assert!(inv.cursor.is_none());
     }

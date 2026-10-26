@@ -5,6 +5,7 @@
 use super::*;
 use super::magic::select_tab;
 use crate::talents::{self, Lock, COLUMNS};
+use super::trade;
 
 pub const TALENTS: &str = "TalentFrame";
 const TREES: usize = 3;
@@ -272,6 +273,7 @@ impl Panels {
         if on {
             self.tree.show(CHARACTER, false);
             self.tree.show(SPELLBOOK, false);
+            self.tree.show(trade::TRADE, false);
             self.close_loot();
             self.close_gossip();
             self.close_merchant();

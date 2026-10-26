@@ -870,7 +870,7 @@ mod tests {
     fn a_prop_is_placed_by_the_tile_that_holds_it_and_by_no_other() {
         let Some(mount) = mpq::find_wow_dir().and_then(|d| Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
         let model = r"World\Generic\PassiveDoodads\Lights\CandelabraTallWall01.m2";
-        let prop = Prop { model: model.into(), map: None, zone: None, pickup: None, sleep: false, physics: false, at: (-8905.0, -192.0, 90.0), rotation: [0.0, 45.0, 0.0], scale: 1.0 };
+        let prop = Prop { model: model.into(), map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, at: (-8905.0, -192.0, 90.0), rotation: [0.0, 45.0, 0.0], scale: 1.0 };
         assert_eq!(tile_of_prop(&prop), (32, 48));
         let (models, cache) = (ModelCache::default(), TextureCache::default());
         let plain = load_tile(&mount, &cache, &models, "Azeroth", (32, 48), &[]).unwrap();

@@ -45,6 +45,8 @@ pub struct Used {
     pub hearth: bool,
     /// A mount item was used: the steed's display and speed bonus in percent (the game mounts, or dismounts if already riding).
     pub mount: Option<(u32, i32)>,
+    /// Something to put on the weapon in the hand: the enchantment and the seconds (see `UseEffect::Temp`).
+    pub temp: Option<(u32, f32)>,
 }
 
 /// What a second of time did.
@@ -74,6 +76,8 @@ pub enum Timed {
     Gear(UseEffect),
     Regen(f32),
     Shield { amount: f32, school: u32 },
+    /// Damage of blows that is taken up before the character is hurt, until it is used up.
+    Absorb(f32),
 }
 
 #[derive(Default)]
@@ -82,6 +86,8 @@ pub struct Consumed {
     /// What procs put on the character, and the seconds left of each (not saved).
     pub timed: Vec<(Timed, f32)>,
     cooldowns: HashMap<usize, f32>,
+    /// The weapon (an item) that a lure or a stone is on: it is gone when another is wielded. None until the first look after a save is loaded.
+    temp_on: Option<usize>,
     /// Seconds to go before the hearthstone takes the character home.
     pub hearth: Option<f32>,
     rng: u32,
@@ -100,6 +106,51 @@ impl Consumed {
         matches!(what, Timed::Gear(_))
     }
 
+    /// What a lure or a stone gives to the weapon is put on for `seconds`: a new one takes the place of an old one that gave the same (the same aura of the same kind of thing).
+    /// True if the stats are to be worked out again.
+    pub fn apply_temp(&mut self, weapon: Option<usize>, effects: &[UseEffect], seconds: f32) -> bool {
+        self.temp_on = weapon;
+        for e in effects {
+            if let UseEffect::Equip(aura, misc, _) = e {
+                self.timed.retain(|(t, _)| !matches!(t, Timed::Gear(UseEffect::Equip(a, m, _)) if a == aura && m == misc));
+            }
+            self.add_timed(Timed::Gear(*e), seconds);
+        }
+        !effects.is_empty()
+    }
+
+    /// The enchantment that using `item` puts on the weapon and the effects it has, if the item is a lure or a stone.
+    fn temp_effects(item: usize) -> Option<Vec<UseEffect>> {
+        let enchant = items::get(item).spells.iter().flat_map(|s| s.effects.iter()).find_map(|e| if let UseEffect::Temp(enchant, _) = e { Some(*enchant) } else { None })?;
+        Some(crate::content::get().enchants.get(&enchant).map(|e| e.effects.clone()).unwrap_or_default())
+    }
+
+    /// The weapon in the main hand is `main` now. What was put on another weapon (a lure, a stone) is gone with it; true if so, and the stats are to be worked out again.
+    pub fn weapon_changed(&mut self, main: Option<usize>) -> bool {
+        if !self.buffs.iter().any(|b| Self::temp_effects(b.item).is_some()) {
+            self.temp_on = None;
+            return false;
+        }
+        // Just loaded from a save: the weapon in the hand is the one it was on.
+        let on = *self.temp_on.get_or_insert(main.unwrap_or(usize::MAX));
+        if Some(on) == main {
+            return false;
+        }
+        self.drop_temps(None);
+        true
+    }
+
+    /// Take off what lures and stones put on the weapon, except what `keep` (an item) put there: a weapon carries one of them.
+    fn drop_temps(&mut self, keep: Option<usize>) {
+        let temps: Vec<usize> = self.buffs.iter().map(|b| b.item).filter(|&i| Some(i) != keep && Self::temp_effects(i).is_some()).collect();
+        self.buffs.retain(|b| !temps.contains(&b.item));
+        let gone: Vec<UseEffect> = temps.iter().filter_map(|&i| Self::temp_effects(i)).flatten().collect();
+        self.timed.retain(|(t, _)| !matches!(t, Timed::Gear(e) if gone.contains(e)));
+        if keep.is_none() {
+            self.temp_on = None;
+        }
+    }
+
     /// What the stats take in from the timed spells.
     pub fn timed_effects(&self) -> Vec<UseEffect> {
         self.timed.iter().filter_map(|(t, _)| if let Timed::Gear(e) = t { Some(*e) } else { None }).collect()
@@ -108,6 +159,18 @@ impl Consumed {
     /// The shields on the character: the damage each does to whoever hits it, and its school.
     pub fn shields(&self) -> impl Iterator<Item = (f32, u32)> + '_ {
         self.timed.iter().filter_map(|(t, _)| if let Timed::Shield { amount, school } = *t { Some((amount, school)) } else { None })
+    }
+
+    /// A blow of `amount` meets what absorbs it: returns what is left of it, and the absorption is used as far as it went.
+    pub fn absorb(&mut self, mut amount: f32) -> f32 {
+        for (t, _) in &mut self.timed {
+            if let Timed::Absorb(left) = t {
+                let taken = left.min(amount);
+                (*left, amount) = (*left - taken, amount - taken);
+            }
+        }
+        self.timed.retain(|(t, _)| !matches!(t, Timed::Absorb(left) if *left <= 0.0));
+        amount
     }
 
     /// A number from the dice of the character's procs.
@@ -162,10 +225,15 @@ impl Consumed {
                 UseEffect::ManaOver(total, secs) => (buff.regen.1, buff.left, buff.needs_calm) = (buff.regen.1 + total as f32 / secs, buff.left.max(secs), true),
                 UseEffect::Boost(stat, amount, secs) if secs > 0.0 && (stat as usize) < 7 => (buff.boosts[stat as usize], buff.left) = (buff.boosts[stat as usize] + amount, buff.left.max(secs)),
                 UseEffect::Boost(..) => {}
-                UseEffect::Equip(..) => {}
+                UseEffect::Equip(..) | UseEffect::Teach(_) => {}
+                // The buff row shows it (the item's icon and the seconds left), as the lure does on the pole.
+                UseEffect::Temp(enchant, seconds) => (used.temp, buff.left) = (Some((enchant, seconds)), buff.left.max(seconds)),
                 UseEffect::Hearth => used.hearth = true,
                 UseEffect::Mount(display, percent) => used.mount = Some((display, percent)),
             }
+        }
+        if used.temp.is_some() {
+            self.drop_temps(Some(stack.item));
         }
         if buff.left > 0.0 {
             // What was working of the same kind (the same item, or another food while this is food) is replaced.
@@ -247,6 +315,14 @@ impl Consumed {
     pub fn restore(&mut self, saved: &crate::save::Save) {
         let find = |id: &str| crate::content::get().items.iter().position(|i| i.id == id);
         self.buffs = saved.buffs.iter().filter_map(|(id, left, boosts, regen, needs_calm)| find(id).map(|item| Buff { item, left: *left, boosts: *boosts, regen: *regen, needs_calm: *needs_calm })).collect();
+        // What a lure or a stone gave to the weapon lasts as long as its buff (the buff is what is saved).
+        self.timed.clear();
+        self.temp_on = None;
+        for (item, left) in self.buffs.iter().map(|b| (b.item, b.left)).collect::<Vec<_>>() {
+            if let Some(effects) = Self::temp_effects(item) {
+                self.apply_temp(None, &effects, left);
+            }
+        }
         self.cooldowns = saved.item_cooldowns.iter().filter_map(|(id, left)| find(id).map(|item| (item, *left))).collect();
         self.hearth = saved.hearth;
     }
@@ -266,7 +342,7 @@ mod tests {
         let mut inv = Inventory::new();
         inv.bag = vec![None; items::BACKPACK_SIZE];
         for id in ids {
-            assert!(inv.add(Stack { item: find(id), count: 3 }));
+            assert!(inv.add(Stack { item: find(id), count: 3, enchant: 0 }));
         }
         inv
     }
@@ -337,6 +413,67 @@ mod tests {
         assert_eq!(c.use_item(&mut inv, 0, 39, true), Err(UseError::Level(40)));
         assert_eq!(c.use_item(&mut inv, 0, 40, true).unwrap().mount, Some((2404, 60)));
         assert_eq!(inv.count(find("i5656")), 3);
+    }
+
+    #[test]
+    fn a_lure_raises_fishing_for_ten_minutes_and_a_better_one_takes_its_place() {
+        use crate::skills::{Skill, Skills};
+        let (mut inv, mut c) = (pack(&["i6529", "i6530"]), Consumed::default());
+        let skills_with = |c: &Consumed| {
+            let stats = items::Stats::of(&[None; items::SLOTS], 20, &[0; 7], &c.timed_effects());
+            let mut s = Skills::new();
+            s.set_bonus(stats.skill_bonus);
+            s.bonus(Skill::Fishing)
+        };
+        let used = c.use_item(&mut inv, 0, 20, true).unwrap();
+        let (enchant, seconds) = used.temp.expect("a lure goes on the pole");
+        assert_eq!(seconds, 600.0);
+        assert!(c.apply_temp(None, &crate::content::get().enchants[&enchant].effects, seconds));
+        assert_eq!(skills_with(&c), 25);
+        // A better lure takes the place of the first one, it does not add to it.
+        let better = c.use_item(&mut inv, 1, 20, true).unwrap().temp.unwrap();
+        c.apply_temp(None, &crate::content::get().enchants[&better.0].effects, better.1);
+        assert_eq!(skills_with(&c), 50);
+        assert_eq!(c.buffs.len(), 1, "one lure on the pole: the first one's buff is gone");
+        // It runs out.
+        c.tick(601.0, true);
+        assert_eq!(skills_with(&c), 0);
+    }
+
+    #[test]
+    fn a_lure_is_lost_with_the_pole_and_kept_by_a_save() {
+        use crate::skills::Skill;
+        let (mut inv, mut c) = (pack(&["i6529"]), Consumed::default());
+        let (pole, other) = (Some(find("i6256")), Some(find("hearthstone")));
+        let used = c.use_item(&mut inv, 0, 20, true).unwrap();
+        let (enchant, seconds) = used.temp.unwrap();
+        c.apply_temp(pole, &crate::content::get().enchants[&enchant].effects, seconds);
+        let bonus = |c: &Consumed| {
+            let mut s = crate::skills::Skills::new();
+            s.set_bonus(items::Stats::of(&[None; items::SLOTS], 20, &[0; 7], &c.timed_effects()).skill_bonus);
+            s.bonus(Skill::Fishing)
+        };
+        assert!(!c.weapon_changed(pole) && bonus(&c) == 25, "the same pole keeps it");
+        // After a save and a load the pole in the hand is the one it was on.
+        let (buffs, cooldowns, hearth) = c.snapshot();
+        let mut loaded = Consumed::default();
+        let mut save = crate::save::Save::capture(&inv, crate::levels::Progress::new(), &crate::quests::QuestLog::default(), (0.0, 0.0), 0.0, 0.0, 1.0);
+        (save.buffs, save.item_cooldowns, save.hearth) = (buffs, cooldowns, hearth);
+        loaded.restore(&save);
+        assert_eq!(bonus(&loaded), 25);
+        assert!(!loaded.weapon_changed(pole) && bonus(&loaded) == 25);
+        // Another weapon in the hand: the lure is gone.
+        assert!(c.weapon_changed(other));
+        assert!(c.buffs.is_empty() && bonus(&c) == 0);
+    }
+
+    #[test]
+    fn stones_and_lures_ask_for_their_kind_of_weapon() {
+        let asks = |spell| crate::content::classic_spell(spell).and_then(|s| s.equipped).unwrap();
+        let fits = |spell, subclass: u32| { let (class, mask) = asks(spell); class == 2 && mask & (1 << subclass) != 0 };
+        // A sharpening stone: swords (7) but not maces (4); a weightstone the other way round; a lure only the fishing pole (20).
+        assert!(fits(2828, 7) && !fits(2828, 4) && fits(3112, 4) && !fits(3112, 7));
+        assert!(fits(8087, 20) && !fits(8087, 7));
     }
 
     #[test]

@@ -10,6 +10,8 @@ impl State {
         let health = player.vitals.health.fraction().max(0.05);
         let mut saved = save::Save::capture(&panels.inv, panels.progress, &panels.quests, (north, west), self.camera.yaw.to_degrees(), self.camera.pitch.to_degrees(), health);
         saved.skills = panels.skills.parts();
+        saved.professions = panels.skills.steps();
+        saved.recipes = panels.recipes.parts();
         saved.spells = panels.known.iter().map(|&i| content::spell(i).id.clone()).collect();
         saved.bar = self.actionbar.as_ref().map_or_else(Vec::new, |b| b.layout());
         saved.discovered = content::get().pois.iter().zip(&panels.found).filter(|(_, &f)| f).map(|(p, _)| p.id.clone()).collect();
@@ -98,6 +100,7 @@ impl State {
         self.chests = Chests::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu).map_err(|e| log::warn!("no chests: {e:#}")).ok();
         self.pickup_props = pickup_props();
         self.beds = bed_spots(&content::get().props, &self.map);
+        self.stations = station_spots(&content::get().props, &self.map);
         self.load_pickups();
         self.load_nodes();
         Ok(())

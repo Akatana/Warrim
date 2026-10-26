@@ -472,6 +472,11 @@ impl Player {
         self.character.set_precast(id);
     }
 
+    /// Play animation `id` once through at its own pace (the work of a lure being put on).
+    pub fn work_once(&mut self, id: u16) {
+        self.character.play_natural(id);
+    }
+
     pub fn cast_anim(&mut self, id: u16) {
         self.character.play_once(id, 0.9);
     }
@@ -569,6 +574,7 @@ impl Player {
         }
         // The body is dressed, and the weapon, the shield, the helmet and the shoulders are put on it.
         let defs = equipment.map(|s| s.map(|s| items::get(s.item)));
+        self.worn.enchants = equipment.map(|s| s.and_then(|s| crate::content::get().enchants.get(&s.enchant)).map_or(0, |e| e.visual));
         if let Err(e) = self.worn.dress(&mut self.character, &self.look, &self.mount, &self.cache, renderer, gpu, &defs) {
             log::warn!("cannot dress the character: {e:#}");
         }
@@ -695,6 +701,20 @@ impl Player {
         }
         self.start_sheath(false);
         false
+    }
+
+    /// The hand goes for the weapons if they are put away (a fishing pole is held to cast the line and to put a lure on it). True while that is going on: the
+    /// work waits until it is done.
+    pub fn draw_weapons(&mut self) -> bool {
+        if self.steed.is_none() && self.sheathed && self.busy <= 0.0 && self.attack.is_none() && self.ranged.drawn.is_none() {
+            self.start_sheath(false);
+        }
+        self.busy > 0.0
+    }
+
+    /// The hand is on its way to or from the weapons.
+    pub fn drawing(&self) -> bool {
+        self.busy > 0.0
     }
 
     pub fn is_sheathed(&self) -> bool {

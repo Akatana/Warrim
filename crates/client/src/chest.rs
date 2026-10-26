@@ -79,7 +79,7 @@ fn contents(def: &ChestDef, rng: &mut u32, wanted: &[usize]) -> Option<Loot> {
         let mut left = *count;
         while left > 0 {
             let n = left.min(crate::items::get(item).stack);
-            loot.items.push(Stack { item, count: n });
+            loot.items.push(Stack { item, count: n, enchant: 0 });
             left -= n;
         }
     }

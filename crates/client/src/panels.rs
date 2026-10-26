@@ -27,6 +27,8 @@ mod map;
 mod menu;
 mod sleep;
 mod talents;
+mod trade;
+mod trainer;
 pub use menu::MenuAction;
 use magic::SPELLBOOK;
 use talents::TALENTS;
@@ -74,6 +76,8 @@ pub struct Panels {
     /// The skills, and the spells known (indices into the content's spells) in the order they were learned, of which `learned`
     /// are those the game has not yet put on the action bar.
     pub skills: crate::skills::Skills,
+    /// The recipes of the trades that were taught.
+    pub recipes: crate::recipes::Known,
     pub known: Vec<usize>,
     learned: Vec<usize>,
     /// Spells a talent taught that were given back, for the action bar to drop (`take_forgotten`).
@@ -91,6 +95,10 @@ pub struct Panels {
     skill_list: magic::SkillList,
     /// The talents learned and the tree whose tab shows (`talents.rs`, `panels/talents.rs`).
     talents: crate::talents::Ranks,
+    /// The trade skill window's state, and the recipe it asked the game to make (its place in the content, how many times).
+    trade: trade::Trade,
+    trainer: trainer::Trainer,
+    craft_request: Option<(usize, u32)>,
     talent_tab: usize,
     doll: (usize, usize),
     portrait: (usize, usize),
@@ -126,6 +134,8 @@ pub struct Panels {
     /// Whether the character rides (set by the game), and the mount being cast: seconds left, the steed's display and speed bonus.
     mounted: bool,
     mount_cast: Option<(f32, (u32, i32))>,
+    /// A lure or a stone to put on the weapon: the item whose cast the game is to start, and whether the cast is over (then using it does it).
+    lure: (Option<usize>, bool),
     buyback: Option<(Stack, u32)>,
     /// The quests: what is taken, how far along it is, what is done.
     pub quests: QuestLog,
@@ -199,6 +209,7 @@ const PROGRESS_ITEMS: usize = 6;
 const PARCHMENT: [f32; 4] = [0.18, 0.12, 0.06, 1.0];
 const YELLOW: [f32; 4] = [1.0, 1.0, 0.0, 1.0];
 const GREY: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
+const GREEN: [f32; 4] = [0.1, 1.0, 0.1, 1.0];
 const GOLD: [f32; 4] = [1.0, 0.82, 0.0, 1.0];
 /// How many messages stand at the top of the screen at most.
 const MAX_MESSAGES: usize = 5;
@@ -356,6 +367,9 @@ impl Panels {
         tree.show("PetPaperDollFrame", false);
         magic::setup(&mut tree)?;
         talents::setup(&mut tree)?;
+        trade::setup(&mut tree)?;
+        trainer::setup(&mut tree)?;
+        tree.set_region_texture("TradeSkillFramePortrait", Some(portrait.1));
         tree.set_region_texture("TalentFramePortrait", Some(portrait.1));
         menu::setup(&mut tree)?;
 
@@ -386,7 +400,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), known: content::get().start.spells.clone(), learned: Vec::new(), forgotten: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), forgotten: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, lure: (None, false), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
         panels.refresh();
         Ok(panels)
     }
@@ -418,7 +432,7 @@ impl Panels {
 
     /// The creature being talked or traded with.
     pub fn talking_to(&self) -> Option<usize> {
-        self.gossip.as_ref().map(|(creature, ..)| *creature).or(self.merchant.map(|(creature, _)| creature)).or(self.questing.map(|(creature, ..)| creature))
+        self.gossip.as_ref().map(|(creature, ..)| *creature).or(self.merchant.map(|(creature, _)| creature)).or(self.trainer_creature()).or(self.questing.map(|(creature, ..)| creature))
     }
 
     pub fn quest_open(&self) -> bool {
@@ -439,7 +453,7 @@ impl Panels {
 
     /// Whether a window of the original's interface is open (the level-up panel is not one: it gives way to them).
     fn windows_open(&self) -> bool {
-        self.popup_open() || self.character_open() || self.backpack_open() || self.loot_open() || self.gossip_open() || self.merchant_open() || self.quest_open() || self.quest_log_open() || self.spellbook_open() || self.talents_open() || self.map_open || self.menu_open() || self.options_open()
+        self.popup_open() || self.character_open() || self.backpack_open() || self.loot_open() || self.gossip_open() || self.merchant_open() || self.quest_open() || self.quest_log_open() || self.spellbook_open() || self.talents_open() || self.trade_open() || self.trainer_open() || self.map_open || self.menu_open() || self.options_open()
     }
 
     // ---- the question
@@ -483,6 +497,7 @@ impl Panels {
             self.tree.show(CHARACTER, false);
         self.tree.show(SPELLBOOK, false);
         self.tree.show(TALENTS, false);
+            self.tree.show(trade::TRADE, false);
             self.close_loot();
             self.hide_gossip();
             self.close_merchant();
@@ -801,7 +816,7 @@ impl Panels {
                     Line::Option(o) => (gossip.options[o].text.clone(), match gossip.options[o].action {
                         Action::Say(_) => "GossipGossipIcon",
                         Action::Vendor => "VendorGossipIcon",
-                        Action::Train { .. } => "TrainerGossipIcon",
+                        Action::Train { .. } | Action::Teach => "TrainerGossipIcon",
                     }),
                 };
                 self.tree.set_text(&format!("{button}Text"), &title);
@@ -828,6 +843,7 @@ impl Panels {
             Line::Option(o) => match &def.gossip.as_ref().expect("a gossip line has gossip").options[o].action {
                 Action::Say(reply) => *said = Some(reply.clone()),
                 Action::Vendor => return self.open_merchant(creature, def),
+                Action::Teach => return self.open_trainer(creature, def),
                 Action::Train { skill, rank, needs, level, cost } => trained = Some((*skill, *rank, *needs, *level, *cost)),
             },
         }
@@ -994,7 +1010,7 @@ impl Panels {
             }
             QuestScreen::Progress => {
                 // The items still to bring (the kill goals show in the log and the tracker).
-                let wanted: Vec<Stack> = q.goals.iter().filter_map(|g| if let Goal::Collect { item, count } = *g { Some(Stack { item, count }) } else { None }).collect();
+                let wanted: Vec<Stack> = q.goals.iter().filter_map(|g| if let Goal::Collect { item, count } = *g { Some(Stack { item, count, enchant: 0 }) } else { None }).collect();
                 self.tree.set_text_color("QuestProgressRequiredItemsText", PARCHMENT);
                 self.tree.set_region_hidden("QuestProgressRequiredItemsText", wanted.is_empty());
                 self.tree.set_region_hidden("QuestProgressRequiredMoneyText", true);
@@ -1105,7 +1121,9 @@ impl Panels {
         self.explored = saved.explored.clone();
         if !saved.skills.is_empty() {
             self.skills = crate::skills::Skills::from_parts(&saved.skills);
+            self.skills.set_steps(&saved.professions);
         }
+        self.recipes = crate::recipes::Known::from_parts(&saved.recipes);
         if !saved.spells.is_empty() {
             self.known = saved.spells.iter().filter_map(|id| content::get().spells.iter().position(|s| s.id == *id)).collect();
         }
@@ -1259,6 +1277,7 @@ impl Panels {
         }
         // The character sheet and the loot window are both left panels: only one of them is open.
         if on {
+            self.tree.show(trade::TRADE, false);
             self.close_loot();
             self.close_gossip();
             self.close_merchant();
@@ -1289,11 +1308,11 @@ impl Panels {
         self.tree.show(CHARACTER, false);
         self.tree.show(SPELLBOOK, false);
         self.tree.show(TALENTS, false);
-        self.tree.show(SPELLBOOK, false);
-        self.tree.show(TALENTS, false);
+        self.tree.show(trade::TRADE, false);
         self.tree.show(BACKPACK, false);
         self.close_loot();
         self.close_gossip();
+        self.close_trainer();
         self.close_merchant();
         self.close_quest();
         self.hide_log();
@@ -1467,9 +1486,45 @@ impl Panels {
         self.fill_skills();
     }
 
+    /// What the enchantments of the worn items give, as effects of worn spells.
+    fn enchant_effects(&self) -> Vec<crate::items::UseEffect> {
+        self.inv.equipment.iter().flatten().filter_map(|s| content::get().enchants.get(&s.enchant)).flat_map(|e| e.effects.iter().copied()).collect()
+    }
+
+    /// Put an enchantment on what is worn in `slot` (what was on it before is gone); it goes with the item.
+    pub fn enchant_slot(&mut self, slot: usize, enchant: u32) {
+        if let Some(stack) = &mut self.inv.equipment[slot] {
+            stack.enchant = enchant;
+            self.stats_dirty = true;
+            self.refresh();
+        }
+    }
+
+    /// Whether the trade is learned; if it is not, the screen says so.
+    pub fn must_know(&mut self, skill: crate::skills::Skill) -> bool {
+        let knows = self.skills.knows(skill);
+        if !knows {
+            self.error(&format!("You have not learned {}. A teacher in a town can teach it.", skill.name()));
+        }
+        knows
+    }
+
     /// A gathering of something that asks for rank `required` of a profession: the profession may rise (`roll` from 0 to 1 against the chance).
     pub fn gather_skill(&mut self, skill: crate::skills::Skill, required: u32, roll: f32) {
-        if let Some(rank) = self.skills.gather(skill, required, roll) {
+        self.skill_up(skill, (required + 25, required + 50, required + 100), roll);
+    }
+
+    /// The skill may rise with this chance (0 to 1; `roll` from 0 to 1).
+    pub fn raise_skill(&mut self, skill: crate::skills::Skill, chance: f32, roll: f32) {
+        if let Some(rank) = self.skills.raise(skill, chance, roll) {
+            self.notice(&format!("Your skill in {} has increased to {rank}.", skill.name()));
+            self.fill_skills();
+        }
+    }
+
+    /// Work of a trade that is yellow, green and grey from these ranks: the skill may rise (`roll` from 0 to 1 against the chance).
+    pub fn skill_up(&mut self, skill: crate::skills::Skill, thresholds: (u32, u32, u32), roll: f32) {
+        if let Some(rank) = self.skills.skill_up(skill, thresholds, roll) {
             self.notice(&format!("Your skill in {} has increased to {rank}.", skill.name()));
             self.fill_skills();
         }
@@ -1596,6 +1651,18 @@ impl Panels {
     }
 
     /// An action button asked to use `item`: use the first stack of it in the backpack.
+    /// The lure or stone whose cast is to begin now, if one was used.
+    pub fn take_lure(&mut self) -> Option<usize> {
+        self.lure.0.take()
+    }
+
+    /// The cast of a lure is over: it goes on the weapon.
+    pub fn finish_lure(&mut self, item: usize) {
+        self.lure.1 = true;
+        self.use_item_of(item);
+        self.lure.1 = false;
+    }
+
     pub fn use_item_of(&mut self, item: usize) {
         if let Some(slot) = self.inv.bag.iter().position(|s| s.is_some_and(|s| s.item == item)) {
             self.use_item(slot);
@@ -1608,6 +1675,11 @@ impl Panels {
         let Some(stack) = self.inv.bag[slot] else { return };
         let item = crate::items::get(stack.item);
         let name = item.name;
+        // A recipe, pattern, plan or formula: using it teaches what it makes, if the trade is far enough along (and it is not used up when it is no use).
+        let taught: Vec<u32> = item.spells.iter().flat_map(|s| s.effects.iter()).filter_map(|e| if let crate::items::UseEffect::Teach(spell) = e { Some(*spell) } else { None }).filter(|&s| crate::recipes::get(s).is_some()).collect();
+        if !taught.is_empty() {
+            return self.learn_recipe_item(stack.item, &taught);
+        }
         // A mount asks for a rank of riding (the skill of the original's tables, 762).
         let steed = item.spells.iter().any(|s| s.effects.iter().any(|e| matches!(e, crate::items::UseEffect::Mount(..))));
         // Getting on takes a cast, and the character must stand still and out of a fight for it; getting down is at once.
@@ -1617,11 +1689,43 @@ impl Panels {
         if steed && item.skill.0 == 762 && self.skills.rank(crate::skills::Skill::Riding) < item.skill.1 {
             return self.error(&self.string("ITEM_REQ_SKILL").replacen("%s", &format!("{} ({})", skill_name(762), item.skill.1), 1));
         }
+        // A lure goes on a fishing pole in the hand and asks for the skill it names; a stone or an oil, on a weapon.
+        let temp = item.spells.iter().flat_map(|s| s.effects.iter()).find_map(|e| if let crate::items::UseEffect::Temp(enchant, _) = e { Some(*enchant) } else { None });
+        if let Some(enchant) = temp {
+            let lure = content::get().enchants.get(&enchant).is_some_and(|e| e.effects.iter().any(|e| matches!(e, crate::items::UseEffect::Equip(30, 356, _))));
+            if lure && !crate::fishing::pole_in_hand(&self.inv) {
+                return self.error(&self.string("SPELL_FAILED_TOTEMS").replacen("%s", "Fishing Pole", 1));
+            }
+            // The kind of weapon the spell asks for (a sharpening stone: the sharp ones; a weightstone: the blunt ones; a lure: the pole).
+            let asked = item.spells.first().and_then(|s| content::classic_spell(s.spell)).and_then(|s| s.equipped);
+            let fits = self.inv.equipment[crate::items::MAIN_HAND].is_some_and(|w| {
+                let weapon = crate::items::get(w.item);
+                asked.is_none_or(|(class, mask)| weapon.class as i32 == class && (mask == 0 || mask & (1 << weapon.subclass) != 0))
+            });
+            if !fits {
+                return self.error(&self.string("SPELL_FAILED_EQUIPPED_ITEM"));
+            }
+            if let Some(skill) = crate::skills::Skill::of_line(item.skill.0) {
+                if !self.skills.knows(skill) || self.skills.rank(skill) < item.skill.1 {
+                    return self.error(&self.string("ITEM_REQ_SKILL").replacen("%s", &format!("{} ({})", skill.name(), item.skill.1), 1));
+                }
+            }
+        }
+        // It is put on in a cast of its own (the game starts it, and uses the item again when it is over).
+        if temp.is_some() && !std::mem::take(&mut self.lure.1) {
+            self.lure.0 = Some(stack.item);
+            return;
+        }
         match self.consumed.use_item(&mut self.inv, slot, self.progress.level, self.calm) {
-            Ok(used) => {
+            Ok(mut used) => {
                 self.restored = (self.restored.0 + used.heal, self.restored.1 + used.mana);
                 if used.hearth {
                     self.cast_start(name, crate::consume::HEARTH_SECONDS);
+                }
+                if let Some((enchant, seconds)) = used.temp {
+                    let effects = content::get().enchants.get(&enchant).map(|e| e.effects.clone()).unwrap_or_default();
+                    let weapon = self.inv.equipment[crate::items::MAIN_HAND].map(|s| s.item);
+                    used.stats_changed |= self.consumed.apply_temp(weapon, &effects, seconds);
                 }
                 if let Some(mount) = used.mount {
                     if self.mounted {
@@ -1642,6 +1746,30 @@ impl Panels {
             Err(UseError::NotCalm) => self.error(&self.string("ERR_NOT_IN_COMBAT")),
             Err(UseError::NothingToDo) => {}
         }
+    }
+
+    /// Use a recipe item: the trade has to be at the rank it asks for, and there has to be something new in it; then the recipes are known and it is used up.
+    fn learn_recipe_item(&mut self, item: usize, spells: &[u32]) {
+        let def = crate::items::get(item);
+        if def.level > self.progress.level {
+            return self.error(&self.string("ERR_CANT_EQUIP_LEVEL_I").replacen("%d", &def.level.to_string(), 1));
+        }
+        if let Some(skill) = crate::skills::Skill::of_line(def.skill.0) {
+            if !self.skills.knows(skill) || self.skills.rank(skill) < def.skill.1 {
+                return self.error(&self.string("ITEM_REQ_SKILL").replacen("%s", &format!("{} ({})", skill.name(), def.skill.1), 1));
+            }
+        }
+        let learned: Vec<&'static content::Recipe> = spells.iter().filter(|&&s| self.recipes.learn(s)).filter_map(|&s| crate::recipes::get(s).map(|r| r.1)).collect();
+        if learned.is_empty() {
+            return self.error(&self.string("SPELL_FAILED_SPELL_LEARNED"));
+        }
+        for r in learned {
+            let text = self.string("ERR_LEARN_RECIPE_S").replacen("%s", &r.name, 1);
+            self.notice(&text);
+        }
+        self.inv.remove(item, 1);
+        self.events.push(Sfx::PutDown(def.handling));
+        self.refresh();
     }
 
     /// Whether the character keeps still and out of a fight, for what asks it (food, drink, bandages, the way home).
@@ -1824,6 +1952,7 @@ impl Panels {
             }
         }
         if loot.is_empty() {
+            self.tree.show(trade::TRADE, false);
             self.close_loot();
         } else {
             self.fill_loot();
@@ -1866,7 +1995,14 @@ impl Panels {
 
     /// Set everything the frames show from the inventory and the stats.
     pub fn refresh(&mut self) {
-        self.stats = Stats::of_with(&self.inv.equipment, self.progress.level, &self.consumed.boosts(), &self.consumed.timed_effects(), &self.talents.perks());
+        self.fill_trade();
+        if self.consumed.weapon_changed(self.inv.equipment[crate::items::MAIN_HAND].map(|s| s.item)) {
+            self.stats_dirty = true;
+        }
+        let mut timed = self.consumed.timed_effects();
+        timed.extend(self.enchant_effects());
+        self.stats = Stats::of_with(&self.inv.equipment, self.progress.level, &self.consumed.boosts(), &timed, &self.talents.perks());
+        self.skills.set_bonus(self.stats.skill_bonus);
         self.stats.armor += self.skills.armor_bonus(&self.inv.equipment);
         let [health, mana, stamina] = self.spent_bonus();
         (self.stats.max_health, self.stats.max_mana, self.stats.max_stamina) = (self.stats.max_health + health, self.stats.max_mana + mana, self.stats.max_stamina + stamina);
@@ -1930,6 +2066,7 @@ impl Panels {
         // Money: the denominations the character has (copper always).
         t.set_money(&format!("{BACKPACK}MoneyFrame"), self.inv.money, false, true);
         t.set_money("MerchantMoneyFrame", self.inv.money, true, true);
+        t.set_money("ClassTrainerMoneyFrame", self.inv.money, true, true);
 
         // The backpack.
         self.bag_scroll = self.bag_scroll.min(self.inv.bag.len().saturating_sub(BACKPACK_SIZE));
@@ -2013,7 +2150,7 @@ impl Panels {
         let Some(hit) = self.tree.hit_test(pos, screen).filter(|h| Some(*h) == down) else { return };
         let name = self.tree.name(hit).to_string();
         match name.as_str() {
-            n if self.magic_click(n) || self.menu_click(n) || self.talent_click(n, left) => {}
+            n if self.magic_click(n) || self.menu_click(n) || self.talent_click(n, left) || self.trade_click(n) || self.trainer_click(n) => {}
             "CharacterFrameCloseButton" => {
                 self.tree.show(CHARACTER, false);
         self.tree.show(SPELLBOOK, false);
@@ -2115,6 +2252,15 @@ impl Panels {
     // ---- tooltips
 
     fn item_lines(&self, stack: Stack) -> Vec<TipLine> {
+        let mut lines = self.item_lines_plain(stack);
+        // What was put on it with Enchanting, in green.
+        if let Some(e) = content::get().enchants.get(&stack.enchant) {
+            lines.push(TipLine::new(e.name.clone(), GREEN));
+        }
+        lines
+    }
+
+    fn item_lines_plain(&self, stack: Stack) -> Vec<TipLine> {
         let item: &ItemDef = crate::items::get(stack.item);
         let q = QUALITY_COLORS[item.quality];
         let mut lines = vec![TipLine::new(item.name, [q[0], q[1], q[2], 1.0])];
@@ -2299,7 +2445,7 @@ impl Panels {
         if let Some(action) = self.book_entry_of(name) {
             return Some(self.action_lines(action));
         }
-        if let Some(lines) = self.talent_lines(name) {
+        if let Some(lines) = self.talent_lines(name).or_else(|| self.trade_lines(name)).or_else(|| self.trainer_lines(name)) {
             return Some(lines);
         }
         if let Some(slot) = SLOT_BUTTONS.iter().position(|b| *b == name) {
@@ -2316,7 +2462,7 @@ impl Panels {
         }
         if let Some(i) = name.strip_prefix("MerchantItem").and_then(|n| n.strip_suffix("ItemButton")).and_then(|n| n.parse::<usize>().ok()) {
             let &item = self.merchant?.1.vendor.get(self.merchant_page * MERCHANT_ITEMS + i - 1)?;
-            return Some(self.item_lines(Stack { item, count: 1 }));
+            return Some(self.item_lines(Stack { item, count: 1, enchant: 0 }));
         }
         if let Some(i) = name.strip_prefix("QuestLogItem").and_then(|n| n.parse::<usize>().ok()) {
             let quest = self.quests.active.get(self.log_selected)?.quest;
@@ -2327,7 +2473,7 @@ impl Panels {
             for prefix in ["QuestDetailItem", "QuestRewardItem", "QuestProgressItem"] {
                 if let Some(i) = name.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok()) {
                     let stack = if prefix == "QuestProgressItem" {
-                        q.goals.iter().filter_map(|g| if let Goal::Collect { item, count } = *g { Some(Stack { item, count }) } else { None }).nth(i - 1)?
+                        q.goals.iter().filter_map(|g| if let Goal::Collect { item, count } = *g { Some(Stack { item, count, enchant: 0 }) } else { None }).nth(i - 1)?
                     } else {
                         *q.rewards().nth(i - 1)?
                     };
@@ -2359,7 +2505,7 @@ impl Panels {
 
     /// Aim the doll and portrait cameras at the player and draw the character's model into them.
     pub fn render_pictures(&mut self, renderer: &mut Renderer, gpu: &Gpu, player: &Player, world: &World) {
-        if !self.character_open() && !self.talents_open() {
+        if !self.character_open() && !self.talents_open() && !self.trade_open() {
             return;
         }
         let (feet, facing) = (player.feet(), player.facing());
@@ -2397,6 +2543,7 @@ impl Panels {
             self.tree.draw_text_aligned(ui, gpu, &self.mount.clone(), screen, "GameFontHighlight", "Breath", (screen.0 as f32 / 2.0, 96.0 * s), 0.5, WHITE);
         }
         self.draw_tracker(ui, gpu, screen);
+        self.draw_trade(ui, gpu, screen);
         self.draw_load(ui, gpu, screen);
         if let Some(hint) = hint {
             self.tree.draw_text_centered(ui, gpu, &mount, screen, "GameFontHighlight", hint, 190.0, WHITE);
@@ -2454,7 +2601,7 @@ impl Panels {
         if self.sleep_step(lines.signum()) {
             return true;
         }
-        self.any_open() && (self.backpack_wheel(pos, screen, lines) || self.skills_wheel(lines) || self.tree.scroll_at(pos, screen, lines))
+        self.any_open() && (self.backpack_wheel(pos, screen, lines) || self.skills_wheel(lines) || self.trade_wheel(lines) || self.trainer_wheel(lines) || self.tree.scroll_at(pos, screen, lines))
     }
 
     /// The wheel over the backpack moves its window a row up or down the list of slots.
@@ -2487,7 +2634,7 @@ impl Panels {
     pub fn set_target(&mut self, view: Option<crate::creature::TargetView>) {
         // Whoever is talked to shows his face in the portrait of the talk, trade and quest windows (the book otherwise).
         let face = view.as_ref().filter(|v| self.talking_to() == Some(v.id)).map(|_| self.target_portrait.1);
-        for portrait in ["GossipFramePortrait", "MerchantFramePortrait", "QuestFramePortrait"] {
+        for portrait in ["GossipFramePortrait", "MerchantFramePortrait", "QuestFramePortrait", "ClassTrainerFramePortrait"] {
             self.tree.set_region_texture(portrait, face);
         }
         let Some(v) = view else {
@@ -2648,7 +2795,7 @@ mod tests {
 
     #[test]
     fn loot_slots_list_the_money_first_then_the_items() {
-        let loot = Loot { copper: 7, items: vec![Stack { item: 7, count: 1 }, Stack { item: 8, count: 1 }] };
+        let loot = Loot { copper: 7, items: vec![Stack { item: 7, count: 1, enchant: 0 }, Stack { item: 8, count: 1, enchant: 0 }] };
         assert_eq!(Panels::loot_slots(&loot), [None, Some(0), Some(1)]);
         let no_money = Loot { copper: 0, ..loot };
         assert_eq!(Panels::loot_slots(&no_money), [Some(0), Some(1)]);

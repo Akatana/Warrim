@@ -8,6 +8,7 @@ use crate::anim::{Mix, Pose};
 use wowfmt::m2::M2;
 
 /// Animation ids of the M2 sequences used.
+pub const FISHING_CAST: u16 = 133;
 pub const STAND: u16 = 0;
 pub const WALK: u16 = 4;
 pub const RUN: u16 = 5;
@@ -111,8 +112,9 @@ fn smoothstep(t: f32) -> f32 {
 
 /// Whether the animation repeats until the state changes.
 fn looping(id: u16) -> bool {
+    // FISHING_CAST throws the line once, then the wait (134) loops.
     // The last four are the creatures' death, combat wound and unarmed attack (the wolf's bite).
-    !matches!(id, JUMP_START | JUMP_END | ATTACK_1H | ATTACK_2H | ATTACK_UNARMED | ATTACK_2HL | ATTACK_1H_PIERCE | ATTACK_2HL_PIERCE | ATTACK_OFF | ATTACK_OFF_PIERCE | DODGE | 20..=23 | ATTACK_BOW | ATTACK_RIFLE | SPELL_CAST_DIRECTED | SPELL_CAST_OMNI | SHIELD_BLOCK | HIP_SHEATH | 89 | 1 | 9 | 57 | 113 | 181)
+    !matches!(id, JUMP_START | JUMP_END | ATTACK_1H | ATTACK_2H | ATTACK_UNARMED | ATTACK_2HL | ATTACK_1H_PIERCE | ATTACK_2HL_PIERCE | ATTACK_OFF | ATTACK_OFF_PIERCE | DODGE | 20..=23 | ATTACK_BOW | ATTACK_RIFLE | SPELL_CAST_DIRECTED | SPELL_CAST_OMNI | SHIELD_BLOCK | HIP_SHEATH | 89 | 1 | 9 | 57 | 113 | 181 | FISHING_CAST)
 }
 
 /// Walking and running step in the same rhythm, so a switch between them keeps the stride's phase.
@@ -350,6 +352,13 @@ impl Animator {
         self.attack_rate = length(m2, seq) / (seconds * 1000.0).max(1.0);
     }
 
+    /// Play a one-shot animation `id` on the upper body once through, at its own pace.
+    pub fn start_once(&mut self, m2: &M2, id: u16) {
+        if let Some(seq) = pick(m2, id, true, &mut self.rng) {
+            self.start_upper(m2, id, length(m2, seq) / 1000.0);
+        }
+    }
+
     /// Put the weapons away (or draw them) with the hand's trip to the hip, over `seconds`.
     pub fn start_sheath(&mut self, m2: &M2, seconds: f32) {
         self.start_upper(m2, HIP_SHEATH, seconds);
@@ -522,6 +531,21 @@ mod tests {
     }
 
     const WALKING: Motion = Motion { speed: 2.5, forward_speed: 2.5, vertical_speed: 0.0, yaw_rate: 0.0, airborne: false, sneaking: false, mounted: false, swimming: false, side_speed: 0.0, emote: None };
+
+    #[test]
+    fn the_line_is_thrown_once_and_the_wait_after_it_loops() {
+        let Some(m2) = human() else { return eprintln!("skipped: no game data") };
+        let mut a = Animator::new(&m2, 1);
+        a.precast = Some(134);
+        a.start_upper(&m2, FISHING_CAST, 0.9);
+        run(&mut a, &m2, 0.5, Motion::default());
+        assert!(a.attacking() && a.upper.cur.id == FISHING_CAST);
+        run(&mut a, &m2, 1.0, Motion::default());
+        assert!(!a.attacking(), "the throw is over");
+        assert_eq!(a.upper.cur.id, 134, "the wait follows it");
+        run(&mut a, &m2, 4.0, Motion::default());
+        assert_eq!(a.upper.cur.id, 134);
+    }
 
     #[test]
     fn changing_animation_fades_over_the_blend_time() {

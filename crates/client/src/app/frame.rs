@@ -118,6 +118,18 @@ impl State {
         self.eye = Some(crate::propedit::Eye::of(&render_camera, (self.config.width, self.config.height)));
         drop(t);
         let t = scope("water effects, panels, spells");
+        if let Some(item) = self.panels.as_mut().and_then(|p| p.take_lure()) {
+            self.start_lure(item);
+        }
+        if self.later.is_some() && self.moving {
+            self.later = None;
+        } else if self.later.is_some() && self.player.as_ref().is_some_and(|p| !p.drawing()) {
+            match self.later.take() {
+                Some(Later::Fish(spot)) => self.start_fishing(spot),
+                Some(Later::Lure(item)) => self.start_lure(item),
+                None => {}
+            }
+        }
         self.water_effects(dt, render_camera.pos);
         let size = (self.config.width, self.config.height);
         if let Some(panels) = &mut self.panels {
@@ -187,6 +199,9 @@ impl State {
         drop(t);
         let t = scope("cursor, lock");
         self.step_lock(dt);
+        if let Some((recipe, times)) = self.panels.as_mut().and_then(|p| p.take_craft()) {
+            self.start_craft(recipe, times);
+        }
         self.step_gather(dt);
         (self.pointer, self.hover) = {
             let (kind, hover) = self.cursor_context(&render_camera, size);
@@ -262,7 +277,9 @@ impl State {
             let swimming = self.controller.swimming();
             self.input.tired = self.player.as_ref().is_some_and(|p| p.is_worn_out());
             self.input.sprint = self.input.fast && self.controller.mode == Mode::Walk && !sneaking && !swimming && self.player.as_ref().is_none_or(|p| p.can_sprint());
-            self.input.mount_bonus = self.player.as_ref().map_or(0.0, |p| p.speed_bonus());
+            // (what the worn gear adds to the speed of mounts counts only while riding)
+            let gear_mount = self.panels.as_ref().map_or(0.0, |p| p.stats.mount_speed);
+            self.input.mount_bonus = self.player.as_ref().map_or(0.0, |p| if p.speed_bonus() > 0.0 { p.speed_bonus() + gear_mount } else { 0.0 });
             self.input.gear_bonus = self.panels.as_ref().map_or(0.0, |p| p.stats.run_speed);
             self.input.burden = self.panels.as_ref().map_or(0.0, |pn| pn.burden());
             // Spells that have hold of the character: slowed, rooted, stunned, or running in fear from where the spell came from.
@@ -387,13 +404,13 @@ impl State {
                 let crit = player.chance(self.panels.as_ref().map_or(0.0, |p| p.stats.crit));
                 let damage = (player.roll_damage() * factor * heavy * power * if crit { 2.0 } else { 1.0 }).round().max(1.0);
                 // A sneaking player's first blow on a creature that has not noticed him is heavier.
-                let (level, hit, versus, speed) = self.panels.as_ref().map_or((1, 0.0, [0; 11], 2.0), |p| (p.progress.level, p.stats.hit, p.stats.ap_versus, p.stats.speed));
+                let (level, hit, versus, speed, flat) = self.panels.as_ref().map_or((1, 0.0, [0; 11], 2.0, [0; 11]), |p| (p.progress.level, p.stats.hit, p.stats.ap_versus, p.stats.speed, p.stats.damage_versus));
                 // Wielding a weapon in each hand makes every blow miss 19% more often.
                 let hit = if player.is_dual_wielding() { hit - crate::player::DUAL_WIELD_MISS } else { hit };
                 let sneak = if player.is_sneaking() { SNEAK_ATTACK } else { 1.0 };
                 // A blow may miss; what the gear adds against the type of the creature is attack power, which adds damage as it does for all blows.
                 let hits = wolves.strike(feet, self.camera.yaw, damage, sneak, &mut |mob, kind| {
-                    (!player.chance(crate::levels::melee_miss(level, mob, hit))).then(|| versus[kind as usize % 11] as f32 / crate::items::ATTACK_POWER_PER_DPS * speed)
+                    (!player.chance(crate::levels::melee_miss(level, mob, hit))).then(|| versus[kind as usize % 11] as f32 / crate::items::ATTACK_POWER_PER_DPS * speed + flat[kind as usize % 11] as f32)
                 });
                 if hits.iter().any(|h| h.1 > 0.0) {
                     player.emit(Sfx::SwordHit);
@@ -414,7 +431,7 @@ impl State {
                         if let Some(weapon) = panels.inv.equipment[if player.is_off_hand() { crate::items::OFF_HAND } else { crate::items::MAIN_HAND }] {
                             let (level, speed) = (panels.progress.level, panels.stats.speed);
                             let mut out = Vec::new();
-                            crate::procs::on_hit(weapon.item, speed, level, &mut || panels.consumed.dice(), &mut out);
+                            crate::procs::on_hit(weapon, speed, level, &mut || panels.consumed.dice(), &mut out);
                             if player.is_extra_swing() {
                                 out.retain(|o| !matches!(o, crate::procs::Outcome::Extra(_)));
                             }
@@ -527,6 +544,19 @@ impl State {
                         continue;
                     }
                 }
+                // What absorbs blows takes up what it can of a physical one.
+                if let (true, Some(panels)) = (physical, &mut self.panels) {
+                    let left = panels.consumed.absorb(amount);
+                    if left < amount {
+                        if let (true, Some(text)) = (left <= 0.0, &mut self.combat_text) {
+                            text.message("Absorb");
+                        }
+                        amount = left;
+                    }
+                    if amount <= 0.0 {
+                        continue;
+                    }
+                }
                 match if physical { player.take_hit(amount) } else { Some(player.take_magic(amount * resisted)) } {
                     None => {
                         blocked = true;
@@ -592,16 +622,18 @@ impl State {
             // Looting: the window closes when the player walks away, and what is left stays on the corpse.
             if let Some(panels) = &mut self.panels {
                 let (chests, nodes) = (&mut self.chests, &mut self.nodes);
-                if panels.looting().and_then(|i| if i >= NODE_LOOT { nodes.as_ref()?.pos(i - NODE_LOOT) } else if i >= CHEST_LOOT { chests.as_ref()?.pos(i - CHEST_LOOT) } else { wolves.corpse_pos(i) }).is_some_and(|at| (at - feet).length() > LOOT_LEAVE) {
+                if panels.looting().and_then(|i| if i >= FISH_LOOT { None } else if i >= NODE_LOOT { nodes.as_ref()?.pos(i - NODE_LOOT) } else if i >= CHEST_LOOT { chests.as_ref()?.pos(i - CHEST_LOOT) } else { wolves.corpse_pos(i) }).is_some_and(|at| (at - feet).length() > LOOT_LEAVE) {
                     panels.close_loot();
                 }
                 if panels.talking_to().and_then(|i| wolves.corpse_pos(i)).is_some_and(|at| (at - feet).length() > LOOT_LEAVE) {
                     panels.close_gossip();
                     panels.close_merchant();
+                    panels.close_trainer();
                     panels.close_quest();
                 }
                 if let Some((id, left)) = panels.take_closed_loot() {
                     match (chests, nodes) {
+                        _ if id >= FISH_LOOT => {}
                         (_, Some(nodes)) if id >= NODE_LOOT => nodes.set_loot(id - NODE_LOOT, left),
                         (Some(chests), _) if id >= CHEST_LOOT && id < NODE_LOOT => chests.set_loot(id - CHEST_LOOT, left),
                         _ => wolves.set_loot(id, left),
@@ -609,6 +641,9 @@ impl State {
                 }
                 let chest = self.chests.as_ref().and_then(|c| Some(c.lock(c.near(feet, OPEN_RANGE)?).is_some()));
                 let pickup = self.pickups.as_ref().is_some_and(|p| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv)).is_some());
+                let skin = wolves.skinnable_near(feet, LOOT_RANGE).is_some();
+                let fish_on = self.bobber.as_ref().is_some_and(|b| b.bite_left.is_some());
+                let fish_ready = self.gather.is_none() && crate::fishing::pole_in_hand(&panels.inv) && fishing::water_ahead_of(&self.camera, &self.world).is_some();
                 let node = self.nodes.as_ref().and_then(|n| n.kind(n.near(feet, OPEN_RANGE)?)).map(|k| k.skill == crate::skills::Skill::Mining);
                 let bed = near_bed(&self.beds, &self.world, feet);
                 let body = self.bodies.as_ref().is_some_and(|b| b.near(feet, crate::physics::GRAB_RANGE).is_some());
@@ -619,6 +654,9 @@ impl State {
                     (_, Some(_), ..) => Some("Press E to loot"),
                     (_, None, _, Some(true)) => Some("Press E to pick the lock"),
                     (_, None, _, Some(false)) => Some("Press E to open"),
+                    (_, None, _, None) if skin => Some("Press E to skin"),
+                    (_, None, _, None) if fish_on => Some("Press E to reel in"),
+                    (_, None, _, None) if fish_ready => Some("Press E to fish"),
                     (_, None, _, None) if pickup => Some("Press E to pick up"),
                     (_, None, _, None) if node == Some(true) => Some("Press E to mine"),
                     (_, None, _, None) if node == Some(false) => Some("Press E to gather"),
@@ -760,7 +798,7 @@ impl State {
             drop(t);
             panels.set_quest_targets(self.wolves.as_ref(), self.chests.as_ref(), self.pickups.as_ref());
             if self.lock.is_none() {
-                let marks = self.nodes.as_ref().filter(|_| panels.compass_nodes()).map_or_else(Vec::new, |n| n.marks(self.camera.pos, self.camera.yaw));
+                let marks = self.nodes.as_ref().filter(|_| panels.compass_nodes()).map_or_else(Vec::new, |n| n.marks(self.camera.pos, self.camera.yaw).into_iter().filter(|m| panels.skills.knows(m.2)).collect());
                 panels.draw_compass(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw, &marks);
             }
             panels.draw_map(&mut self.renderer.ui, &self.gpu, size, self.camera.pos, self.camera.yaw);

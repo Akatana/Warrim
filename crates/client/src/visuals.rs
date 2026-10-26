@@ -113,6 +113,13 @@ pub fn of_spell(mount: &Mount, spell: u32) -> Visual {
     spells.find_by_id(spell).and_then(|s| tables.visuals.find_by_id(s.u32(115)).map(|v| tables.visual(v, 0.0, 0.0))).unwrap_or_default()
 }
 
+/// What the original shows for a spell, read once for each: the work of a trade (a hammer on the anvil, a pot on the fire) is its spell's precast kit.
+pub fn spell(mount: &Mount, id: u32) -> Visual {
+    static CACHE: std::sync::Mutex<std::collections::BTreeMap<u32, Visual>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.entry(id).or_insert_with(|| of_spell(mount, id)).clone()
+}
+
 /// The visuals of Mining (spell 2575) and of Herb Gathering (2366), read once: the stance and the model in the hand, and the sounds.
 pub fn gathering(mount: &Mount) -> &'static [Visual; 2] {
     static CACHE: std::sync::OnceLock<[Visual; 2]> = std::sync::OnceLock::new();

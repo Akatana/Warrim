@@ -437,10 +437,12 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 let _ = panels.inv.equip_from_bag(slot, 60);
             }
             for id in &args.wear {
-                match crate::items::all().iter().position(|i| i.id == *id) {
+                // (`id#803`: with the enchantment 803 on it)
+                let (id, enchant) = id.split_once('#').map_or((id.as_str(), 0), |(id, e)| (id, e.parse().unwrap_or(0)));
+                match crate::items::all().iter().position(|i| i.id == id) {
                     Some(item) => {
                         panels.inv.bag = vec![None; crate::items::BACKPACK_SIZE];
-                        panels.inv.add(crate::items::Stack { item, count: 1 });
+                        panels.inv.add(crate::items::Stack { item, count: 1, enchant });
                         if let Err(e) = panels.inv.equip_from_bag(0, 99) {
                             log::warn!("{id} is not put on: {e:?}");
                         }
@@ -457,7 +459,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 panels.quests.accept(wolves_quest);
             }
             if args.panel.iter().any(|p| p == "ready") {
-                panels.inv.add(crate::items::Stack { item: crate::items::find("tough_wolf_meat"), count: 8 });
+                panels.inv.add(crate::items::Stack { item: crate::items::find("tough_wolf_meat"), count: 8, enchant: 0 });
             }
             panels.refresh();
             player.set_equipment(&mut renderer, &gpu, &panels.inv.equipment, &panels.stats);
@@ -627,10 +629,22 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                     panels.skills.train(*skill, (i * i * 7) as f32);
                 }
             }
+            // A fishing pole in the hand and lures in the pack, the backpack open (`--panel lure`, then `--clicks` on the lures).
+            if args.panel.iter().any(|p| p == "lure") {
+                panels.skills.set(crate::skills::Skill::Fishing, 60);
+                panels.inv.bag = vec![None; crate::items::BACKPACK_SIZE];
+                for (id, count) in [("i6256", 1), ("i6529", 20), ("i6530", 20)] {
+                    panels.inv.add(crate::items::Stack { item: crate::items::find(id), count, enchant: 0 });
+                }
+                if !args.panel.iter().any(|p| p == "no-pole") {
+                    let _ = panels.inv.equip_from_bag(0, 60);
+                }
+                panels.toggle_backpack();
+            }
             // Two tomes in the pack, read: a basic one is learned, a greater one asks for a rank the character has not got.
             if args.panel.iter().any(|p| p == "tome") {
                 for id in ["tome_fireball", "tome_arcane_explosion"] {
-                    panels.inv.add(crate::items::Stack { item: crate::items::find(id), count: 1 });
+                    panels.inv.add(crate::items::Stack { item: crate::items::find(id), count: 1, enchant: 0 });
                 }
                 let first = panels.inv.bag.iter().position(|s| s.is_some_and(|s| crate::items::get(s.item).tome.is_some())).unwrap_or(0);
                 panels.read_tome(first);
@@ -643,8 +657,20 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             if args.panel.iter().any(|p| p == "skills") {
                 panels.show_skills_tab(true);
             }
+            if args.panel.iter().any(|p| p == "recipes") {
+                panels.recipes_preview();
+            }
             if args.panel.iter().any(|p| p == "spellbook") {
                 panels.toggle_spellbook();
+            }
+            if args.panel.iter().any(|p| p == "trainer") {
+                panels.trainer_preview();
+            }
+            if args.panel.iter().any(|p| p == "trade") {
+                panels.trade_preview(crate::skills::Skill::Blacksmithing);
+            }
+            if args.panel.iter().any(|p| p == "enchant") {
+                panels.trade_preview(crate::skills::Skill::Enchanting);
             }
             if args.panel.iter().any(|p| p == "talents") {
                 panels.talents_preview();
@@ -682,7 +708,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 panels.toggle_backpack();
             }
             if args.panel.iter().any(|p| p == "loot") {
-                let stack = |item, count| crate::items::Stack { item, count };
+                let stack = |item, count| crate::items::Stack { item, count, enchant: 0 };
                 panels.open_loot(0, crate::loot::Loot { copper: 7, items: vec![stack(crate::items::find("tough_wolf_meat"), 2), stack(crate::items::find("ruined_pelt"), 1)] });
             }
             if args.panel.iter().any(|p| p == "gossip") {
@@ -695,7 +721,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
             if args.panel.iter().any(|p| p == "buffs") {
                 for id in ["i3825", "i954", "i117"] {
                     let item = crate::items::find(id);
-                    panels.inv.add(crate::items::Stack { item, count: 1 });
+                    panels.inv.add(crate::items::Stack { item, count: 1, enchant: 0 });
                     let slot = panels.inv.bag.iter().position(|s| s.is_some_and(|s| s.item == item)).unwrap_or(0);
                     let _ = panels.consumed.use_item(&mut panels.inv, slot, 60, true);
                 }
@@ -824,6 +850,11 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                     let (x, y) = xy.split_once('/').context("press:x/y")?;
                     editor.mouse_moved((x.parse()?, y.parse()?));
                     editor.world_press(&|x, z| world.height_at(x, z), &[]);
+                }
+                // `wheel:n`: the wheel turns n lines over the form (a negative number scrolls down).
+                Some(("wheel", n)) => {
+                    editor.mouse_moved((450.0, 300.0));
+                    editor.wheel(n.parse()?);
                 }
                 // `back:n`: n times Backspace.
                 Some(("back", n)) => (0..n.parse::<usize>()?).for_each(|_| editor.key(crate::editor::Key::Backspace)),

@@ -312,8 +312,23 @@ and Garrick of the story) and the chests of the valley (`loot.ron` rolls them wi
 original's Northshire merchants: armor, weapons, bread, water and ammunition) and the rewards of three quests (those of the original's
 "Wolves Across the Border", "Grape Manifest" and "Bounty on Garrick Padfoot"). The rest of the catalogue is in the game, in the editor
 (F1, Items: look, class, level, stats, spells; Loot, Creatures, Quests) for placing it, but the world has no more creatures to drop it. Not done: bags and
-quivers (no extra slots), ammunition and ranged combat, professions and recipes, keys and lockboxes, readable books, items with a random suffix,
+quivers (no extra slots), ammunition and ranged combat, keys and lockboxes, readable books, items with a random suffix,
 item sets, durability and repair, binding and unique rules, armor and weapon proficiency by class (the classes and races of an item are shown, not enforced).
+
+## The professions
+
+All twelve are skills to rank 300 that a teacher teaches, as in the original: a new character knows none, a trade trainer (`import_trainers.py`: 249 of them, with the prices, the levels and the ranks they ask for) teaches the apprentice (to rank 75), and, as the rank and the level allow, the journeyman (150), the expert (225) and the artisan (300); a character can learn all of them. The skills window lists the trades that are learned (Professions, Secondary Skills); `skill` and `recipes` of the console teach them to the artisan.
+**Mining** and **Herbalism** gather the veins and herbs of the original (`tools/import_nodes.py`: `classic_nodes.ron`, `classic_node_kinds.ron`, `classic_node_loot.ron`;
+Places > Nodes and Node kinds in the editor): E casts the gathering (a mining pick in the pack for the first), the rank rises by the server's chance, the compass
+shows the nodes near (an interface option hides them). **Skinning** (E on a looted beast with a skinning knife; `import_skins.py`) and **Fishing** (E at water with a
+fishing pole in the hand, E again when the bobber dips; `import_fishing.py`, loot by area) work the same way. The crafts (Alchemy, Blacksmithing, Cooking, Engineering,
+First Aid, Leatherworking, Tailoring, Enchanting and the smelting of Mining; `import_recipes.py`: 1,262 recipes with reagents, tools, stations and difficulty) are made in
+the original's trade skill window (Recipes button of the skill in the skills window): a recipe is known when a trainer teaches it (`import_trainers.py`, the window of
+`Blizzard_TrainerUI`), when its pattern, plan or formula is used, or from the start. Stations (anvil, forge, cooking fire) are the props with a `station` (set by
+`import_props.py`; the Station field of the prop form in the editor). In the editor (Creatures > Teaches a trade) any creature can be made a teacher: its lessons are recipes or steps of the trades with a price, a level and a skill they ask for, or copied from another teacher; nodes and their kinds are Places > Nodes and Node kinds. Enchantments (`import_enchants.py`) go on the worn item that fits (weapons first) and stay on that item (`Stack.enchant`, saved with it); the spells of Fiery Weapon, Icy Weapon, Lifestealing, Unholy Weapon, Crusader and Demonslaying go off on blows by the original's rates, and the weapon glows.
+Fishing draws the pole (the hand goes to the hip first if the weapons are put away), throws the line with the spell's cast animation and holds the waiting one. Lures, sharpening stones, weightstones and oils (the `Temp` use effect of items) are put on in a cast of their own spell (its cast time, its hand animation, models and sound): they ask for the kind of weapon the spell names (`equipped` of `classic_spells.ron`: the fishing pole, the sharp or the blunt ones), a weapon carries one of them, and the buff row shows it; it is lost with the weapon it is on and kept by a save.
+The console has `skill`, `item` and `recipes <trade|all>`. Not done: the race and class limits of recipes, skill discovery (Alchemy), extra items
+on a make, recipes taught by a quest, enchanting items in the pack.
 
 ## Skills, spells and tomes
 

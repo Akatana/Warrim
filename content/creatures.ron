@@ -14,7 +14,7 @@
     (id: "trader_aldric", name: "Trader Aldric", title: Some("Merchant"), body: Humanoid(outfit: ["worn_leather_vest", "scuffed_boots", "hatchet"], look: (skin: 1, face: 7, hair_style: 8, hair_color: 6, beard: 0)), gossip: Some((
         greeting: "Looking to buy or to sell, $N? I take anything worth a copper, and I have a few good pieces besides.",
         options: [(text: "I would like to browse your goods.", action: Vendor)],
-    )), vendor: ["lockpick", "riding_bridle", "i2901", "i2384", "i2383", "i2381", "i2380", "i2379", "i2129", "i2385", "i17184", "i2134", "i2132", "i2131", "i2130", "i1194", "i2139", "i2479", "i2480", "i3111", "i4540", "i159", "i2504", "i2508", "i2512", "i2516", "i2947"]),
+    )), vendor: ["lockpick", "riding_bridle", "i2901", "i5956", "i7005", "i6256", "i2384", "i2383", "i2381", "i2380", "i2379", "i2129", "i2385", "i17184", "i2134", "i2132", "i2131", "i2130", "i1194", "i2139", "i2479", "i2480", "i3111", "i4540", "i159", "i2504", "i2508", "i2512", "i2516", "i2947"]),
     // The riding instructor teaches the two steps of the original's riding skill, at its levels and prices (90 gold, 600 gold).
     (id: "instructor_hale", name: "Instructor Hale", title: Some("Riding Instructor"), body: Humanoid(outfit: ["worn_leather_vest", "scuffed_boots"], look: (skin: 2, face: 5, hair_style: 3, hair_color: 2, beard: 4)), gossip: Some((
         greeting: "A horse is not a chair, $N. Come to me when you are ready to ride one properly.",

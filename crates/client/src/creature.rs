@@ -274,6 +274,8 @@ pub struct Mob {
     todo: Vec<(f32, content::Step)>,
     /// What the corpse holds, rolled at its death, until it is looted away or the creature is back.
     pub loot: Option<Loot>,
+    /// Whether the hide was taken from the corpse (a skinning knife).
+    pub skinned: bool,
     rng: u32,
     /// Yards run since the last footstep.
     stride: f32,
@@ -349,6 +351,8 @@ pub struct MobSave {
     health: f32,
     state: State,
     loot: Option<crate::save::LootSave>,
+    #[serde(default)]
+    skinned: bool,
     rng: u32,
     rest: f32,
     pause: f32,
@@ -375,6 +379,7 @@ impl Mob {
             health: self.health,
             state: self.state,
             loot: self.loot.as_ref().map(crate::save::loot_to_save),
+            skinned: self.skinned,
             rng: self.rng,
             rest: self.rest,
             pause: self.pause,
@@ -398,6 +403,7 @@ impl Mob {
             self.state = State::Chase;
         }
         self.loot = saved.loot.as_ref().map(crate::save::loot_from_save);
+        self.skinned = saved.skinned;
         // Its patrol goes on from the place it was walking to (if the places are still there).
         if saved.next < self.route.len() {
             self.next = saved.next;
@@ -441,6 +447,7 @@ impl Mob {
             roam: None,
             todo: Vec::new(),
             loot: None,
+            skinned: false,
             rng: seed,
             stride: 0.0,
             sounds: Vec::new(),
@@ -643,6 +650,7 @@ impl Mob {
             self.out.push(Act::Stop);
         }
         self.state = State::Dead(0.0);
+        self.skinned = false;
         self.pending = None;
         self.fire(brain::event::DEATH);
     }
@@ -2349,6 +2357,24 @@ impl Creatures {
         self.nearest(from, range, |m| m.is_dead() && m.loot.is_some())
     }
 
+    /// The nearest corpse within `range` yards of `from` that can be skinned: nothing left to loot, not skinned yet, and a beast that gives a hide.
+    pub fn skinnable_near(&self, from: Vec3, range: f32) -> Option<usize> {
+        self.nearest(from, range, |m| m.is_dead() && m.loot.is_none() && !m.skinned && content::get().skins.contains_key(&m.def.id))
+    }
+
+    /// What a corpse gives to a knife: its table of skinning and its level, if it can be skinned.
+    pub fn skin_of(&self, creature: usize) -> Option<(&'static str, u32)> {
+        let m = &self.creatures.get(creature)?.mob;
+        (m.is_dead() && m.loot.is_none() && !m.skinned).then(|| content::get().skins.get(&m.def.id).map(|t| (t.as_str(), m.def.level)))?
+    }
+
+    /// The hide was taken from the corpse.
+    pub fn mark_skinned(&mut self, creature: usize) {
+        if let Some(c) = self.creatures.get_mut(creature) {
+            c.mob.skinned = true;
+        }
+    }
+
     /// The nearest living creature within `range` yards of `from` that can be talked to (one that is not hostile).
     pub fn talkable_near(&self, from: Vec3, range: f32) -> Option<usize> {
         self.nearest(from, range, |m| !m.def.attackable() && !m.is_dead())
@@ -2410,7 +2436,11 @@ impl Creatures {
                     return None;
                 }
                 let kind = if m.is_dead() {
-                    m.loot.is_some().then_some(Kind::LootAll)?
+                    if m.loot.is_some() {
+                        Kind::LootAll
+                    } else {
+                        (!m.skinned && content::get().skins.contains_key(&m.def.id)).then_some(Kind::Skin)?
+                    }
                 } else if m.def.attackable() {
                     Kind::Attack
                 } else if !m.def.vendor.is_empty() {

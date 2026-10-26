@@ -459,6 +459,10 @@ impl Registry {
         reg.load_xml(mount, r"Interface\AddOns\Blizzard_TalentUI\Blizzard_TalentUI.xml")?;
         // So is the key bindings window (`Blizzard_BindingUI.toc`).
         reg.load_xml(mount, r"Interface\AddOns\Blizzard_BindingUI\Blizzard_BindingUI.xml")?;
+        // The windows of the trades: making things (`Blizzard_TradeSkillUI.toc`), enchanting (`Blizzard_CraftUI.toc`) and the trainers (`Blizzard_TrainerUI.toc`).
+        for addon in ["Blizzard_TradeSkillUI", "Blizzard_CraftUI", "Blizzard_TrainerUI"] {
+            reg.load_xml(mount, &format!(r"Interface\AddOns\{addon}\{addon}.xml"))?;
+        }
         Ok(reg)
     }
 
@@ -956,6 +960,27 @@ impl Tree {
     fn region_mut(&mut self, name: &str) -> Option<&mut Region> {
         let (n, r) = *self.regions_by_name.get(name)?;
         self.nodes[n].regions.get_mut(r)
+    }
+
+    /// `SetNormalTexture` of a button: the picture it shows at rest (`None`: none, as `SetNormalTexture("")`), whether or not the file of the XML named it.
+    pub fn set_button_texture(&mut self, button: &str, file: Option<&str>) {
+        let Some(&n) = self.by_name.get(button) else { return };
+        // A button that the XML gave no picture (the script sets it) gets one that fills it.
+        if let (Some(file), false) = (file, self.nodes[n].regions.iter().any(|r| r.role == Role::Normal)) {
+            let name = format!("{button}NormalTexture");
+            let kind = Kind::Texture { file: Some(file.to_string()), id: None, coords: [0.0, 1.0, 0.0, 1.0], color: None, additive: false };
+            self.nodes[n].regions.push(Region { name: name.clone(), kind, role: Role::Normal, size: None, anchors: Vec::new(), set_all: true, hidden: false });
+            self.regions_by_name.insert(name, (n, self.nodes[n].regions.len() - 1));
+            return;
+        }
+        for r in self.nodes[n].regions.iter_mut().filter(|r| r.role == Role::Normal) {
+            if let Kind::Texture { file: f, id, coords, .. } = &mut r.kind {
+                r.hidden = file.is_none();
+                if let Some(file) = file {
+                    (*f, *id, *coords) = (Some(file.to_string()), None, [0.0, 1.0, 0.0, 1.0]);
+                }
+            }
+        }
     }
 
     pub fn set_text(&mut self, region: &str, text: &str) {

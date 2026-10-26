@@ -482,7 +482,7 @@ impl Spellcaster {
             if let (true, Some(weapon), Some(wolves)) = (f.pitched, ctx.panels.inv.equipment[crate::items::RANGED], ctx.wolves.as_mut()) {
                 let (level, speed) = (ctx.panels.progress.level, ctx.panels.stats.ranged.map_or(2.0, |r| r.2));
                 let mut out = Vec::new();
-                crate::procs::on_hit(weapon.item, speed, level, &mut || ctx.panels.consumed.dice(), &mut out);
+                crate::procs::on_hit(weapon, speed, level, &mut || ctx.panels.consumed.dice(), &mut out);
                 crate::procs::apply(out, Some(f.target), ctx.player, ctx.panels, wolves, ctx.text.as_deref_mut());
             }
         }

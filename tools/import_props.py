@@ -25,7 +25,7 @@ import dbc
 MAPS = {0: "Azeroth", 1: "Kalimdor"}
 # The size of a map tile and of its chunks (yards), and the number of tiles to the middle of a map.
 TILE, CHUNK, HALF = 533.33333, 533.33333 / 16, 32
-# Door, button, quest giver, generic, chair, spell focus (forge, anvil, fire), text (a book, a plaque), goober, mailbox, meeting stone, fishing hole.
+# Door, button, quest giver, generic, chair, spell focus (forge, anvil, fire: the station tells which), text (a book, a plaque), goober, mailbox, meeting stone, fishing hole.
 KEPT = {0, 1, 2, 5, 7, 8, 9, 10, 19, 23, 25}
 
 
@@ -104,15 +104,15 @@ def main():
         if key in seen:
             continue
         seen.add(key)
-        out.append((MAPS[s["map"]], path, s["position_x"], s["position_y"], s["position_z"], heading, t["size"] or 1.0, zones.at(MAPS[s["map"]], s["position_x"], s["position_y"])))
+        out.append((MAPS[s["map"]], path, s["position_x"], s["position_y"], s["position_z"], heading, t["size"] or 1.0, zones.at(MAPS[s["map"]], s["position_x"], s["position_y"]), t["data0"] if t["type"] == 8 else 0))
 
     header = ("// The objects of the original game (1.12.1) that stand in the world for looks, made by tools/import_props.py from the CMaNGOS classic database (gameobject).\n"
               "// They are props like those of `props.ron` (and are edited in the editor like them), each with the map it stands in. Do not edit by hand: what the editor changes of them\n"
               "// is kept in `props.ron` and `editor.ron`, and running the tool again leaves that as it is.\n")
     with open(os.path.join(target, "classic_props.ron"), "w", encoding="utf8", newline="\n") as f:
         f.write(header + "[\n")
-        for name, path, x, y, z, h, scale, zone in sorted(out):
-            f.write('    (model: r"%s", map: Some("%s"),%s at: (%.2f, %.2f, %.2f), rotation: (0.0, %.1f, 0.0), scale: %.2f),\n' % (path, name, ' zone: Some("%s"),' % zone if zone else "", x, y, z, h, scale))
+        for name, path, x, y, z, h, scale, zone, station in sorted(out):
+            f.write('    (model: r"%s", map: Some("%s"),%s%s at: (%.2f, %.2f, %.2f), rotation: (0.0, %.1f, 0.0), scale: %.2f),\n' % (path, name, ' zone: Some("%s"),' % zone if zone else "", ' station: %d,' % station if station else "", x, y, z, h, scale))
         f.write("]\n")
     print("wrote", len(out), "objects, left out", skipped)
 

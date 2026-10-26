@@ -9,6 +9,8 @@ pub const MAX: u32 = 100;
 
 /// The top rank of a profession, as in the original (the other skills stop at `MAX`).
 pub const PROFESSION_MAX: u32 = 300;
+/// How many ranks each step of a trade (apprentice, journeyman, expert, artisan) adds to what it can be taken to.
+pub const PROFESSION_STEP: u32 = 75;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub enum Skill {
@@ -246,12 +248,57 @@ impl Skill {
             Skill::Swimming => "Skill at swimming. Rises while you swim, and swimming tires you less.".into(),
             Skill::Diving => "Skill at holding your breath. Rises while your head is under water, and you can stay under longer before you start to drown.".into(),
             armor if armor.group() == Group::Armor => format!("Skill in wearing {} armor. Rises with every blow that lands on you, in the share of the pieces you wear of it, and each piece of it stops more damage.", armor.name().to_lowercase()),
-            Skill::Mining => "Skill at mining. Lets you dig ore and stones from mineral veins with a mining pick; the richer veins ask for a higher rank, and every vein within reach of your rank can teach you more.".into(),
-            Skill::Herbalism => "Skill at gathering herbs. Lets you pick plants for their leaves and roots; the rarer herbs ask for a higher rank, and every herb within reach of your rank can teach you more.".into(),
-            trade if trade.is_profession() => format!("Skill in {}. The rank is here, but this game has no recipes or tools for it yet.", trade.name().to_lowercase()),
+            Skill::Mining => "Skill at mining. Learned from a teacher in a town. Lets you dig ore and stones from mineral veins with a mining pick; the richer veins ask for a higher rank, and every vein within reach of your rank can teach you more.".into(),
+            Skill::Herbalism => "Skill at gathering herbs. Learned from a teacher in a town. Lets you pick plants for their leaves and roots; the rarer herbs ask for a higher rank, and every herb within reach of your rank can teach you more.".into(),
+            Skill::Skinning => "Skill at skinning. Learned from a teacher in a town. Lets you strip the hide from the beasts you have killed with a skinning knife; the tougher beasts ask for a higher rank, and every skinning within reach of your rank can teach you more.".into(),
+            Skill::Fishing => "Skill at fishing. Learned from a teacher in a town. Lets you cast a line into the water with a fishing pole and catch what bites; the rank rises with every catch.".into(),
+            trade if trade.is_profession() => format!("Skill in {}. Learned from a teacher in a town, who teaches the step after each step as the rank allows. Recipes are taught by trainers and by the patterns, plans and formulas you find; every making that is hard enough for your rank raises it.", trade.name().to_lowercase()),
             Skill::Riding => "Skill at riding. Learned from a riding instructor, for a price; it lets you ride the mounts that ask for it.".into(),
             class => format!("Skill in the arts of the {}. Rises with every spell of the class you cast, and its spells grow stronger. The greater tomes of the class ask for its rank.", class.name().to_lowercase()),
         }
+    }
+
+    /// The skill of a skill line of the original's tables (`SkillLine.dbc`, what items and trainers ask for): the trades.
+    pub fn of_line(line: u32) -> Option<Skill> {
+        Some(match line {
+            43 => Skill::Swords,
+            44 => Skill::Axes,
+            45 => Skill::Bows,
+            46 => Skill::Guns,
+            54 => Skill::Maces,
+            55 => Skill::TwoHandedSwords,
+            160 => Skill::TwoHandedMaces,
+            172 => Skill::TwoHandedAxes,
+            173 => Skill::Daggers,
+            176 => Skill::Thrown,
+            136 => Skill::Staves,
+            162 => Skill::Unarmed,
+            226 => Skill::Crossbows,
+            228 => Skill::Wands,
+            229 => Skill::Polearms,
+            473 => Skill::FistWeapons,
+            433 => Skill::Blocking,
+            633 => Skill::Lockpicking,
+            155 => Skill::Swimming,
+            762 => Skill::Riding,
+            415 => Skill::Cloth,
+            414 => Skill::Leather,
+            413 => Skill::Chain,
+            293 => Skill::Plate,
+            164 => Skill::Blacksmithing,
+            165 => Skill::Leatherworking,
+            171 => Skill::Alchemy,
+            182 => Skill::Herbalism,
+            185 => Skill::Cooking,
+            186 => Skill::Mining,
+            197 => Skill::Tailoring,
+            202 => Skill::Engineering,
+            333 => Skill::Enchanting,
+            356 => Skill::Fishing,
+            393 => Skill::Skinning,
+            129 => Skill::FirstAid,
+            _ => return None,
+        })
     }
 
     /// One of the nine classes, whose spells train it.
@@ -316,20 +363,81 @@ pub struct Skills {
     rank: [u32; COUNT],
     /// Uses towards the next rank.
     uses: [f32; COUNT],
+    /// What the worn gear adds to each skill (an enchantment of mining, a pair of gloves of herbalism): it counts when the skill is asked what it can do, not when it is trained.
+    bonus: [i32; COUNT],
+    /// The highest rank a trade can be taken to: 0 while it has not been learned, then 75, 150, 225 or 300 as the apprentice, the journeyman, the expert and the
+    /// artisan are learned from a teacher (`Lesson::step`). The other skills have no such limit.
+    max: [u32; COUNT],
 }
 
 impl Skills {
     /// A new character: rank 1 in everything, but 5 in what it starts with (the sword, the shield, its class).
     pub fn new() -> Skills {
-        let mut s = Skills { rank: [1; COUNT], uses: [0.0; COUNT] };
+        let mut s = Skills { rank: [1; COUNT], uses: [0.0; COUNT], bonus: [0; COUNT], max: [0; COUNT] };
         for skill in [Skill::Swords, Skill::Blocking, Skill::Paladin] {
             s.rank[skill.index()] = 5;
         }
         s
     }
 
+    /// What the skill is worth now: its rank and what the gear adds.
     pub fn rank(&self, skill: Skill) -> u32 {
+        (self.rank[skill.index()] as i32 + self.bonus[skill.index()]).max(1) as u32
+    }
+
+    /// The rank itself, trained or taught.
+    pub fn pure(&self, skill: Skill) -> u32 {
         self.rank[skill.index()]
+    }
+
+    /// What the gear adds to the skill.
+    pub fn bonus(&self, skill: Skill) -> i32 {
+        self.bonus[skill.index()]
+    }
+
+    pub fn set_bonus(&mut self, bonus: [i32; COUNT]) {
+        self.bonus = bonus;
+    }
+
+    /// Whether the skill can be used: all of them but the trades are, from the start; a trade has to be learned from a teacher.
+    pub fn knows(&self, skill: Skill) -> bool {
+        !skill.is_profession() || self.max[skill.index()] > 0
+    }
+
+    /// The most the skill can be taken to now.
+    pub fn top_of(&self, skill: Skill) -> u32 {
+        if skill.is_profession() { self.max[skill.index()] } else { skill.top() }
+    }
+
+    /// The rank the skill's bar is full at: for a trade the step learned.
+    pub fn cap(&self, skill: Skill) -> u32 {
+        if skill.is_profession() { self.max[skill.index()].max(PROFESSION_STEP) } else { skill.cap(self.rank[skill.index()]) }
+    }
+
+    /// Learn a step of a trade (1 the apprentice, up to 4 the artisan) from a teacher: the trade can be taken to 75 ranks more; a new trade begins at rank 1.
+    pub fn teach(&mut self, skill: Skill, step: u32) {
+        let i = skill.index();
+        self.max[i] = self.max[i].max(step.clamp(1, 4) * PROFESSION_STEP);
+    }
+
+    /// The step of a trade that has been learned (0 for none).
+    pub fn step(&self, skill: Skill) -> u32 {
+        self.max[skill.index()] / PROFESSION_STEP
+    }
+
+    /// For the save: the trades that are learned, with the step of each.
+    pub fn steps(&self) -> Vec<(String, u32)> {
+        ALL.iter().filter(|s| s.is_profession() && self.knows(**s)).map(|&s| (s.id(), self.step(s))).collect()
+    }
+
+    /// Back from the save (a save from before there were teachers has none: a trade it has taken beyond rank 1 was learned, as far as its rank goes).
+    pub fn set_steps(&mut self, steps: &[(String, u32)]) {
+        for (id, step) in steps {
+            if let Some(skill) = Skill::from_id(id).filter(|s| s.is_profession()) {
+                self.max[skill.index()] = (*step).clamp(1, 4) * PROFESSION_STEP;
+                self.rank[skill.index()] = self.rank[skill.index()].min(self.max[skill.index()]);
+            }
+        }
     }
 
     /// A rank bought, not trained (riding): it never goes down.
@@ -341,7 +449,10 @@ impl Skills {
     /// A rank set outright (the console), with the progress towards the next one cleared.
     pub fn set(&mut self, skill: Skill, rank: u32) {
         let i = skill.index();
-        self.rank[i] = rank.clamp(1, skill.top());
+        if skill.is_profession() {
+            self.teach(skill, rank.div_ceil(PROFESSION_STEP));
+        }
+        self.rank[i] = rank.clamp(1, self.top_of(skill));
         self.uses[i] = 0.0;
     }
 
@@ -353,36 +464,50 @@ impl Skills {
     /// The skill was used `uses` times (a swing, a block, a spell): returns its new rank if it rose.
     pub fn train(&mut self, skill: Skill, uses: f32) -> Option<u32> {
         let i = skill.index();
-        if self.rank[i] >= skill.top() {
+        if self.rank[i] >= self.top_of(skill) {
             return None;
         }
         self.uses[i] += uses;
         let before = self.rank[i];
-        while self.rank[i] < skill.top() && self.uses[i] >= uses_needed(self.rank[i]) {
+        while self.rank[i] < self.top_of(skill) && self.uses[i] >= uses_needed(self.rank[i]) {
             self.uses[i] -= uses_needed(self.rank[i]);
             self.rank[i] += 1;
         }
-        if self.rank[i] >= skill.top() {
+        if self.rank[i] >= self.top_of(skill) {
             self.uses[i] = 0.0;
         }
         (self.rank[i] > before).then_some(self.rank[i])
     }
 
-    /// The server's rule for gathering skill (CMaNGOS `UpdateGatherSkill`): gathering what asks for `required` gives one rank with a chance by how
-    /// far the skill is above it, 100% up to 25 above, 75% to 50, 25% to 100 and none beyond. `roll` is a number from 0 to 1. Returns the new rank if it rose.
-    pub fn gather(&mut self, skill: Skill, required: u32, roll: f32) -> Option<u32> {
+    /// The server's rule for what a profession does (CMaNGOS `SkillGainChance`): one rank with a chance by how the skill stands against the ranks at which the work
+    /// turns yellow, green and grey: below yellow (orange) always, then 75%, 25% and, from grey on, never. `roll` is a number from 0 to 1. Returns the new rank if it rose.
+    pub fn skill_up(&mut self, skill: Skill, (yellow, green, grey): (u32, u32, u32), roll: f32) -> Option<u32> {
         let i = skill.index();
-        let above = self.rank[i].saturating_sub(required);
-        let chance = match above {
-            0..=24 => 1.0,
-            25..=49 => 0.75,
-            50..=99 => 0.25,
-            _ => 0.0,
+        let have = self.rank[i];
+        let chance = if have >= grey {
+            0.0
+        } else if have >= green {
+            0.25
+        } else if have >= yellow {
+            0.75
+        } else {
+            1.0
         };
-        (self.rank[i] < skill.top() && roll < chance).then(|| {
+        self.raise(skill, chance, roll)
+    }
+
+    /// One rank with this chance (0 to 1; `roll` is a number from 0 to 1), if the skill is not at its top: the new rank if it rose.
+    pub fn raise(&mut self, skill: Skill, chance: f32, roll: f32) -> Option<u32> {
+        let i = skill.index();
+        (self.rank[i] < self.top_of(skill) && roll < chance).then(|| {
             self.rank[i] += 1;
             self.rank[i]
         })
+    }
+
+    /// Gathering what asks for `required` (`UpdateGatherSkill`): yellow 25 above it, green 50 and grey 100.
+    pub fn gather(&mut self, skill: Skill, required: u32, roll: f32) -> Option<u32> {
+        self.skill_up(skill, (required + 25, required + 50, required + 100), roll)
     }
 
     /// How much of the next rank is done, 0 to 1.
@@ -448,11 +573,17 @@ impl Skills {
 
     /// Back from the save; skills it does not know are dropped, and what it does not mention stays at rank 1.
     pub fn from_parts(parts: &[(String, u32, f32)]) -> Skills {
-        let mut s = Skills { rank: [1; COUNT], uses: [0.0; COUNT] };
+        let mut s = Skills { rank: [1; COUNT], uses: [0.0; COUNT], bonus: [0; COUNT], max: [0; COUNT] };
         for (id, rank, uses) in parts {
             if let Some(skill) = Skill::from_id(id) {
                 s.rank[skill.index()] = (*rank).clamp(1, skill.top());
                 s.uses[skill.index()] = if *rank >= skill.top() { 0.0 } else { uses.clamp(0.0, uses_needed(*rank)) };
+            }
+        }
+        // A save from before there were teachers: a trade that was taken beyond rank 1 was learned, up to the step its rank is in.
+        for skill in ALL.into_iter().filter(|s| s.is_profession() && s.top() == PROFESSION_MAX) {
+            if s.rank[skill.index()] > 1 {
+                s.teach(skill, s.rank[skill.index()].div_ceil(PROFESSION_STEP));
             }
         }
         s
@@ -517,7 +648,17 @@ mod tests {
     #[test]
     fn a_profession_goes_to_300_and_gathering_rises_it_by_the_servers_chances() {
         let mut s = Skills::new();
-        assert_eq!((Skill::Mining.top(), Skill::Mining.cap(1), Skill::Swords.top()), (PROFESSION_MAX, 300, MAX));
+        assert_eq!((Skill::Mining.top(), Skill::Swords.top()), (PROFESSION_MAX, MAX));
+        // A trade is not there until a teacher teaches it, and then it goes as far as the step learned (75 ranks for each) and no further.
+        assert!(!s.knows(Skill::Mining) && s.knows(Skill::Swords) && s.gather(Skill::Mining, 1, 0.0).is_none());
+        s.teach(Skill::Mining, 1);
+        assert_eq!((s.knows(Skill::Mining), s.cap(Skill::Mining), s.step(Skill::Mining)), (true, 75, 1));
+        s.set(Skill::Mining, 75);
+        assert_eq!(s.gather(Skill::Mining, 75, 0.0), None, "the apprentice stops at 75");
+        s.teach(Skill::Mining, 2);
+        assert_eq!(s.gather(Skill::Mining, 75, 0.0), Some(76));
+        s.teach(Skill::Mining, 4);
+        s.set(Skill::Mining, 1);
         // At the rank a node asks for, and up to 24 above it, every gathering teaches; 25 above, three in four; 50 above, one in four; 100 above, none.
         assert_eq!(s.gather(Skill::Mining, 1, 0.99), Some(2));
         assert_eq!(s.gather(Skill::Mining, 2, 0.99), Some(3));
@@ -529,7 +670,12 @@ mod tests {
         assert_eq!(s.gather(Skill::Mining, 1, 0.0), None);
         s.set(Skill::Mining, 300);
         assert_eq!(s.gather(Skill::Mining, 300, 0.0), None);
-        assert_eq!(Skills::from_parts(&s.parts()).rank(Skill::Mining), 300);
+        let mut back = Skills::from_parts(&s.parts());
+        // A save from before the teachers has no steps: a trade taken beyond rank 1 counts as learned; the steps of a new save are kept.
+        assert_eq!((back.rank(Skill::Mining), back.step(Skill::Mining), back.knows(Skill::Herbalism)), (300, 4, false));
+        s.teach(Skill::Herbalism, 2);
+        back.set_steps(&s.steps());
+        assert_eq!((back.step(Skill::Herbalism), back.step(Skill::Mining), back.cap(Skill::Herbalism)), (2, 4, 150));
     }
 
     #[test]
@@ -549,7 +695,7 @@ mod tests {
     #[test]
     fn armor_skills_make_each_piece_stop_more_and_mixed_kinds_split_the_training_by_share() {
         use crate::items::{self, Stack, SLOTS};
-        let piece = |subclass: u8, not: Option<items::Wear>| items::all().iter().position(|i| i.class == 4 && i.subclass == subclass && i.armor > 0 && i.wear != items::Wear::None && Some(i.wear) != not).map(|item| Stack { item, count: 1 }).expect("some armor");
+        let piece = |subclass: u8, not: Option<items::Wear>| items::all().iter().position(|i| i.class == 4 && i.subclass == subclass && i.armor > 0 && i.wear != items::Wear::None && Some(i.wear) != not).map(|item| Stack { item, count: 1, enchant: 0 }).expect("some armor");
         let cloth = piece(1, None);
         let plate = piece(4, Some(items::get(cloth.item).wear));
         let mut worn: [Option<Stack>; SLOTS] = [None; SLOTS];

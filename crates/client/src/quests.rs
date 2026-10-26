@@ -295,8 +295,8 @@ mod tests {
         assert!(log.accept(meat_quest));
         // A full pack whose meat stack keeps its slot when eight are taken: the shoes go in a new row.
         let mut inv = Inventory::new();
-        inv.bag = vec![Some(Stack { item: crate::items::find("hearthstone"), count: 1 }); crate::items::BACKPACK_SIZE];
-        inv.bag[15] = Some(Stack { item: meat, count: 10 });
+        inv.bag = vec![Some(Stack { item: crate::items::find("hearthstone"), count: 1, enchant: 0 }); crate::items::BACKPACK_SIZE];
+        inv.bag[15] = Some(Stack { item: meat, count: 10, enchant: 0 });
         assert_eq!(log.turn_in(meat_quest, &mut inv, Some(0)), Ok(()));
         assert_eq!((inv.count(crate::items::find("i80")), inv.count(meat)), (1, 2));
         assert!(inv.bag.len() > crate::items::BACKPACK_SIZE && log.done.contains(&meat_quest));
@@ -346,7 +346,7 @@ mod tests {
         let meat = crate::items::find("tough_wolf_meat");
         let lead = log.lead(meat_quest, &inv);
         assert!(lead.kinds.contains(&wolf) && lead.item == Some(meat) && lead.icon == Icon::Skull, "whatever drops the meat, or holds it in a chest");
-        inv.add(Stack { item: meat, count: 8 });
+        inv.add(Stack { item: meat, count: 8, enchant: 0 });
         assert_eq!(log.lead(meat_quest, &inv), Lead { kinds: vec![eagan], item: None, icon: Icon::TurnIn, places: Vec::new() }, "then the turn in");
     }
 }

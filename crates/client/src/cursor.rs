@@ -19,9 +19,10 @@ pub enum Kind {
     Buy,
     Mine,
     Herb,
+    Skin,
 }
 
-const FILES: [&str; 9] = ["Point", "Attack", "Speak", "Interact", "LootAll", "PickLock", "Buy", "Mine", "GatherHerbs"];
+const FILES: [&str; 10] = ["Point", "Attack", "Speak", "Interact", "LootAll", "PickLock", "Buy", "Mine", "GatherHerbs", "Skin"];
 
 /// What the pointer is over in the world (a creature, a chest or a prop to pick up, by number), for the click that follows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

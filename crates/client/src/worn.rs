@@ -72,6 +72,8 @@ pub struct Worn {
     age: f32,
     /// What was put on last (where the definitions of the items are), to do nothing when it is the same.
     dressed: Option<[usize; SLOTS]>,
+    /// The glows (rows of `ItemVisuals.dbc`) that enchantments give the worn weapons, by slot: set before `dress`.
+    pub enchants: [u16; SLOTS],
     /// What is held is sheathed (a rider has no hands for it): see `Part::sheath`.
     pub stowed: bool,
 }
@@ -210,19 +212,20 @@ pub fn gear_of(mount: &Mount, equipment: &[Option<&'static ItemDef>; SLOTS], loo
 impl Worn {
     #[cfg(test)]
     pub fn none() -> Worn {
-        Worn { body: 0, parts: Vec::new(), fx: Effects::unmounted(), flares: Vec::new(), age: 0.0, dressed: None, stowed: false }
+        Worn { body: 0, parts: Vec::new(), fx: Effects::unmounted(), flares: Vec::new(), age: 0.0, dressed: None, enchants: [0; SLOTS], stowed: false }
     }
 
     /// The body of `character` as an entity, undressed.
     pub fn new(character: &Character, renderer: &mut Renderer, gpu: &Gpu) -> Worn {
-        Worn { body: renderer.add_room_lit_entity(gpu, &character.model), parts: Vec::new(), fx: Effects::unmounted(), flares: Vec::new(), age: 0.0, dressed: None, stowed: false }
+        Worn { body: renderer.add_room_lit_entity(gpu, &character.model), parts: Vec::new(), fx: Effects::unmounted(), flares: Vec::new(), age: 0.0, dressed: None, enchants: [0; SLOTS], stowed: false }
     }
 
     /// Dress `character` in what the equipment holds and make the entities of the models that hang on it, giving the earlier ones back. Nothing is
     /// done when it is what was put on last.
     #[allow(clippy::too_many_arguments)]
     pub fn dress(&mut self, character: &mut Character, look: &Appearance, mount: &Mount, cache: &ModelCache, renderer: &mut Renderer, gpu: &Gpu, equipment: &[Option<&'static ItemDef>; SLOTS]) -> Result<()> {
-        let here: [usize; SLOTS] = equipment.map(|i| i.map_or(0, |i| i as *const ItemDef as usize));
+        let mut here: [usize; SLOTS] = equipment.map(|i| i.map_or(0, |i| i as *const ItemDef as usize));
+        here.iter_mut().zip(self.enchants).for_each(|(h, e)| *h |= (e as usize) << 48);
         if self.dressed == Some(here) {
             return Ok(());
         }
@@ -258,7 +261,7 @@ impl Worn {
                     Mat4::IDENTITY,
                 ));
                 p.drawn = Drawn::Away;
-                p.enchant = worn(items::MAIN_HAND).map_or(0, |i| i.visual.enchant);
+                p.enchant = if self.enchants[items::MAIN_HAND] != 0 { self.enchants[items::MAIN_HAND] } else { worn(items::MAIN_HAND).map_or(0, |i| i.visual.enchant) };
             }
         }
         if let Some(item) = worn(items::OFF_HAND) {
@@ -268,7 +271,7 @@ impl Worn {
                 if let Some(p) = parts.last_mut() {
                     p.sheath = Some(if item.wear == Wear::Shield { (SHEATH_SHIELD, Mat4::IDENTITY) } else { (HIP_OFF, Mat4::IDENTITY) });
                     p.drawn = Drawn::Away;
-                    p.enchant = item.visual.enchant;
+                    p.enchant = if self.enchants[items::OFF_HAND] != 0 { self.enchants[items::OFF_HAND] } else { item.visual.enchant };
                 }
             }
         }

@@ -4,8 +4,8 @@ use super::*;
 /// fields of this list apart from those of the others.
 pub(super) fn effects_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, effects: &mut Vec<UseEffect>, base: usize) {
     use UseEffect as E;
-    const KINDS: [&str; 8] = ["Heals", "Restores mana", "Heals over time", "Restores mana over time", "Raises a stat", "Returns to the hearth", "Gives a mount", "Gives a bonus while worn"];
-    let stats: Vec<String> = ["Strength", "Agility", "Stamina", "Intellect", "Spirit", "Armor", "Health"].iter().map(|s| s.to_string()).collect();
+    const KINDS: [&str; 10] = ["Heals", "Restores mana", "Heals over time", "Restores mana over time", "Raises a stat", "Returns to the hearth", "Gives a mount", "Gives a bonus while worn", "Teaches a recipe", "Puts something on the weapon for a while"];
+    let stats: Vec<String> = ["Strength", "Agility", "Stamina", "Intellect", "Spirit", "Armor", "Health", "Mana"].iter().map(|s| s.to_string()).collect();
     let mut remove = None;
     for (j, e) in effects.iter_mut().enumerate().take(10) {
         let n = base + j * 10;
@@ -18,6 +18,8 @@ pub(super) fn effects_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, effects: &m
             E::Hearth => 5,
             E::Mount(..) => 6,
             E::Equip(..) => 7,
+            E::Teach(..) => 8,
+            E::Temp(..) => 9,
         };
         g.text(x, *y + 3.0, LABEL_WIDTH, &format!("  Effect {}", j + 1), DIM);
         let by = g.arrows(x + LABEL_WIDTH, *y, 220.0, KINDS[now]);
@@ -34,7 +36,9 @@ pub(super) fn effects_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, effects: &m
                 4 => E::Boost(2, 10, 60.0),
                 5 => E::Hearth,
                 6 => E::Mount(0, 60),
-                _ => E::Equip(0, 0, 1),
+                7 => E::Equip(0, 0, 1),
+                8 => E::Teach(0),
+                _ => E::Temp(0, 600.0),
             };
         }
         match e {
@@ -60,6 +64,15 @@ pub(super) fn effects_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, effects: &m
                 value_row(g, y, x, w, "    Mount look", n, display);
                 hint(g, y, x, "A number of the game's creature looks (a row of CreatureDisplayInfo.dbc).");
                 value_row(g, y, x, w, "    Speed added %", n + 1, percent);
+            }
+            E::Teach(spell) => {
+                value_row(g, y, x, w, "    Recipe spell", n, spell);
+                hint(g, y, x, "The spell of the original that makes the item (a row of Spell.dbc), as in classic_recipes.ron.");
+            }
+            E::Temp(enchant, seconds) => {
+                value_row(g, y, x, w, "    Enchantment", n, enchant);
+                value_row(g, y, x, w, "    For (s)", n + 1, seconds);
+                hint(g, y, x, "A row of SpellItemEnchantment.dbc that classic_enchants.ron has: what it gives to the weapon in the hand while it lasts.");
             }
             E::Equip(aura, misc, amount) => {
                 value_row(g, y, x, w, "    Aura number", n, aura);

@@ -37,7 +37,7 @@ pub fn loot_to_save(loot: &Loot) -> LootSave {
 pub fn loot_from_save((copper, stacks): &LootSave) -> Loot {
     let items = stacks
         .iter()
-        .filter_map(|(id, n)| content::get().items.iter().position(|i| i.id == *id).map(|item| Stack { item, count: (*n).clamp(1, items::get(item).stack) }))
+        .filter_map(|(id, n)| content::get().items.iter().position(|i| i.id == *id).map(|item| Stack { item, count: (*n).clamp(1, items::get(item).stack), enchant: 0 }))
         .collect();
     Loot { copper: *copper, items }
 }
@@ -75,6 +75,13 @@ pub struct Save {
     /// The rank of each skill and the uses towards the next one; the spells known, in the order they were learned.
     #[serde(default)]
     pub skills: Vec<(String, u32, f32)>,
+    /// The recipes learned (their spells of the original).
+    #[serde(default)]
+    pub recipes: Vec<u32>,
+    /// The trades that are learned and the step of each (1 the apprentice to 4 the artisan). A save from before there were teachers has none: the trades taken
+    /// beyond rank 1 count as learned, as far as their rank goes.
+    #[serde(default)]
+    pub professions: Vec<(String, u32)>,
     #[serde(default)]
     pub spells: Vec<String>,
     /// What is on each action button ("" for none); older saves have none and get the basic actions and the spells in order.
@@ -142,7 +149,8 @@ pub struct Save {
 }
 
 fn entries(slots: &[Option<Stack>]) -> Vec<Entry> {
-    slots.iter().enumerate().filter_map(|(slot, s)| s.map(|s| (slot, items::get(s.item).id.to_string(), s.count))).collect()
+    // (an enchanted item is named `id#enchantment`)
+    slots.iter().enumerate().filter_map(|(slot, s)| s.map(|s| (slot, if s.enchant != 0 { format!("{}#{}", items::get(s.item).id, s.enchant) } else { items::get(s.item).id.to_string() }, s.count))).collect()
 }
 
 impl Save {
@@ -181,6 +189,8 @@ impl Save {
             discovered: Vec::new(),
             explored: Vec::new(),
             skills: Vec::new(),
+            recipes: Vec::new(),
+            professions: Vec::new(),
             spells: Vec::new(),
             bar: Vec::new(),
             hour: None,
@@ -216,7 +226,10 @@ impl Save {
         let find = |id: &str| content::get().items.iter().position(|i| i.id == id);
         *inv = Inventory { equipment: [None; SLOTS], bag: vec![None; BACKPACK_SIZE], cursor: None, money: self.money };
         // A stack the way it can exist: a known item, at least one and at most a full stack.
-        let stack = |id: &str, count: u32| find(id).map(|item| Stack { item, count: count.clamp(1, items::get(item).stack) });
+        let stack = |id: &str, count: u32| {
+            let (id, enchant) = id.split_once('#').map_or((id, 0), |(id, e)| (id, e.parse().unwrap_or(0)));
+            find(id).map(|item| Stack { item, count: count.clamp(1, items::get(item).stack), enchant: if content::get().enchants.contains_key(&enchant) { enchant } else { 0 } })
+        };
         let mut homeless = Vec::new();
         for (slot, id, count) in &self.equipment {
             match stack(id, *count) {
@@ -380,7 +393,7 @@ mod tests {
         let mut inv = Inventory::new();
         inv.money = 4321;
         assert!(inv.equip_from_bag(1, 60).is_ok());
-        inv.cursor = Some(Stack { item: items::find("tough_wolf_meat"), count: 7 });
+        inv.cursor = Some(Stack { item: items::find("tough_wolf_meat"), count: 7, enchant: 0 });
         let mut log = QuestLog::default();
         log.accept(quest("q7"));
         log.killed(content::creature_index("c6"));
@@ -409,6 +422,24 @@ mod tests {
     }
 
     #[test]
+    fn an_enchantment_goes_with_its_item_into_a_save_and_back_and_a_stale_one_is_dropped() {
+        let fiery = *content::get().enchants.iter().find(|(_, e)| e.name == "Fiery Weapon").unwrap().0;
+        let sword = items::find("longsword");
+        let mut inv = Inventory::new();
+        inv.equipment[items::MAIN_HAND] = Some(Stack { item: sword, count: 1, enchant: fiery });
+        inv.bag[9] = Some(Stack { item: sword, count: 1, enchant: fiery });
+        let save = Save::capture(&inv, Progress::new(), &QuestLog::default(), (0.0, 0.0), 0.0, 0.0, 1.0);
+        let (mut back, mut progress, mut log) = (Inventory::new(), Progress::new(), QuestLog::default());
+        assert!(save.apply(&mut back, &mut progress, &mut log).is_empty());
+        assert_eq!((back.equipment[items::MAIN_HAND].map(|s| s.enchant), back.bag[9].map(|s| s.enchant)), (Some(fiery), Some(fiery)));
+        // An enchantment the content does not have is left off; the item stays.
+        let mut stale: Save = ron::from_str(&ron::ser::to_string(&save).unwrap()).unwrap();
+        stale.equipment.iter_mut().for_each(|e| e.1 = e.1.replace(&format!("#{fiery}"), "#999999"));
+        stale.apply(&mut back, &mut progress, &mut log);
+        assert_eq!(back.equipment[items::MAIN_HAND].map(|s| (s.item, s.enchant)), Some((sword, 0)));
+    }
+
+    #[test]
     fn what_the_content_no_longer_has_is_dropped_and_what_does_not_fit_moves_to_the_pack() {
         let text = r#"(version: 1, position: (0.0, 0.0), heading: 0.0, pitch: 0.0, health: 1.0, level: 999, xp: 999999, money: 5,
             equipment: [(16, "longsword", 1), (5, "round_shield", 1), (3, "does_not_exist", 1), (99, "hatchet", 1)],
@@ -427,7 +458,7 @@ mod tests {
             assert!(carried.contains(&id), "{id} in {carried:?}");
         }
         // A stack of 500 is a full stack of 20; the level and experience are held to what exists.
-        assert_eq!(inv.bag[0], Some(Stack { item: items::find("linen_cloth"), count: 20 }));
+        assert_eq!(inv.bag[0], Some(Stack { item: items::find("linen_cloth"), count: 20, enchant: 0 }));
         assert_eq!(progress, Progress { level: MAX_LEVEL, xp: 0 });
         // The quest is taken once, with its kills made to fit; being both active and done counts as active.
         assert_eq!(log.active, vec![Active { quest: quest("q7"), kills: vec![9] }]);
@@ -437,10 +468,10 @@ mod tests {
     #[test]
     fn loot_survives_a_save_and_loses_only_what_the_content_no_longer_has() {
         let meat = items::find("tough_wolf_meat");
-        let loot = Loot { copper: 9, items: vec![Stack { item: meat, count: 2 }] };
+        let loot = Loot { copper: 9, items: vec![Stack { item: meat, count: 2, enchant: 0 }] };
         assert_eq!(loot_from_save(&loot_to_save(&loot)), loot);
         let old = (5, vec![("does_not_exist".to_string(), 1), ("tough_wolf_meat".to_string(), 3)]);
-        assert_eq!(loot_from_save(&old), Loot { copper: 5, items: vec![Stack { item: meat, count: 3 }] });
+        assert_eq!(loot_from_save(&old), Loot { copper: 5, items: vec![Stack { item: meat, count: 3, enchant: 0 }] });
         // A save from before the world was saved has none of it, and then everything is full and fresh.
         let save: Save = ron::from_str(r#"(version: 1, position: (0.0, 0.0), heading: 0.0, pitch: 0.0, health: 1.0, level: 1, xp: 0, money: 0, equipment: [], bag: [], quests: [], done: [])"#).unwrap();
         assert_eq!((save.hour, save.mana, save.stamina, save.mobs.len(), save.chests.len(), save.steed), (None, 1.0, 1.0, 0, 0, None));
