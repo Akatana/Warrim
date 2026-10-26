@@ -4,6 +4,7 @@
 
 use crate::items::{self, Inventory};
 use crate::loot::random;
+use glam::Vec3;
 
 /// Whether a fishing pole is in the hand (a weapon of the subclass fishing pole of the original's tables).
 pub fn pole_in_hand(inv: &Inventory) -> bool {
@@ -33,8 +34,35 @@ pub fn bite_after(rng: &mut u32) -> f32 {
 
 pub const BITE_SECONDS: f32 = 3.0;
 pub const LINE_SECONDS: f32 = 20.0;
-/// How far the line can be cast, yards.
-pub const CAST_RANGE: f32 = 24.0;
+/// The range of the fishing spell (range 8 of `SpellRange.dbc`), yards: the bobber lands between these, and the line tries this many spots before it fails.
+pub const MIN_CAST: f32 = 10.0;
+pub const MAX_CAST: f32 = 20.0;
+pub const CAST_TRIES: u32 = 10;
+/// The body radius the original adds to the distance and to the spread, yards.
+const BODY: f32 = 0.5;
+
+/// The line from the pole to the bobber is 65 points (`FUN_0061f780`), and its middle hangs half a yard below the straight way.
+pub const LINE_POINTS: usize = 65;
+const LINE_SAG: f32 = 0.5;
+/// How far above the water the line is tied to the bobber, yards: half the height of the model (the original takes half the height of the object).
+pub const BOBBER_TOP: f32 = 0.4;
+
+/// The points of the line from `from` (the tip of the pole) to `to` (the bobber), as the original draws it: evenly spaced, each sagging by `sin(pi t)` of the sag.
+pub fn line_points(from: Vec3, to: Vec3) -> [Vec3; LINE_POINTS] {
+    std::array::from_fn(|i| {
+        let t = i as f32 / (LINE_POINTS - 1) as f32;
+        from.lerp(to, t) - Vec3::Y * LINE_SAG * (t * std::f32::consts::PI).sin()
+    })
+}
+
+/// A spot for the bobber as the original's server picks it: a distance in the range of the spell, and an angle off where the caster faces that is the wider the
+/// wider the range is against the distance (so the area is about as wide as it is deep). Returns (yards, radians).
+pub fn cast_roll(rng: &mut u32) -> (f32, f32) {
+    let mut unit = || random(rng, 10_000) as f32 / 10_000.0;
+    let distance = MIN_CAST + unit() * (MAX_CAST - MIN_CAST) + BODY;
+    let spread = (MAX_CAST - MIN_CAST) / (MAX_CAST + BODY);
+    (distance, spread * (unit() - 0.5))
+}
 
 #[cfg(test)]
 mod tests {
@@ -44,6 +72,24 @@ mod tests {
     fn a_catch_is_sure_in_water_of_the_skill_and_less_likely_in_harder_water() {
         assert_eq!([catch_chance(50, 0), catch_chance(50, -70), catch_chance(100, 100), catch_chance(300, 100)], [100; 4]);
         assert_eq!([catch_chance(50, 100), catch_chance(1, 300), catch_chance(0, 100)], [25, 1, 1]);
+    }
+
+    #[test]
+    fn the_bobber_lands_within_the_range_of_the_spell_and_a_cone_of_its_spread() {
+        let mut rng = 9;
+        let rolls: Vec<_> = (0..500).map(|_| cast_roll(&mut rng)).collect();
+        assert!(rolls.iter().all(|&(d, a)| (MIN_CAST + BODY..=MAX_CAST + BODY).contains(&d) && a.abs() <= 0.25));
+        // It is not always the same spot.
+        assert!(rolls.iter().any(|r| r.0 > 17.0) && rolls.iter().any(|r| r.0 < 13.0) && rolls.iter().any(|r| r.1 > 0.1) && rolls.iter().any(|r| r.1 < -0.1));
+    }
+
+    #[test]
+    fn the_line_runs_from_the_pole_to_the_bobber_and_hangs_half_a_yard_in_the_middle() {
+        let (a, b) = (Vec3::new(0.0, 2.0, 0.0), Vec3::new(10.0, 0.4, 0.0));
+        let p = line_points(a, b);
+        assert!(p[0].distance(a) < 1e-4 && p[64].distance(b) < 1e-4);
+        assert!((p[32] - (a + b) / 2.0 + Vec3::Y * 0.5).length() < 1e-4, "{:?}", p[32]);
+        assert!(p.iter().all(|q| q.y <= a.y.max(b.y)));
     }
 
     #[test]

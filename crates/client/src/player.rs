@@ -705,6 +705,12 @@ impl Player {
 
     /// The hand goes for the weapons if they are put away (a fishing pole is held to cast the line and to put a lure on it). True while that is going on: the
     /// work waits until it is done.
+    /// Where the line of a fishing pole in the hand starts: the tip of the pole (its `$CCH` event), in render space.
+    pub fn pole_tip(&self) -> Option<Vec3> {
+        let body = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - self.last_eye?.0 + self.body_turn + self.ranged.turn);
+        self.worn.hook(&self.character, self.feet, body, self.ranged.drawn.is_some())
+    }
+
     pub fn draw_weapons(&mut self) -> bool {
         if self.steed.is_none() && self.sheathed && self.busy <= 0.0 && self.attack.is_none() && self.ranged.drawn.is_none() {
             self.start_sheath(false);

@@ -97,6 +97,8 @@ enum Later {
 /// The bobber of a line: its model, where it lies, seconds to the bite, seconds the bite lasts and its own clock.
 struct Bobber {
     entity: usize,
+    /// The ribbon of the line from the pole to it.
+    line: usize,
     pos: Vec3,
     bite_in: f32,
     bite_left: Option<f32>,

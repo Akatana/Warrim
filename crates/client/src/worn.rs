@@ -52,6 +52,8 @@ struct Part {
     on_head: bool,
     /// Where it rests (the attachment, and how it is turned) while `Worn::stowed`; what has none stays where it is.
     sheath: Option<(u32, Mat4)>,
+    /// Where its `$CCH` event is (model space): the tip of a fishing pole, where the line starts.
+    hook: Option<Vec3>,
 }
 
 /// An effect that goes with a part: where it is on it.
@@ -110,6 +112,12 @@ fn part_matrix(part: &Part, character: &Character, drawing: bool, stowed: bool) 
         _ => (part.attach, part.fix, true),
     };
     Some((to_render(character.attachment(attach)?) * fix, shown))
+}
+
+/// Where the `$CCH` event of a model is, in model space.
+fn hook_of(mount: &Mount, model: &str) -> Option<Vec3> {
+    let m2 = M2::parse(&mount.read(model).ok()?).ok()?;
+    m2.events.iter().find(|e| e.id == *b"$CCH").map(|e| Vec3::from(e.position))
 }
 
 /// What burns on a model: the emitters it has of its own (shown without its mesh), then the glow of each slot of the enchantment at the point of
@@ -242,7 +250,7 @@ impl Worn {
                 return;
             }
             match cache.item(mount, model, skin) {
-                Ok(m) => parts.push(Part { looks: m.tracks.clone().filter(|t| t.animated).map(|t| (t, m.batches.iter().map(|b| b.refs).collect())), drawn: Drawn::Same, model: model.to_string(), enchant: 0, entity: renderer.add_room_lit_entity(gpu, &m), attach, fix, on_head, sheath: None }),
+                Ok(m) => parts.push(Part { looks: m.tracks.clone().filter(|t| t.animated).map(|t| (t, m.batches.iter().map(|b| b.refs).collect())), drawn: Drawn::Same, model: model.to_string(), enchant: 0, entity: renderer.add_room_lit_entity(gpu, &m), attach, fix, on_head, sheath: None, hook: None }),
                 Err(e) => log::warn!("worn model {model}: {e:#}"),
             }
         };
@@ -251,6 +259,7 @@ impl Worn {
         if let Some((model, skin)) = worn(items::MAIN_HAND).and_then(|i| i.held) {
             add(model, skin, RIGHT_HAND, Mat4::IDENTITY, false, &mut parts);
             if let Some(p) = parts.last_mut() {
+                p.hook = hook_of(mount, model);
                 let main = worn(items::MAIN_HAND);
                 p.sheath = Some((
                     match main {
@@ -338,6 +347,14 @@ impl Worn {
         }
     }
 
+    /// Where the `$CCH` event of what is held is in the world (`place` was called with the same arguments), if it is shown: the tip of a fishing pole.
+    pub fn hook(&self, character: &Character, pos: Vec3, orient: Mat4, drawing: bool) -> Option<Vec3> {
+        let part = self.parts.iter().find(|p| p.hook.is_some())?;
+        let (m, shown) = part_matrix(part, character, drawing, self.stowed)?;
+        let at = to_render(Mat4::from_translation(part.hook?));
+        shown.then(|| (Mat4::from_translation(pos) * orient * m * at).w_axis.truncate())
+    }
+
     /// Move the effects of the parts along with them (`place` was called with the same arguments), and advance them `dt` seconds, drawn to face
     /// `forward`, the way the viewer looks, from `viewer`.
     #[allow(clippy::too_many_arguments)]
@@ -400,6 +417,15 @@ mod tests {
             }
         }
         assert!(enchant_models(&mount, 25).iter().any(Option::is_some));
+    }
+
+    #[test]
+    fn the_line_of_a_fishing_pole_starts_at_its_tip_and_a_sword_has_no_such_point() {
+        let Some(mount) = mpq::find_wow_dir().and_then(|d| Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
+        let weapon = |name: &str| format!(r"Item\ObjectComponents\Weapon\{name}.m2");
+        let tip = hook_of(&mount, &weapon("Misc_2H_FishingPole_A_01")).expect("the pole has a $CCH event");
+        assert!((tip - Vec3::new(1.841, 0.003, 0.018)).length() < 0.01, "{tip:?}");
+        assert!(hook_of(&mount, &weapon("Sword_1H_Long_A_01")).is_none());
     }
 
     #[test]

@@ -76,8 +76,8 @@ impl State {
             self.talk_to(i);
         } else if let (Some(h), Some(bodies)) = (body.or(drag), &mut self.bodies) {
             bodies.grab(h);
-        } else if let Some(spot) = fish {
-            self.start_fishing(spot);
+        } else if fish.is_some() {
+            self.cast_line();
         }
     }
 
@@ -168,6 +168,7 @@ impl State {
     pub(super) fn end_gather(&mut self) {
         if let Some(b) = self.bobber.take() {
             self.renderer.remove_entity(b.entity);
+            self.renderer.remove_entity(b.line);
         }
         if let Some(g) = self.gather.take() {
             self.in_ctx(|ctx| crate::casting::Spellcaster::gather_end(ctx, &g.glows));

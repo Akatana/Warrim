@@ -2,7 +2,7 @@
 //! water, a fish bites after a while and the bobber dips for a few seconds: E then reels in what the water of the area holds. The rules are `fishing.rs`'s.
 
 use super::*;
-use crate::fishing::{self, BITE_SECONDS, CAST_RANGE, LINE_SECONDS};
+use crate::fishing::{self, BITE_SECONDS, LINE_SECONDS};
 use crate::loot::random;
 use crate::skills::Skill;
 
@@ -20,9 +20,23 @@ const LURE_SECONDS: f32 = 5.0;
 const REEL_SOUND: u32 = 3407;
 
 impl State {
-    /// Where a line cast now would land (see `water_ahead_of`).
+    /// Whether a line cast now could find water (see `water_ahead_of`).
     pub(super) fn water_ahead(&self) -> Option<Vec3> {
         water_ahead_of(&self.camera, &self.world)
+    }
+
+    /// E at water: the line goes out to a spot the way the original picks it, or the cast fails when none of the tries is water.
+    pub(super) fn cast_line(&mut self) {
+        let mut rng = (self.start.elapsed().as_nanos() as u32) | 1;
+        match cast_spot(&self.camera, &self.world, &mut rng) {
+            Some(spot) => self.start_fishing(spot),
+            None => {
+                if let Some(panels) = &mut self.panels {
+                    let text = panels.string("SPELL_FAILED_NOT_FISHABLE");
+                    panels.error(&text);
+                }
+            }
+        }
     }
 
     /// Whether a fishing pole is in the hand.
@@ -60,7 +74,8 @@ impl State {
         if let Some(model) = ModelCache::default().get(&self.mount, BOBBER) {
             let entity = self.renderer.add_entity(&self.gpu, &model);
             self.renderer.set_entity(entity, spot, Mat4::IDENTITY, true);
-            self.bobber = Some(Bobber { entity, pos: spot, bite_in, bite_left: None, time: 0.0 });
+            let line = self.add_line();
+            self.bobber = Some(Bobber { entity, line, pos: spot, bite_in, bite_left: None, time: 0.0 });
         }
         self.gather = Some(Gather { job: Job::Fish, left: LINE_SECONDS, glows });
     }
@@ -108,6 +123,49 @@ impl State {
         // It rides the swell a little, and when a fish has it, it is pulled under again and again.
         let lift = (b.time * 2.0).sin() * 0.04 - if b.bite_left.is_some() { 0.12 + 0.1 * (b.time * 18.0).sin().abs() } else { 0.0 };
         self.renderer.set_entity(b.entity, b.pos + Vec3::Y * lift, Mat4::IDENTITY, true);
+        let (line, end) = (b.line, b.pos + Vec3::Y * (lift + fishing::BOBBER_TOP));
+        self.draw_line(line, end);
+    }
+
+    /// The entity of a line: a ribbon of a quad between each two points of it, rewritten every frame by `draw_line` (white; the vertices start far out so that
+    /// the entity is not taken to be a point and left out of the picture).
+    fn add_line(&mut self) -> usize {
+        use crate::models::{BatchCpu, ModelCpu, ModelVertex, RawTexture};
+        let quads = fishing::LINE_POINTS - 1;
+        let texture = ("fishing/line".to_string(), std::sync::Arc::new(RawTexture { width: 1, height: 1, mips: vec![vec![255; 4]] }));
+        let cpu = ModelCpu {
+            key: "fishing/line".to_string(),
+            vertices: vec![ModelVertex { pos: [25.0, 0.0, 0.0], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], color: [255; 4] }; fishing::LINE_POINTS * 2],
+            indices: (0..quads as u16).flat_map(|i| [2 * i, 2 * i + 1, 2 * i + 3, 2 * i, 2 * i + 3, 2 * i + 2]).collect(),
+            batches: vec![BatchCpu { index_start: 0, index_count: quads as u32 * 6, texture: Some(texture), wrap: false, blend: wowfmt::m2::Blend::Opaque, unlit: true, baked: Default::default(), window: false, glow: [0; 3], refs: Default::default(), particle: true }],
+            col_vertices: Vec::new(),
+            col_indices: Vec::new(),
+            tracks: None,
+        };
+        self.renderer.add_entity(&self.gpu, &cpu)
+    }
+
+    /// Draw the line from the tip of the pole to `end` (the top of the bobber): as thin as a line is drawn (about a pixel wide at 1080p, so wider with the distance; shortcut: not tied to the window's height),
+    /// turned to face the viewer, in the colour of the light. shortcut: the colour is the ambient light and half of the sun's where the original takes the scene's
+    /// light of its own model; change it if the line looks wrong at night or in rooms.
+    fn draw_line(&mut self, line: usize, end: Vec3) {
+        use crate::models::ModelVertex;
+        let Some(tip) = self.player.as_ref().and_then(|p| p.pole_tip()) else { return self.renderer.set_entity(line, Vec3::ZERO, Mat4::IDENTITY, false) };
+        let points = fishing::line_points(tip, end);
+        let eye = self.camera.pos;
+        let light = &self.renderer.atmosphere;
+        let c = (light.ambient + light.sun_color * 0.5).clamp(Vec3::ZERO, Vec3::ONE) * 255.0;
+        let color = [c.x as u8, c.y as u8, c.z as u8, 255];
+        let last = points.len() - 1;
+        let vertices: Vec<ModelVertex> = (0..points.len())
+            .flat_map(|i| {
+                let p = points[i];
+                let side = (points[(i + 1).min(last)] - points[i.saturating_sub(1)]).cross(eye - p).normalize_or_zero() * (eye.distance(p) * 0.0006);
+                [p - side, p + side].map(|q| ModelVertex { pos: (q - tip).to_array(), normal: [0.0, 1.0, 0.0], uv: [0.0; 2], color })
+            })
+            .collect();
+        self.renderer.update_entity_vertices(&self.gpu, line, &vertices);
+        self.renderer.set_entity(line, tip, Mat4::IDENTITY, true);
     }
 
     /// Whether a fish is on the line now (for the hint).
@@ -145,21 +203,35 @@ impl State {
     }
 }
 
-/// Where a line cast from where `camera` stands would land: the first water in front, from a few yards to the reach of the line, at the surface.
-pub(super) fn water_ahead_of(camera: &Camera, world: &World) -> Option<Vec3> {
+/// The surface of the water `distance` yards from where `camera` stands, `angle` radians off where it looks, if the line could land there: water (not a puddle in a
+/// hollow: the ground is under it) that the caster sees.
+fn water_at(camera: &Camera, world: &World, distance: f32, angle: f32) -> Option<Vec3> {
     let feet = camera.pos - Vec3::Y * EYE_HEIGHT;
-    let (sy, cy) = camera.yaw.sin_cos();
-    let ahead = Vec3::new(sy, 0.0, -cy);
-    let mut d = 5.0;
-    while d <= CAST_RANGE {
-        let p = feet + ahead * d;
-        if let Some(level) = world.liquid_level(p.x, p.z) {
-            // Water, not a puddle in a hollow: the ground is under it.
-            if world.height_at(p.x, p.z).is_none_or(|ground| ground < level - 0.3) && (level - feet.y).abs() < 12.0 {
-                return Some(Vec3::new(p.x, level, p.z));
-            }
+    let (sy, cy) = (camera.yaw + angle).sin_cos();
+    let p = feet + Vec3::new(sy, 0.0, -cy) * distance;
+    let level = world.liquid_level(p.x, p.z)?;
+    let water = world.height_at(p.x, p.z).is_none_or(|ground| ground < level - 0.3) && (level - feet.y).abs() < 12.0;
+    let spot = Vec3::new(p.x, level, p.z);
+    (water && world.ray_hit(camera.pos, spot + Vec3::Y).is_none()).then_some(spot)
+}
+
+/// Whether a line cast from where `camera` stands could find water: some on the way straight ahead, in the range of the spell (for the hint; the cast itself
+/// picks a spot at random, see `cast_spot`).
+pub(super) fn water_ahead_of(camera: &Camera, world: &World) -> Option<Vec3> {
+    let mut d = fishing::MIN_CAST;
+    while d <= fishing::MAX_CAST {
+        if let Some(spot) = water_at(camera, world, d, 0.0) {
+            return Some(spot);
         }
         d += 0.5;
     }
     None
+}
+
+/// Where the original's server would put the bobber: spots in the range and cone of the spell at random until one is water that the caster sees.
+fn cast_spot(camera: &Camera, world: &World, rng: &mut u32) -> Option<Vec3> {
+    (0..fishing::CAST_TRIES).find_map(|_| {
+        let (distance, angle) = fishing::cast_roll(rng);
+        water_at(camera, world, distance, angle)
+    })
 }
