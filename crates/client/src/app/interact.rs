@@ -30,11 +30,18 @@ impl State {
         if matches!(self.gather, Some(Gather { job: Job::Fish, .. })) {
             return self.reel_in();
         }
+        // With the loot window open the key takes everything in it.
+        if let Some(panels) = self.panels.as_mut().filter(|p| p.loot_open()) {
+            panels.loot_all();
+            let open = panels.any_open();
+            self.set_grab(!open);
+            return;
+        }
         if self.panels.as_ref().is_none_or(|p| p.any_open()) || self.lock.is_some() || self.gather.is_some() {
             return;
         }
         let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
-        let corpse = self.wolves.as_ref().and_then(|w| w.lootable_near(feet, LOOT_RANGE));
+        let corpse =self.wolves.as_ref().and_then(|w| w.lootable_near(feet, LOOT_RANGE));
         let chest = self.chests.as_ref().and_then(|c| c.near(feet, OPEN_RANGE));
         let pickup = self.pickups.as_ref().zip(self.panels.as_ref()).and_then(|(p, panels)| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv)));
         let node = self.nodes.as_ref().and_then(|n| n.near(feet, OPEN_RANGE));

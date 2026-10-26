@@ -17,7 +17,7 @@ impl State {
             return false;
         }
         if down {
-            panels.is_over(pos, size) && panels.mouse_down(pos, size)
+            panels.is_over(pos, size) && panels.mouse_down(pos, size, left)
         } else {
             panels.mouse_up(pos, size, left);
             true

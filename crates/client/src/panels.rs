@@ -1959,6 +1959,18 @@ impl Panels {
         }
     }
 
+    /// Take everything from the open loot window; what does not fit in the pack stays on the corpse.
+    pub fn loot_all(&mut self) {
+        let left = |p: &Self| p.loot.as_ref().map(|(_, l)| Self::loot_slots(l).len());
+        let mut skip = 0;
+        while let Some(n) = left(self).filter(|&n| skip < n) {
+            self.take_loot(skip + 1);
+            if left(self) == Some(n) {
+                skip += 1;
+            }
+        }
+    }
+
     /// An item the mouse carried goes back into the pack when no panel is left to put it in.
     fn after_close(&mut self) {
         if !self.any_open() {
@@ -2106,7 +2118,8 @@ impl Panels {
         self.map_open || self.level_open || (self.any_open() && self.tree.hit_test(pos, screen).is_some())
     }
 
-    pub fn mouse_down(&mut self, pos: (f32, f32), screen: (u32, u32)) -> bool {
+    /// A mouse button went down; only the left one lifts a spell or an item off its button to drag it.
+    pub fn mouse_down(&mut self, pos: (f32, f32), screen: (u32, u32), left: bool) -> bool {
         if self.level_open {
             self.level_press(pos, screen);
             return true;
@@ -2124,7 +2137,7 @@ impl Panels {
         if let Some(name) = hit.map(|h| self.tree.name(h).to_string()).filter(|n| n.contains("OptionsFrameSlider")) {
             self.slider_press(&name, pos, screen);
         }
-        self.drag = hit.and_then(|h| self.book_entry_of(self.tree.name(h)).or_else(|| self.bag_entry_of(self.tree.name(h))));
+        self.drag = hit.filter(|_| left).and_then(|h| self.book_entry_of(self.tree.name(h)).or_else(|| self.bag_entry_of(self.tree.name(h))));
         hit.is_some()
     }
 

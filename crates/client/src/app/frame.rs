@@ -649,6 +649,7 @@ impl State {
                 let body = self.bodies.as_ref().is_some_and(|b| b.near(feet, crate::physics::GRAB_RANGE).is_some());
                 let drag = self.bodies.as_ref().is_some_and(|b| b.near_corpse(feet, crate::physics::GRAB_RANGE).is_some());
                 self.hint = match (panels.any_open() || self.lock.is_some(), wolves.lootable_near(feet, LOOT_RANGE), wolves.talkable_near(feet, TALK_RANGE), chest) {
+                    (true, ..) if panels.loot_open() => Some("Press E to loot all"),
                     (true, ..) => None,
                     (_, Some(_), ..) if drag => Some("Press E to loot, hold E to drag"),
                     (_, Some(_), ..) => Some("Press E to loot"),

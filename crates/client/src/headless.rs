@@ -752,7 +752,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 panels.toggle_quest_log();
                 panels.layout(&mut renderer.ui, &gpu, (w, h));
                 // The log's "Abandon Quest" button asks for confirmation.
-                panels.mouse_down((75.0, 513.0), (w, h));
+                panels.mouse_down((75.0, 513.0), (w, h), true);
                 panels.mouse_up((75.0, 513.0), (w, h), true);
             }
             if args.panel.iter().any(|p| p == "sleep") {
@@ -785,7 +785,7 @@ pub fn run(args: &Args, mount: Arc<Mount>, out: &Path) -> Result<()> {
                 // A negative x is a right click at that distance from the left.
                 let (pos, left) = ((pos.0.abs(), pos.1), pos.0 >= 0.0);
                 panels.hover(Some(pos), (w, h));
-                panels.mouse_down(pos, (w, h));
+                panels.mouse_down(pos, (w, h), true);
                 panels.mouse_up(pos, (w, h), left);
             }
             panels.take_equipment_change();
