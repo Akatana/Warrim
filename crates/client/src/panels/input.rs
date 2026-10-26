@@ -90,6 +90,7 @@ impl Panels {
                 self.tree.scroll_by(&frame, screen, if up { 1.0 } else { -1.0 });
             }
             "StaticPopup1Button1" if self.sleep.is_some() => self.sleep_chosen(),
+            "StaticPopup1Button1" if self.destroying => self.destroy_asked(),
             "StaticPopup1Button1" => self.abandon_asked(),
             "StaticPopup1Button2" => self.close_popup(),
             button if button.starts_with("QuestFrame") && self.quest_click(button) => {}

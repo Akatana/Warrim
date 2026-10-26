@@ -26,6 +26,29 @@ impl Panels {
         self.inv.cursor.is_some()
     }
 
+    /// An item carried to the world (not onto a window or a button) is to be destroyed: ask first. False when nothing is carried.
+    pub fn ask_destroy(&mut self) -> bool {
+        let Some(c) = self.inv.cursor.filter(|_| !self.popup_open()) else { return false };
+        self.destroying = true;
+        let question = self.string("DELETE_ITEM").replacen("%s", crate::items::get(c.item).name, 1);
+        self.tree.set_text("StaticPopup1Text", &question);
+        self.tree.set_text("StaticPopup1Button1Text", &self.string("YES"));
+        self.tree.set_text("StaticPopup1Button2Text", &self.string("NO"));
+        self.tree.show(sleep::SLIDER, false);
+        self.tree.show(POPUP, true);
+        true
+    }
+
+    /// The answer "yes": what the mouse carries is gone.
+    pub(super) fn destroy_asked(&mut self) {
+        self.destroying = false;
+        self.inv.cursor = None;
+        self.tree.show(POPUP, false);
+        self.events.push(Sfx::Named("igBackPackClose"));
+        self.refresh();
+        self.after_close();
+    }
+
     /// The pointer for what is under `pos` (pixels) when it is over a window: the bag over a ware to buy, the gauntlet over
     /// the rest of the window; `None` when it is over no window.
     pub fn cursor_at(&mut self, pos: (f32, f32), screen: (u32, u32)) -> Option<crate::cursor::Kind> {

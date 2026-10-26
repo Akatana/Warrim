@@ -214,6 +214,8 @@ impl State {
                     self.cast_request = bar.press(slot, player).or(self.cast_request);
                     self.mouse_slot = Some(slot);
                 }
+                // An item carried out into the world is to be destroyed (after the question).
+                _ if self.panels.as_mut().is_some_and(|p| p.ask_destroy()) => {}
                 _ if self.panels.as_ref().is_some_and(|p| p.any_open()) => {}
                 // A click on a creature selects it; a click on nothing hands the mouse back to the game.
                 _ => {

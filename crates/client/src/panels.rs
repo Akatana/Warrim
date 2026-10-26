@@ -172,6 +172,8 @@ pub struct Panels {
     sleep: Option<f32>,
     slept: Option<f32>,
     sleep_dragging: bool,
+    /// The question of the popup is whether to destroy the item the mouse carries (`DELETE_ITEM`).
+    destroying: bool,
     /// The points a level gives to spend on health, mana or stamina, those spent on each, whether the panel for them is open, the button of it that is
     /// pressed, and its pictures (`levelup.rs`).
     points: u32,
@@ -411,7 +413,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), forgotten: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, lure: (None, false), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), forgotten: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), calm: true, restored: (0.0, 0.0), steed: None, mounted: false, mount_cast: None, lure: (None, false), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, destroying: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
         panels.refresh();
         Ok(panels)
     }
@@ -455,7 +457,7 @@ impl Panels {
     }
 
     pub fn popup_open(&self) -> bool {
-        self.popup.is_some() || self.sleep.is_some()
+        self.popup.is_some() || self.sleep.is_some() || self.destroying
     }
 
     pub fn any_open(&self) -> bool {

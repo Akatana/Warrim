@@ -18,6 +18,11 @@ impl Panels {
     pub fn close_popup(&mut self) {
         self.popup = None;
         self.sleep = None;
+        // "No" (or Esc) to destroying: the item goes back in the pack.
+        if std::mem::take(&mut self.destroying) {
+            self.inv.put_cursor_away();
+            self.refresh();
+        }
         self.tree.show(POPUP, false);
         self.after_close();
     }
