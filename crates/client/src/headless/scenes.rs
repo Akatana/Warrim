@@ -322,6 +322,13 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
             let stack = |item, count| crate::items::Stack { item, count, enchant: 0 };
             panels.open_loot(0, crate::loot::Loot { copper: 7, items: vec![stack(crate::items::find("tough_wolf_meat"), 2), stack(crate::items::find("ruined_pelt"), 1)] });
         }
+        // A text to read, on the material of its number and optionally at a page (`--panel book2@731`: stone, the page of Eliza's tombstone); by default the first
+        // one of the original with a page after it.
+        if let Some(spec) = args.panel.iter().find_map(|p| p.strip_prefix("book")) {
+            let (material, page) = spec.split_once('@').unwrap_or((spec, ""));
+            let first = crate::content::get().pages.iter().find(|(_, p)| p.next != 0 && p.text.len() > 300).map_or(0, |(&id, _)| id);
+            panels.open_book("The Book of Pages", page.parse().unwrap_or(first), material.parse().unwrap_or(0));
+        }
         if args.panel.iter().any(|p| p == "gossip") {
             panels.open_gossip(0, crate::content::creature("deputy_willem"));
         }

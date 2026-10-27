@@ -62,6 +62,15 @@ impl State {
         if self.pending_loot.is_some() {
             return;
         }
+        let book = book_near(&self.books, feet);
+        if let (Some(i), true) = (book, corpse.is_none() && chest.is_none() && pickup.is_none() && node.is_none() && skin.is_none() && fish.is_none() && body.is_none() && drag.is_none() && talk.is_none()) {
+            let (_, page, title) = self.books[i].clone();
+            if let Some(panels) = &mut self.panels {
+                panels.open_book(&title, page, 0);
+            }
+            self.set_grab(false);
+            return;
+        }
         if corpse.is_none() && chest.is_none() && pickup.is_none() && node.is_none() && skin.is_none() && fish.is_none() && body.is_none() && drag.is_none() && near_bed(&self.beds, &self.world, feet) {
             if let Some(panels) = &mut self.panels {
                 panels.ask_sleep();

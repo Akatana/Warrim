@@ -370,7 +370,10 @@ impl ModelCache {
         let (emits, moves) = *self.living.lock().unwrap().entry(key.clone()).or_insert_with(|| {
             let Some(m) = mount.read(&key).ok().and_then(|b| M2::parse(&b).ok()) else { return (false, false) };
             let animated = m.bones.iter().any(|b| b.rotation.keys.len() > 1 || b.translation.keys.len() > 1 || b.scale.keys.len() > 1);
-            (!m.particles.is_empty(), animated || crate::anim::has_billboards(&m))
+            // A model with no stand animation (id 0) only has the animations of an object that is used (a book's page turn, a door's swing): they are not played all the
+            // time, it stands in the pose it was made in.
+            let idles = m.sequences.is_empty() || m.sequences.iter().any(|s| s.id == 0);
+            (!m.particles.is_empty(), (animated && idles) || crate::anim::has_billboards(&m))
         });
         (emits || moves).then_some(Living { file: key, mesh: moves })
     }

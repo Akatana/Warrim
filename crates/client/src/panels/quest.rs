@@ -11,6 +11,7 @@ impl Panels {
         self.tree.show(SPELLBOOK, false);
         self.tree.show(TALENTS, false);
         self.hide_log();
+        self.close_book();
         self.hide_gossip();
         self.questing = Some((creature, def, quest, screen));
         self.tree.show(QUEST, true);
@@ -99,8 +100,8 @@ impl Panels {
             self.tree.reset_scroll(scroll);
         }
         let q = content::quest(quest);
-        let (name, race) = (self.name.clone(), self.race);
-        let say = |text: &str| speak_to(&name, race, text);
+        let (name, race, sex) = (self.name.clone(), self.race, self.sex);
+        let say = |text: &str| speak_to(&name, race, sex, text);
         for (panel, which) in [("QuestFrameDetailPanel", QuestScreen::Detail), ("QuestFrameProgressPanel", QuestScreen::Progress), ("QuestFrameRewardPanel", QuestScreen::Reward)] {
             self.tree.show(panel, which == screen);
         }

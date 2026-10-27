@@ -80,6 +80,7 @@ impl Panels {
         self.tree.show(SPELLBOOK, false);
         self.tree.show(TALENTS, false);
         self.close_loot();
+        self.close_book();
         self.close_gossip();
         self.close_merchant();
         self.close_quest();

@@ -6,9 +6,9 @@ impl Panels {
     /// After a saved game was loaded into `quests`: the quests start counting from what is carried, without announcing it.
     /// Put a saved character into the windows' state: what it carries, its level, quests, skills, spells and discoveries. What the saved game no
     /// longer has under its id is dropped (see `Save::apply`).
-    /// The character's name and race, which the character sheet, the quest texts and the tooltips of items go by.
-    pub fn set_identity(&mut self, name: &str, race: crate::character::Race) {
-        (self.name, self.race) = (name.to_string(), race);
+    /// The character's name, race and sex, which the character sheet, the quest texts and the tooltips of items go by.
+    pub fn set_identity(&mut self, name: &str, race: crate::character::Race, sex: crate::character::Sex) {
+        (self.name, self.race, self.sex) = (name.to_string(), race, sex);
         content::set_horde(race.horde());
     }
 

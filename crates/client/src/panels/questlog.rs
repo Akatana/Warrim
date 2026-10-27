@@ -49,6 +49,7 @@ impl Panels {
         self.tree.show(TALENTS, false);
             self.tree.show(trade::TRADE, false);
             self.close_loot();
+            self.close_book();
             self.hide_gossip();
             self.close_merchant();
             self.hide_quest();

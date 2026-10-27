@@ -109,6 +109,11 @@ def entry_text(i, display_rows, spells):
         out.append("sell: %d" % i["SellPrice"])
     if i["description"]:
         out.append("text: %s" % q(i["description"]))
+    # What reading it shows (`classic_pages.ron`), and the material of the page.
+    if i["PageText"]:
+        out.append("page: %d" % i["PageText"])
+        if i["PageMaterial"]:
+            out.append("material: %d" % i["PageMaterial"])
     if i["RequiredSkill"]:
         out.append("skill: (%d, %d)" % (i["RequiredSkill"], i["RequiredSkillRank"]))
     if i["ContainerSlots"]:

@@ -661,6 +661,7 @@ impl State {
                 let fish_ready = self.gather.is_none() && crate::fishing::pole_in_hand(&panels.inv) && fishing::water_ahead_of(&self.camera, &self.world).is_some();
                 let node = self.nodes.as_ref().and_then(|n| n.kind(n.near(feet, OPEN_RANGE)?)).map(|k| k.skill == crate::skills::Skill::Mining);
                 let bed = near_bed(&self.beds, &self.world, feet);
+                let book = book_near(&self.books, feet).is_some();
                 let body = self.bodies.as_ref().is_some_and(|b| b.near(feet, crate::physics::GRAB_RANGE).is_some());
                 let drag = self.bodies.as_ref().is_some_and(|b| b.near_corpse(feet, crate::physics::GRAB_RANGE).is_some());
                 self.hint = match (panels.any_open() || self.lock.is_some(), wolves.lootable_near(feet, LOOT_RANGE), wolves.talkable_near(feet, TALK_RANGE), chest) {
@@ -678,6 +679,7 @@ impl State {
                     (_, None, _, None) if node == Some(false) => Some("Press E to gather"),
                     (_, None, _, None) if body => Some("Hold E to pick up"),
                     (_, None, _, None) if drag => Some("Hold E to drag"),
+                    (_, None, _, None) if book => Some("Press E to read"),
                     (_, None, _, None) if bed => Some("Press E to sleep"),
                     (_, None, Some(_), None) => Some("Press E to talk"),
                     _ => None,
@@ -962,6 +964,7 @@ impl State {
                                 (self.pickup_props, self.pickups_stale) = (pickups, true);
                             }
                             self.beds = bed_spots(&props, &self.map);
+                            self.books = book_spots(&props, &self.map);
                             self.world.set_props(props);
                         }
                     }

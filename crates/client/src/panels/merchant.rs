@@ -137,6 +137,6 @@ impl Panels {
 
     /// What a creature or quest says, with the player filled in: `$N` the name, `$R` the race, `$C` the class (`$n`, `$r`, `$c` as the original writes them, race and class in lower case).
     pub(super) fn speak(&self, text: &str) -> String {
-        speak_to(&self.name, self.race, text)
+        speak_to(&self.name, self.race, self.sex, text)
     }
 }

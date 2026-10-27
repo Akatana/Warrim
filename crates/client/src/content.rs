@@ -335,6 +335,12 @@ pub struct Prop {
     /// A place to work at for the trades: the station it is (a row of `SpellFocusObject.dbc`: 1 anvil, 2 loom, 3 forge, 4 cooking fire, 663 alchemy lab); 0 for none.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub station: u32,
+    /// Something to read (a book, a letter, a plaque): the first page of its text in `classic_pages.ron`; 0 for nothing.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub page: u32,
+    /// What its window is headed with (the name of the original's object).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub at: (f32, f32, f32),
     pub rotation: [f32; 3],
     pub scale: f32,
@@ -591,6 +597,15 @@ pub struct Poi {
     pub height: Option<f32>,
 }
 
+/// A page of the original's books, letters and plaques (`content/classic_pages.ron`, made by `tools/import_pages.py`): its text and the page that follows (0 for none).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Page {
+    pub text: String,
+    #[serde(default)]
+    pub next: u32,
+}
+
 /// A door of the original game that carries the character to another place or map (`content/classic_portals.ron`, made by `tools/import_portals.py`).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -844,6 +859,8 @@ pub struct Content {
     pub pois: Vec<Poi>,
     /// The doors to other maps (not editable).
     pub portals: Vec<Portal>,
+    /// The pages to read, by their entry in the original's `page_text` (not editable).
+    pub pages: BTreeMap<u32, Page>,
     pub chests: Vec<ChestDef>,
     pub quests: Vec<Quest>,
     /// The quests (indexes) each creature kind gives and takes back.
@@ -946,6 +963,11 @@ pub fn classic_spell(id: u32) -> Option<&'static ClassicSpell> {
     c.classic_index.get(&id).map(|&i| &c.classic_spells[i])
 }
 
+/// The page `id` of the books (`Prop::page`, `ItemDef::page`).
+pub fn page(id: u32) -> Option<&'static Page> {
+    get().pages.get(&id)
+}
+
 pub fn spell(index: usize) -> &'static SpellDef {
     &get().spells[index]
 }
@@ -1037,6 +1059,12 @@ pub struct RawItem {
     pub buy_count: u32,
     #[serde(default)]
     pub text: String,
+    /// What reading it shows: the first page (`classic_pages.ron`) and the material the page is on (`PageTextMaterial.dbc`: 1 parchment, 2 stone, 3 marble,
+    /// 4 silver, 5 bronze, 6 valentine; 0 for parchment).
+    #[serde(default)]
+    pub page: u32,
+    #[serde(default)]
+    pub material: u8,
     #[serde(default)]
     pub spells: Vec<items::ItemSpell>,
     #[serde(default)]
@@ -1300,6 +1328,8 @@ fn build_item(raw: RawItem, display: Option<&Displays>, spells: &[SpellDef]) -> 
     Ok(ItemDef {
         weight,
         tome,
+        page: raw.page,
+        material: raw.material,
         quest: raw.quest,
         id: leak(raw.id),
         name: leak(raw.name),
@@ -1839,6 +1869,8 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         }
     }
     let portals: Vec<Portal> = ron::from_str(&source("classic_portals.ron", include_str!("../../../content/classic_portals.ron"))).context("classic_portals.ron")?;
+    let pages: BTreeMap<u32, Page> = ron::from_str(&source("classic_pages.ron", include_str!("../../../content/classic_pages.ron"))).context("classic_pages.ron")?;
+    ensure!(pages.values().all(|p| p.next == 0 || pages.contains_key(&p.next)), "a page leads to a page that is not there");
     let node_numbers: std::collections::HashMap<String, usize> = node_kinds.iter().enumerate().map(|(i, k)| (k.id.clone(), i)).collect();
     ensure!(node_kinds.iter().enumerate().all(|(i, k)| node_kinds[..i].iter().all(|o| o.id != k.id)), "a node kind id is used twice");
     for k in &node_kinds {
@@ -1883,7 +1915,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         }
         taking.entry(q.turn_in).or_default().push(i);
     }
-    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, start: Start { spells: known, money: raw_start.money, equipment, bag } })
+    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, pages, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, start: Start { spells: known, money: raw_start.money, equipment, bag } })
 }
 
 #[cfg(test)]

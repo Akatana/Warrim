@@ -37,6 +37,7 @@ mod levelup;
 mod map;
 mod menu;
 mod sleep;
+mod book;
 mod talents;
 mod trade;
 mod trainer;
@@ -89,6 +90,7 @@ pub struct Panels {
     /// Who the character is, for the texts that name it.
     name: String,
     race: crate::character::Race,
+    sex: crate::character::Sex,
     tree: Tree,
     mount: Arc<Mount>,
     pub inv: Inventory,
@@ -195,6 +197,8 @@ pub struct Panels {
     reward_choice: Option<usize>,
     /// Levels gained since `take_level_up` (for the effect round the character).
     level_ups: u32,
+    /// What is being read (`book.rs`).
+    book: Option<book::Book>,
     /// The question that is asked: abandon this quest? (`StaticPopup1`)
     popup: Option<usize>,
     /// The hour being chosen to sleep until (the same popup asks it), and the one chosen, for the game to take (`take_sleep`).
@@ -241,7 +245,7 @@ const QUEST: &str = "QuestFrame";
 const QUESTLOG: &str = "QuestLogFrame";
 const POPUP: &str = "StaticPopup1";
 /// The scroll frames of the windows: each shows its scroll bar (arrows and knob) when there is more to see.
-const SCROLL_FRAMES: [&str; 6] = ["TalentFrameScrollFrame", "GossipGreetingScrollFrame", "QuestDetailScrollFrame", "QuestProgressScrollFrame", "QuestRewardScrollFrame", "QuestLogDetailScrollFrame"];
+const SCROLL_FRAMES: [&str; 7] = ["ItemTextScrollFrame", "TalentFrameScrollFrame", "GossipGreetingScrollFrame", "QuestDetailScrollFrame", "QuestProgressScrollFrame", "QuestRewardScrollFrame", "QuestLogDetailScrollFrame"];
 /// Quests listed at once, and goals shown for a quest, in the log.
 const LOG_LINES: usize = 6;
 const LOG_GOALS: usize = 10;
@@ -301,10 +305,24 @@ fn bag_button(slot: usize) -> String {
     format!("{BACKPACK}Item{}", BACKPACK_SIZE - slot)
 }
 
+/// `$g male:female;` (the original's words that go by the sex of the one spoken to) as the word for `sex`.
+fn gendered(text: &str, sex: crate::character::Sex) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("$g").or_else(|| rest.find("$G")) {
+        let Some((words, after)) = rest[at + 2..].split_once(';') else { break };
+        out.push_str(&rest[..at]);
+        out.push_str(words.trim().split(':').nth((sex == crate::character::Sex::Female) as usize).unwrap_or(""));
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The text of the original with the player filled in, for the one named `name` of race `race`.
-fn speak_to(name: &str, race: crate::character::Race, text: &str) -> String {
+fn speak_to(name: &str, race: crate::character::Race, sex: crate::character::Sex, text: &str) -> String {
     let race = race.name();
-    text.replace("$N", name).replace("$n", name).replace("$R", race).replace("$r", &race.to_lowercase()).replace("$C", "Paladin").replace("$c", "paladin")
+    gendered(text, sex).replace("$N", name).replace("$n", name).replace("$R", race).replace("$r", &race.to_lowercase()).replace("$C", "Paladin").replace("$c", "paladin")
 }
 
 impl Panels {
@@ -338,6 +356,7 @@ impl Panels {
         tree.set_texture("QuestFramePortrait", Some(r"Interface\QuestFrame\UI-QuestLog-BookIcon"));
         tree.instantiate(POPUP)?;
         sleep::setup(&mut tree)?;
+        book::setup(&mut tree)?;
         // A question with two answers: no close button, no edit boxes, no money, no alert picture.
         for part in ["StaticPopup1CloseButton", "StaticPopup1EditBox", "StaticPopup1WideEditBox", "StaticPopup1MoneyFrame"] {
             tree.show(part, false);
@@ -438,7 +457,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_tab: 0, book_page: [0; magic::BOOK_TABS], cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), target_auras: Default::default(), calm: true, restored: (0.0, 0.0), steed: None, requests: Vec::new(), pet: None, tracking: None, tracked: Vec::new(), mounted: false, mount_cast: None, lure: (None, false), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, destroying: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), sex: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_tab: 0, book_page: [0; magic::BOOK_TABS], cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), target_auras: Default::default(), calm: true, restored: (0.0, 0.0), steed: None, requests: Vec::new(), pet: None, tracking: None, tracked: Vec::new(), mounted: false, mount_cast: None, lure: (None, false), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, book: None, popup: None, sleep: None, slept: None, sleep_dragging: false, destroying: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
         panels.refresh();
         Ok(panels)
     }
@@ -491,7 +510,7 @@ impl Panels {
 
     /// Whether a window of the original's interface is open (the level-up panel is not one: it gives way to them).
     fn windows_open(&self) -> bool {
-        self.popup_open() || self.character_open() || self.backpack_open() || self.loot_open() || self.gossip_open() || self.merchant_open() || self.quest_open() || self.quest_log_open() || self.spellbook_open() || self.talents_open() || self.trade_open() || self.trainer_open() || self.map_open || self.menu_open() || self.options_open()
+        self.popup_open() || self.book_open() || self.character_open() || self.backpack_open() || self.loot_open() || self.gossip_open() || self.merchant_open() || self.quest_open() || self.quest_log_open() || self.spellbook_open() || self.talents_open() || self.trade_open() || self.trainer_open() || self.map_open || self.menu_open() || self.options_open()
     }
 
     // ---- the question
@@ -508,6 +527,7 @@ impl Panels {
         if on {
             self.tree.show(trade::TRADE, false);
             self.close_loot();
+            self.close_book();
             self.close_gossip();
             self.close_merchant();
             self.close_quest();
@@ -539,6 +559,7 @@ impl Panels {
         self.tree.show(TALENTS, false);
         self.tree.show(trade::TRADE, false);
         self.tree.show(BACKPACK, false);
+        self.close_book();
         self.close_loot();
         self.close_gossip();
         self.close_trainer();
@@ -848,6 +869,14 @@ fn coin_icon(copper: u32) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn words_that_go_by_sex_are_the_ones_of_the_character() {
+        use crate::character::Sex;
+        assert_eq!(super::gendered("Hail, $g lord:lady;. Well met, $g sir:madam;.", Sex::Male), "Hail, lord. Well met, sir.");
+        assert_eq!(super::gendered("Hail, $g lord:lady;.", Sex::Female), "Hail, lady.");
+        assert_eq!(super::gendered("No words.", Sex::Female), "No words.");
+    }
+
     use super::*;
 
     #[test]

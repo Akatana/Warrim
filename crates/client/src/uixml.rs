@@ -316,6 +316,9 @@ fn texture_def(n: &Xml) -> TextureDef {
     }
 }
 
+/// How many stretches of differently aligned text a frame of HTML can show.
+pub const HTML_RUNS: usize = 12;
+
 fn string_def(n: &Xml) -> StringDef {
     StringDef {
         name: attr(n, "name").map(String::from),
@@ -370,6 +373,15 @@ fn frame_def(n: &Xml) -> FrameDef {
                         .collect();
                     f.layers.push(LayerDef { level, regions });
                 }
+            }
+            // The text of a frame of HTML (a book's page): `HTML_RUNS` font strings as wide as the frame (`$parentRun0`...), one for each stretch of text that is
+            // aligned the same way; whoever fills the frame sets their texts, places and alignments.
+            "FontString" if f.tag == "SimpleHTML" => {
+                let anchor = AnchorDef { point: Point::TopLeft, relative_to: None, relative_point: None, x: 0.0, y: 0.0 };
+                let regions = (0..HTML_RUNS)
+                    .map(|i| RegionDef::Str(StringDef { name: Some(format!("$parentRun{i}")), size: f.size.map(|(w, _)| (w, 0.0)), anchors: vec![anchor.clone()], justify_h: Some("LEFT".into()), justify_v: Some("TOP".into()), ..string_def(&c) }))
+                    .collect();
+                f.layers.push(LayerDef { level: Level::Artwork, regions });
             }
             "Frames" => f.children.extend(c.children().filter(|k| k.is_element()).map(|k| frame_def(&k))),
             // The frame a scroll frame scrolls: here it sits at the scroll frame's top left corner, unscrolled.
@@ -1022,6 +1034,13 @@ impl Tree {
     pub fn set_region_font(&mut self, region: &str, font: &str) {
         if let Some(Region { kind: Kind::Text { font: f, .. }, .. }) = self.region_mut(region) {
             *f = Some(font.to_string());
+        }
+    }
+
+    /// How a font string aligns its lines ("LEFT", "CENTER", "RIGHT").
+    pub fn set_region_justify(&mut self, region: &str, justify: &str) {
+        if let Some(Region { kind: Kind::Text { justify_h, .. }, .. }) = self.region_mut(region) {
+            *justify_h = justify.to_string();
         }
     }
 

@@ -101,6 +101,7 @@ impl State {
         self.chests = Chests::load(&self.mount, &ModelCache::default(), &mut self.renderer, &self.gpu).map_err(|e| log::warn!("no chests: {e:#}")).ok();
         self.pickup_props = pickup_props();
         self.beds = bed_spots(&content::get().props, &self.map);
+        self.books = book_spots(&content::get().props, &self.map);
         self.stations = station_spots(&content::get().props, &self.map);
         self.load_pickups();
         self.load_nodes();

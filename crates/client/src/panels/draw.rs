@@ -287,6 +287,9 @@ impl Panels {
         }
         let mount = self.mount.clone();
         self.tree.measure(ui, gpu, &mount, screen);
+        if self.book_open() {
+            book::place_runs(&mut self.tree);
+        }
         self.update_scroll_bars(screen);
         if self.popup_open() {
             // The question is as tall as its text and one row of buttons (`StaticPopup_Resize`).

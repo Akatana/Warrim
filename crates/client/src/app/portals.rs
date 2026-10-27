@@ -92,6 +92,7 @@ impl State {
         self.caster.clear_placed(&mut self.effects);
         self.fires = Default::default();
         self.beds = bed_spots(&content::get().props, map);
+        self.books = book_spots(&content::get().props, map);
         self.stations = station_spots(&content::get().props, map);
         self.load_pickups();
         self.load_nodes();

@@ -70,7 +70,7 @@ impl State {
             pl.restore(saved);
         }
         if let Some(pl) = &mut panels {
-            pl.set_identity(&name, look.race);
+            pl.set_identity(&name, look.race, look.sex);
         }
         if let (Some(bar), Some(pl)) = (&mut actionbar, &panels) {
             match loaded.as_ref().filter(|s| !s.bar.is_empty()) {
@@ -196,6 +196,7 @@ impl State {
             bobber: None,
             later: None,
             beds: bed_spots(&content::get().props, &map),
+            books: book_spots(&content::get().props, &map),
             stations: station_spots(&content::get().props, &map),
             map,
             home: start_map.to_string(),

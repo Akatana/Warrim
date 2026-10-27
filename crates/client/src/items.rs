@@ -322,6 +322,9 @@ pub struct ItemDef {
     pub handling: &'static str,
     /// The spell that reading it teaches (an index into the content's spells): a tome.
     pub tome: Option<usize>,
+    /// What reading it shows: the first page (`content::page`) and the material it is on (see `RawItem::material`); page 0 is nothing to read.
+    pub page: u32,
+    pub material: u8,
     /// A quest item (see `RawItem::quest`).
     pub quest: bool,
     /// What it is in the original's tables: the class (weapon, armor, consumable, ...) and the subclass of it.
@@ -360,7 +363,7 @@ impl ItemDef {
     /// An item with nothing but a place to be worn (for showing a look of the tables: its textures, model and mesh parts are filled in by the caller).
     pub fn plain(wear: Wear) -> ItemDef {
         ItemDef {
-            id: "", name: "", icon: "", quality: 1, wear, kind: ("", ""), armor: 0, block: 0, stats: [0; 5], weapon: None, look: Look::NONE, held: None, stack: 1, buy: 0, sell: 0, handling: "", tome: None,
+            id: "", name: "", icon: "", quality: 1, wear, kind: ("", ""), armor: 0, block: 0, stats: [0; 5], weapon: None, look: Look::NONE, held: None, stack: 1, buy: 0, sell: 0, handling: "", tome: None, page: 0, material: 0,
             quest: false, class: 0, subclass: 0, level: 0, classes: 0, races: 0, bind: Bind::Never, unique: false, durability: 0, health: 0, mana: 0, resist: [0; 6], more_damage: &[], buy_count: 1,
             text: "", spells: &[], skill: (0, 0), slots: 0, flags: 0, weight: 0.0, visual: Visual::default(),
         }

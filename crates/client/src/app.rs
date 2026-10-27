@@ -120,6 +120,8 @@ const TALK_RANGE: f32 = 5.0;
 /// How far (and how much higher or lower) a bed's origin may be from the feet for it to be slept in.
 const BED_RANGE: f32 = 4.0;
 const BED_HEIGHT: f32 = 3.0;
+/// How near a book, a letter or a plaque has to be to be read, yards.
+const READ_RANGE: f32 = 4.0;
 /// How far the player may walk off before the loot or gossip window closes (yards).
 const LOOT_LEAVE: f32 = 8.0;
 
@@ -149,6 +151,17 @@ struct App {
 /// The places of the props that are beds in `map`.
 fn bed_spots(props: &[content::Prop], map: &str) -> Vec<Vec3> {
     props.iter().filter(|p| p.sleep && p.map.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(map))).map(|p| crate::coords::wow_to_render([p.at.0, p.at.1, p.at.2])).collect()
+}
+
+/// Where the things to read are in `map` (render space), with the first page of each and what its window is headed with.
+fn book_spots(props: &[content::Prop], map: &str) -> Vec<(Vec3, u32, String)> {
+    props.iter().filter(|p| p.page != 0 && p.map.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(map))).map(|p| (crate::coords::wow_to_render([p.at.0, p.at.1, p.at.2]), p.page, p.title.clone().unwrap_or_default())).collect()
+}
+
+/// The nearest thing to read within reach of `feet`: the place in `books`.
+fn book_near(books: &[(Vec3, u32, String)], feet: Vec3) -> Option<usize> {
+    let reach = |b: &Vec3| ((b.x - feet.x).hypot(b.z - feet.z), (b.y - feet.y).abs());
+    books.iter().enumerate().filter(|(_, (b, ..))| reach(b).0 <= READ_RANGE && reach(b).1 < BED_HEIGHT).min_by(|a, b| reach(&a.1.0).0.total_cmp(&reach(&b.1.0).0)).map(|(i, _)| i)
 }
 
 /// Where the stations of the trades (anvils, forges, cooking fires) stand in `map`.
@@ -228,6 +241,8 @@ struct State {
     later: Option<Later>,
     /// Where the beds are (render space): the props flagged `sleep`.
     beds: Vec<Vec3>,
+    /// Where the things to read are (render space), the first page of each and its title: the props with a `page`.
+    books: Vec<(Vec3, u32, String)>,
     /// Where the stations of the trades are (render space): the props with a `station`, with its kind.
     stations: Vec<(u32, Vec3)>,
     /// A lootable corpse that can also be dragged, and when the interact key went down on it: a tap loots it, holding drags it.

@@ -79,6 +79,8 @@ impl Panels {
                 self.after_close();
             }
             "LootCloseButton" => self.close_loot(),
+            "ItemTextCloseButton" => self.close_book(),
+            "ItemTextPrevPageButton" | "ItemTextNextPageButton" => self.turn_book(name == "ItemTextNextPageButton"),
             "GossipFrameCloseButton" | "GossipFrameGreetingGoodbyeButton" => self.close_gossip(),
             "MerchantFrameCloseButton" => self.close_merchant(),
             "QuestLogFrameCloseButton" | "QuestFrameExitButton" => self.toggle_quest_log(),
@@ -124,6 +126,8 @@ impl Panels {
                         self.open_quest(usize::MAX, &content::get().creatures[content::quest(quest).turn_in], quest, QuestScreen::Detail);
                     } else if self.inv.bag[slot].is_some_and(|s| crate::items::get(s.item).tome.is_some()) {
                         self.read_tome(slot);
+                    } else if let Some(read) = self.inv.bag[slot].map(|s| crate::items::get(s.item)).filter(|i| i.page != 0) {
+                        self.open_book(read.name, read.page, read.material);
                     } else if self.inv.bag[slot].is_some_and(|s| crate::consume::Consumed::can_use(s.item)) {
                         self.use_item(slot);
                     } else if let Some(worn) = self.inv.bag[slot] {

@@ -67,6 +67,10 @@ class Zones:
         return self.areas[area][1] if area in self.areas else ""
 
 
+def ron_string(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     folder = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "data")
@@ -104,15 +108,15 @@ def main():
         if key in seen:
             continue
         seen.add(key)
-        out.append((MAPS[s["map"]], path, s["position_x"], s["position_y"], s["position_z"], heading, t["size"] or 1.0, zones.at(MAPS[s["map"]], s["position_x"], s["position_y"]), t["data0"] if t["type"] == 8 else 0))
+        out.append((MAPS[s["map"]], path, s["position_x"], s["position_y"], s["position_z"], heading, t["size"] or 1.0, zones.at(MAPS[s["map"]], s["position_x"], s["position_y"]), t["data0"] if t["type"] == 8 else 0, t["data0"] if t["type"] == 9 else 0, t["name"] if t["type"] == 9 else ""))
 
     header = ("// The objects of the original game (1.12.1) that stand in the world for looks, made by tools/import_props.py from the CMaNGOS classic database (gameobject).\n"
               "// They are props like those of `props.ron` (and are edited in the editor like them), each with the map it stands in. Do not edit by hand: what the editor changes of them\n"
               "// is kept in `props.ron` and `editor.ron`, and running the tool again leaves that as it is.\n")
     with open(os.path.join(target, "classic_props.ron"), "w", encoding="utf8", newline="\n") as f:
         f.write(header + "[\n")
-        for name, path, x, y, z, h, scale, zone, station in sorted(out):
-            f.write('    (model: r"%s", map: Some("%s"),%s%s at: (%.2f, %.2f, %.2f), rotation: (0.0, %.1f, 0.0), scale: %.2f),\n' % (path, name, ' zone: Some("%s"),' % zone if zone else "", ' station: %d,' % station if station else "", x, y, z, h, scale))
+        for name, path, x, y, z, h, scale, zone, station, page, title in sorted(out):
+            f.write('    (model: r"%s", map: Some("%s"),%s%s%s%s at: (%.2f, %.2f, %.2f), rotation: (0.0, %.1f, 0.0), scale: %.2f),\n' % (path, name, ' zone: Some("%s"),' % zone if zone else "", ' station: %d,' % station if station else "", ' page: %d,' % page if page else "", ' title: Some(%s),' % ron_string(title) if title else "", x, y, z, h, scale))
         f.write("]\n")
     print("wrote", len(out), "objects, left out", skipped)
 

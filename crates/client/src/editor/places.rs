@@ -362,7 +362,7 @@ pub(super) fn steps_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, steps: &mut V
 /// an unknown kind or a place without ground.
 pub(super) fn node_prop(kinds: &[content::NodeKind], n: &content::Node, ground: Ground) -> Option<Prop> {
     let kind = kinds.iter().find(|k| k.id == n.kind)?;
-    Some(Prop { model: kind.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, at: (n.at.0, n.at.1, ground(-n.at.1, -n.at.0)?), rotation: [0.0, n.facing, 0.0], scale: kind.scale })
+    Some(Prop { model: kind.model.clone(), map: None, zone: None, pickup: None, sleep: false, physics: false, station: 0, page: 0, title: None, at: (n.at.0, n.at.1, ground(-n.at.1, -n.at.0)?), rotation: [0.0, n.facing, 0.0], scale: kind.scale })
 }
 
 /// The kinds of nodes: what a vein or an herb is called, which profession gathers it at what rank, how it looks, what it gives and how often it can be gathered.
