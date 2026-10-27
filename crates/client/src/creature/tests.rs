@@ -34,7 +34,7 @@ fn a_wolfs_name_floats_at_its_attachment_and_a_model_without_one_at_a_fixed_heig
 }
 
 #[test]
-fn a_wolf_ignores_a_distant_player_then_chases_bites_and_keeps_biting() {
+fn a_wolf_ignores_a_distant_player_then_chases_strikes_and_keeps_striking() {
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
     assert!(run(&mut wolf, 3.0, Vec3::new(30.0, 0.0, 0.0)).is_empty() && wolf.state == State::Idle);
     // A player 10 yards east: it turns to face east and runs to him (6.94 yd/s: about 1.2 s to get in range).
@@ -42,10 +42,10 @@ fn a_wolf_ignores_a_distant_player_then_chases_bites_and_keeps_biting() {
     run(&mut wolf, 0.2, player);
     assert_eq!(wolf.state, State::Chase);
     assert!((wolf.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "yaw {}", wolf.yaw);
-    let bites = run(&mut wolf, 6.0, player);
-    assert!((wolf.pos - player).length() < BITE_RANGE, "stopped at {:?}", wolf.pos);
-    // Over 6 seconds: a bite every 2.1 s (1.5 s animation and a pause).
-    assert!(bites.len() >= 2 && bites.iter().all(|&d| d == def().bite_damage), "{bites:?}");
+    let strikes = run(&mut wolf, 6.0, player);
+    assert!((wolf.pos - player).length() < MELEE_RANGE, "stopped at {:?}", wolf.pos);
+    // Over 6 seconds: a melee attack every 2.1 s (1.5 s animation and a pause).
+    assert!(strikes.len() >= 2 && strikes.iter().all(|&d| d == def().melee_damage), "{strikes:?}");
 }
 
 #[test]
@@ -63,9 +63,9 @@ fn a_wolf_does_not_walk_through_a_wall_but_slides_along_it() {
 }
 
 #[test]
-fn a_bite_misses_when_the_player_has_stepped_away_and_a_wolf_gives_up_far_away() {
+fn a_blow_misses_when_the_player_has_stepped_away_and_a_wolf_gives_up_far_away() {
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
-    wolf.state = State::Bite(0.0, false);
+    wolf.state = State::Melee(0.0, false);
     // Moves 5 yards off while the teeth are coming: no damage.
     assert!(run(&mut wolf, 1.6, Vec3::new(5.0, 0.0, 0.0)).is_empty());
     wolf.state = State::Chase;
@@ -140,7 +140,7 @@ fn hits_flinch_then_kill_and_the_wolf_returns_after_a_while() {
     assert_eq!(wolf.state, State::Chase);
     (0..4).for_each(|_| wolf.hurt(12.0));
     assert!(wolf.is_dead() && wolf.health < 0.0);
-    // A corpse neither moves nor bites, and hits on it do nothing.
+    // A corpse neither moves nor strikes, and hits on it do nothing.
     assert!(run(&mut wolf, 10.0, Vec3::new(3.5, 0.0, 0.0)).is_empty() && wolf.is_dead());
     wolf.hurt(5.0);
     // After the respawn time it stands at home again with full health.
@@ -178,7 +178,7 @@ fn a_swing_hits_what_is_in_front_and_in_reach_only() {
 }
 
 #[test]
-fn a_wolf_cries_when_it_notices_snarls_and_bites_is_wounded_and_dies() {
+fn a_wolf_cries_when_it_notices_snarls_and_strikes_is_wounded_and_dies() {
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
     let player = Vec3::new(10.0, 0.0, 0.0);
     let mut heard = Vec::new();
@@ -190,8 +190,8 @@ fn a_wolf_cries_when_it_notices_snarls_and_bites_is_wounded_and_dies() {
     let steps = heard.iter().filter(|&&s| s == Cry::Footstep).count();
     assert!((3..=4).contains(&steps), "{steps} footsteps");
     heard.retain(|&s| s != Cry::Footstep);
-    // Aggro once, then a snarl and the bite's impact for each bite.
-    assert_eq!(heard[..3], [Cry::Aggro, Cry::Attack, Cry::Bite]);
+    // Aggro once, then a snarl and the melee attack's impact for each melee attack.
+    assert_eq!(heard[..3], [Cry::Aggro, Cry::Attack, Cry::CustomAttack]);
     assert_eq!(heard.iter().filter(|&&s| s == Cry::Aggro).count(), 1);
     wolf.hurt(12.0);
     assert_eq!(wolf.sounds.pop(), Some(Cry::Wound));
@@ -377,11 +377,11 @@ fn a_neutral_creature_ignores_the_player_until_hit_then_fights_back() {
     let kind = content::creature_index("c299"); // Young Wolf
     let mut wolf = Mob::new(kind, Vec3::ZERO, 0.0);
     assert!(wolf.def.neutral && !wolf.def.hostile && wolf.def.attackable());
-    assert!(run(&mut wolf, 3.0, Vec3::new(3.0, 0.0, 0.0)).is_empty() && !matches!(wolf.state, State::Chase | State::Bite(..)), "no aggro on sight");
+    assert!(run(&mut wolf, 3.0, Vec3::new(3.0, 0.0, 0.0)).is_empty() && !matches!(wolf.state, State::Chase | State::Melee(..)), "no aggro on sight");
     assert!(wolf.struck_by(wolf.pos + Vec3::Z * 2.0, 0.0, 3.5, 1.0), "it can be fought");
     let beside = wolf.pos + Vec3::X;
-    let bitten = run(&mut wolf, 3.0, beside);
-    assert!(!bitten.is_empty(), "it bites back");
+    let struck = run(&mut wolf, 3.0, beside);
+    assert!(!struck.is_empty(), "it strikes back");
 }
 
 /// The quest marks bob up and down in their stand animation, and the "?" ones turn to face the viewer (their one bone
@@ -490,11 +490,11 @@ fn an_archer_shoots_from_range_and_a_creature_out_of_mana_goes_to_melee() {
     mage.mana = 1.0;
     let player = Vec3::new(12.0, 0.0, 0.0);
     acts_of(&mut mage, 6.0, &Watch::at(player));
-    assert!(flat(mage.pos - player).length() < BITE_RANGE + 0.5, "out of mana it comes to melee: {:?}", mage.pos);
+    assert!(flat(mage.pos - player).length() < MELEE_RANGE + 0.5, "out of mana it comes to melee: {:?}", mage.pos);
     let mut seer = Mob::new(content::creature_index("c1397"), Vec3::ZERO, 0.0);
     let bolts = casts(&acts_of(&mut seer, 14.0, &Watch::at(player))).iter().filter(|c| c.0 == 9532).count();
     assert_eq!(bolts, 1, "one bolt, and then its mana is gone");
-    assert!(flat(seer.pos - player).length() < BITE_RANGE + 0.5, "a Frostmane Seer then fights close: {:?}", seer.pos);
+    assert!(flat(seer.pos - player).length() < MELEE_RANGE + 0.5, "a Frostmane Seer then fights close: {:?}", seer.pos);
 }
 
 #[test]
@@ -593,13 +593,20 @@ fn fear_roots_sleep_and_weakness_change_what_a_creature_does() {
     wolf.hurt(1.0);
     assert_eq!(wolf.look, wolf.kind);
     assert!(run(&mut wolf, 3.0, Vec3::new(2.0, 0.0, 0.0)).len() >= 1, "it did not wake");
-    // Weakened: it takes a tenth more and bites a bit less hard; banished, it cannot be hurt at all.
+    // Weakened: it takes a tenth more and strikes a bit less hard; banished, it cannot be hurt at all.
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
     wolf.afflict(Status::Weaken { dealt: 0.5, taken: 1.5, seconds: 10.0 });
     wolf.hurt(10.0);
     assert_eq!(wolf.health, def().health - 15.0);
-    let bites = run(&mut wolf, 3.0, Vec3::new(2.0, 0.0, 0.0));
-    assert!(bites.iter().all(|&d| (d - def().bite_damage * 0.5).abs() < 1e-3), "{bites:?}");
+    let strikes = run(&mut wolf, 3.0, Vec3::new(2.0, 0.0, 0.0));
+    assert!(strikes.iter().all(|&d| (d - def().melee_damage * 0.5).abs() < 1e-3), "{strikes:?}");
+    // Slowed in its blows: a quarter less speed means a third more time between swings, and it passes with the seconds.
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    let swing = wolf.swing();
+    wolf.afflict(Status::Tempo(0.75, 5.0));
+    assert!((wolf.swing() - swing / 0.75).abs() < 1e-4);
+    wolf.afflicted(6.0);
+    assert_eq!(wolf.swing(), swing);
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
     wolf.afflict(Status::Banish(5.0));
     wolf.hurt(10.0);
@@ -621,8 +628,8 @@ fn an_ally_follows_the_player_strikes_what_he_fights_and_goes_when_its_time_is_u
     let foe = Vec3::new(20.0, 0.0, 15.0);
     let acts = step(&mut pet, 5.0, Some(foe));
     let blows: Vec<f32> = acts.iter().filter_map(|a| if let Act::Strike(d) = a { Some(*d) } else { None }).collect();
-    assert!((pet.pos - foe).length() < BITE_RANGE + 0.5 && blows.len() >= 2, "{:?} {blows:?}", pet.pos);
-    assert!(blows.iter().all(|&d| d > def().bite_damage), "{blows:?}");
+    assert!((pet.pos - foe).length() < MELEE_RANGE + 0.5 && blows.len() >= 2, "{:?} {blows:?}", pet.pos);
+    assert!(blows.iter().all(|&d| d > def().melee_damage), "{blows:?}");
     // The time is up: it is gone.
     step(&mut pet, 6.0, None);
     assert_eq!(pet.state, State::Unborn);

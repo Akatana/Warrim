@@ -213,9 +213,15 @@ def main():
         if horde != (hostile, neutral):
             out.append("horde: Some((%s, %s))" % (str(horde[0]).lower(), str(horde[1]).lower()))
         out.append("health: %s" % import_items.f(max(1, (c["MinLevelHealth"] + c["MaxLevelHealth"]) / 2.0)))
-        damage = (c["MinMeleeDmg"] + c["MaxMeleeDmg"]) / 2.0 * (c["DamageMultiplier"] or 1)
+        # A swing is the weapon's damage (times the multiplier) and what its attack power adds (a fourteenth of it, a second long); the game rolls it within the
+        # weapon's range, so what is kept is the middle of it and how far the range reaches, as a share.
+        mult = c["DamageMultiplier"] or 1
+        damage = (c["MinMeleeDmg"] + c["MaxMeleeDmg"]) / 2.0 * mult + c["MeleeAttackPower"] / 14.0 * (c["MeleeBaseAttackTime"] or 2000) / 1000.0
         if damage > 0:
-            out.append("bite_damage: %s" % import_items.f(round(damage, 1)))
+            out.append("melee_damage: %s" % import_items.f(round(damage, 1)))
+            spread = (c["MaxMeleeDmg"] - c["MinMeleeDmg"]) / 2.0 * mult / damage
+            if spread >= 0.005:
+                out.append("melee_spread: %s" % import_items.f(round(min(spread, 1.0), 2)))
         rows = c_loot.get(c["LootId"], []) if c["LootId"] else []
         gold = (c["MinLootGold"], c["MaxLootGold"])
         if rows or any(gold):

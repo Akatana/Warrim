@@ -817,6 +817,9 @@ pub struct Stats {
     pub water_breathing: bool,
 }
 
+/// The share of the original's spirit-based health and mana regeneration the game keeps (what gear gives per 5 seconds is not cut).
+const BASE_REGEN: f32 = 0.1;
+
 /// Attack power per point of damage per second (`ATTACK_POWER_MAGIC_NUMBER`).
 pub const ATTACK_POWER_PER_DPS: f32 = 14.0;
 
@@ -884,8 +887,8 @@ impl Stats {
         gear.skill.iter().for_each(|&(skill, amount)| skill_bonus[skill] += amount);
         let crit = agi / rate + gear.crit + perks.crit;
         let spell_crit = gear.spell_crit.map(|g| 3.70 + int / (14.77 + 0.65 * level as f32) + g + perks.spell_crit);
-        let (health_regen, mana_regen_casting) = (spi * 0.25 * (1.0 + perks.health_regen / 100.0), gear.mp5 as f32 / 5.0);
-        let mana_regen = (spi / 5.0 + 15.0) / 2.0 * (1.0 + perks.mana_regen / 100.0) + mana_regen_casting;
+        let (health_regen, mana_regen_casting) = (spi * 0.25 * BASE_REGEN * (1.0 + perks.health_regen / 100.0), gear.mp5 as f32 / 5.0);
+        let mana_regen = (spi / 5.0 + 15.0) / 2.0 * BASE_REGEN * (1.0 + perks.mana_regen / 100.0) + mana_regen_casting;
         // 5% to parry, and with a shield 5% to block what the shield and strength hold back (`UpdateParryPercentage`, `UpdateBlockPercentage`, `GetShieldBlockValue`).
         let shield = equipment[OFF_HAND].map(|s| get(s.item)).filter(|i| i.wear == Wear::Shield);
         let block_value = shield.map_or(0.0, |i| (i.block as f32 + gear.block_value as f32 + str / 20.0 - 1.0).max(0.0));
@@ -998,7 +1001,7 @@ mod tests {
         assert_eq!((s.max_health, s.max_mana), (68.0, 79.0));
         // Dodge 0.75 + 20 / 4.6, spell crit 3.7 + 20 / (14.77 + 0.65), regen from 22 spirit (health 0.25, mana 1/5 + 15, per 2 seconds).
         assert!((s.dodge - 5.098).abs() < 0.01 && (s.crit - 4.348).abs() < 0.01 && s.spell_crit.iter().all(|c| (c - 4.997).abs() < 0.01));
-        assert!((s.health_regen - 5.5).abs() < 1e-4 && (s.mana_regen - 9.7).abs() < 1e-4);
+        assert!((s.health_regen - 0.55).abs() < 1e-4 && (s.mana_regen - 0.97).abs() < 1e-4);
         // 5% to parry; the shield gives 5% to block; ranged attack power is agility less 10, and there is no bow.
         assert_eq!((s.parry, s.block, s.ranged_attack_power, s.ranged, s.mana_regen_casting), (5.0, 5.0, 10, None, 0.0));
         assert!((s.block_value - (get(inv.equipment[OFF_HAND].unwrap().item).block as f32 + 0.1)).abs() < 1e-4);

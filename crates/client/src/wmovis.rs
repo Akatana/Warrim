@@ -23,6 +23,8 @@ const MIN_EXTENT: f32 = 1e-4;
 const NEAR_W: f32 = 1e-3;
 /// How far below the camera a group's floor may be for the camera to count as inside the group.
 const FLOOR_REACH: f32 = 12.0;
+/// How far above an outdoor floor the camera may be and still stand on it (eye height plus a little).
+const STANDING_REACH: f32 = 3.0;
 /// How close to a portal (and its frame) the camera counts as standing in it.
 const DOORWAY: f32 = 0.75;
 
@@ -163,13 +165,21 @@ fn camera_group(wmo: &WmoCpu, cam: Vec3) -> Option<usize> {
     // portal into a group whose bounds hold it, it is in that group.
     // No floor under the camera in an indoor group (above a stairwell: the stairs' group ends below the eyes, the room's
     // floor has the hole): the tightest indoor group whose bounds hold it, as the client's list of groups around the camera.
+    // Standing on an outdoor floor (a doorstep), only a room that portal joins to it holds the camera; a big hall whose bounds
+    // reach over the step does not.
     if best.map_or(true, |(g, _)| wmo.groups[g].flags & OUTDOOR != 0) {
+        let joined = |room: usize| {
+            best.is_none_or(|(o, f)| {
+                let (first, count) = wmo.groups[o].portals;
+                c.y - f > STANDING_REACH || (first as usize..(first + count) as usize).any(|i| wmo.portal_refs.get(i).is_some_and(|r| r.group as usize == room))
+            })
+        };
         let volume = |g: &crate::models::WmoGroupCpu| {
             let d = Vec3::from(g.bbox.1) - Vec3::from(g.bbox.0);
             d.x * d.y * d.z
         };
-        let inside = wmo.groups.iter().enumerate().filter(|(_, g)| {
-            g.model.is_some() && g.flags & OUTDOOR == 0 && !cam.cmplt(Vec3::from(g.bbox.0)).any() && !cam.cmpgt(Vec3::from(g.bbox.1)).any()
+        let inside = wmo.groups.iter().enumerate().filter(|(i, g)| {
+            g.model.is_some() && g.flags & OUTDOOR == 0 && !cam.cmplt(Vec3::from(g.bbox.0)).any() && !cam.cmpgt(Vec3::from(g.bbox.1)).any() && joined(*i)
         });
         if let Some((g, _)) = inside.min_by(|a, b| volume(a.1).total_cmp(&volume(b.1))) {
             return Some(g);

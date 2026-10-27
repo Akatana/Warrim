@@ -1,4 +1,4 @@
-//! One step of a creature's life: aggro, chase, bite, roam, return, and which animation it plays.
+//! One step of a creature's life: aggro, chase, melee attack, roam, return, and which animation it plays.
 
 use super::*;
 
@@ -141,8 +141,8 @@ impl Mob {
                 let no_melee = ranged && mode.is_some_and(|m| m.0 == brain::NO_MELEE);
                 if dist > LEASH_RANGE || flat(self.home - self.pos).length() > LEASH_RANGE {
                     self.state = State::Return(0.0);
-                } else if melee && !no_melee && dist <= BITE_RANGE && self.pause == 0.0 {
-                    self.state = State::Bite(0.0, false);
+                } else if melee && !no_melee && dist <= MELEE_RANGE && self.pause == 0.0 {
+                    self.state = State::Melee(0.0, false);
                     self.sounds.push(Cry::Attack);
                 } else if ranged && self.kite == 0.0 && dist < KITE_RANGE && mode.is_some_and(|m| matches!(m.0, brain::PROXIMITY | brain::DISTANCER)) && self.ranged_ok() {
                     // A caster backs away from a player who comes close.
@@ -150,8 +150,8 @@ impl Mob {
                 } else if moves {
                     // A caster in ranged mode stands at its distance as long as it sees the player; any other runs to him.
                     let stand = match mode {
-                        Some((_, d)) if ranged && los => d.max(BITE_RANGE),
-                        _ => BITE_RANGE * 0.8,
+                        Some((_, d)) if ranged && los => d.max(MELEE_RANGE),
+                        _ => MELEE_RANGE * 0.8,
                     };
                     if dist > stand {
                         let speed = if self.charge > 0.0 { CHARGE_SPEED } else { RUN_SPEED };
@@ -175,23 +175,23 @@ impl Mob {
                     self.health = (self.health + self.def.health * REGEN * dt).min(self.def.health);
                 }
             }
-            State::Bite(t, hit) => {
+            State::Melee(t, hit) => {
                 self.turn(to);
                 let t = t + dt;
-                let landed = hit || t >= BITE_HIT;
-                if landed && !hit && dist <= BITE_REACH {
-                    let damage = self.def.bite_damage * self.boost();
+                let landed = hit || t >= MELEE_HIT;
+                if landed && !hit && dist <= MELEE_REACH {
+                    let damage = self.def.melee_damage * self.boost() * (1.0 + self.def.melee_spread * (2.0 * self.random() - 1.0));
                     if damage > 0.0 {
                         self.out.push(Act::Melee(damage));
                     }
-                    self.sounds.push(Cry::Bite);
+                    self.sounds.push(Cry::CustomAttack);
                     self.proc_on_hit();
                 }
-                if t >= BITE_TIME {
-                    self.pause = (self.swing() - BITE_TIME).max(0.1);
+                if t >= MELEE_TIME {
+                    self.pause = (self.swing() - MELEE_TIME).max(0.1);
                     self.state = State::Chase;
                 } else {
-                    self.state = State::Bite(t, landed);
+                    self.state = State::Melee(t, landed);
                 }
             }
             State::Cast(spell, t, total, fired) => {
@@ -333,7 +333,7 @@ impl Mob {
             State::Chase if self.moving => RUN,
             State::Chase => STAND,
             State::Flee(..) | State::Kite(_) => RUN,
-            State::Bite(..) => BITE,
+            State::Melee(..) => ATTACK_UNARMED,
             State::Cast(spell, _, _, fired) => {
                 let (ready, cast) = self.spell_anims(spell, anims);
                 if fired { cast } else { ready }

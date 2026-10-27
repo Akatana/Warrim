@@ -116,6 +116,9 @@ pub struct Save {
     /// What works on the character: buffs, item cooldowns (id, seconds), the seconds left of the way home; and the sneak.
     #[serde(default)]
     pub buffs: Vec<crate::consume::BuffSave>,
+    /// What the character's spells put on him (the timed effects, the icons shown with the buffs), with the seconds left.
+    #[serde(default)]
+    pub spell_buffs: crate::consume::TimedSave,
     #[serde(default)]
     pub item_cooldowns: Vec<(String, f32)>,
     #[serde(default)]
@@ -210,6 +213,7 @@ impl Save {
             sheathed: false,
             height: None,
             buffs: Vec::new(),
+            spell_buffs: Default::default(),
             item_cooldowns: Vec::new(),
             hearth: None,
             sneaking: false,

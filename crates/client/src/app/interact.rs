@@ -41,13 +41,14 @@ impl State {
             return;
         }
         let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
-        let corpse =self.wolves.as_ref().and_then(|w| w.lootable_near(feet, LOOT_RANGE));
-        let chest = self.chests.as_ref().and_then(|c| c.near(feet, OPEN_RANGE));
-        let pickup = self.pickups.as_ref().zip(self.panels.as_ref()).and_then(|(p, panels)| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv)));
-        let node = self.nodes.as_ref().and_then(|n| n.near(feet, OPEN_RANGE));
-        let skin = self.wolves.as_ref().and_then(|w| w.skinnable_near(feet, LOOT_RANGE));
+        let seen = |at| in_sight(&self.camera, &self.world, at);
+        let corpse = self.wolves.as_ref().and_then(|w| w.lootable_near(feet, LOOT_RANGE, seen));
+        let chest = self.chests.as_ref().and_then(|c| c.near(feet, OPEN_RANGE, seen));
+        let pickup = self.pickups.as_ref().zip(self.panels.as_ref()).and_then(|(p, panels)| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv), seen));
+        let node = self.nodes.as_ref().and_then(|n| n.near(feet, OPEN_RANGE, seen));
+        let skin = self.wolves.as_ref().and_then(|w| w.skinnable_near(feet, LOOT_RANGE, seen));
         let fish = if self.has_pole() { self.water_ahead() } else { None };
-        let talk = self.wolves.as_ref().and_then(|w| w.talkable_near(feet, TALK_RANGE));
+        let talk = self.wolves.as_ref().and_then(|w| w.talkable_near(feet, TALK_RANGE, seen));
         // Loose props are carried for as long as the key is held (let go in `input.rs`); the key repeating while one is held does nothing else.
         if self.bodies.as_ref().is_some_and(|b| b.holding()) {
             return;
@@ -62,7 +63,7 @@ impl State {
         if self.pending_loot.is_some() {
             return;
         }
-        let book = book_near(&self.books, feet);
+        let book = book_near(&self.books, feet, seen);
         if let (Some(i), true) = (book, corpse.is_none() && chest.is_none() && pickup.is_none() && node.is_none() && skin.is_none() && fish.is_none() && body.is_none() && drag.is_none() && talk.is_none()) {
             let (_, page, title) = self.books[i].clone();
             if let Some(panels) = &mut self.panels {
@@ -71,7 +72,7 @@ impl State {
             self.set_grab(false);
             return;
         }
-        if corpse.is_none() && chest.is_none() && pickup.is_none() && node.is_none() && skin.is_none() && fish.is_none() && body.is_none() && drag.is_none() && near_bed(&self.beds, &self.world, feet) {
+        if corpse.is_none() && chest.is_none() && pickup.is_none() && node.is_none() && skin.is_none() && fish.is_none() && body.is_none() && drag.is_none() && near_bed(&self.beds, &self.world, feet, seen) {
             if let Some(panels) = &mut self.panels {
                 panels.ask_sleep();
             }
@@ -315,6 +316,13 @@ impl State {
         if distance > range {
             if let Some(p) = &mut self.panels {
                 let text = p.string(far);
+                p.error(&text);
+            }
+            return true;
+        }
+        if !clear_view(&self.camera, &self.world, at) {
+            if let Some(p) = &mut self.panels {
+                let text = p.string("SPELL_FAILED_LINE_OF_SIGHT");
                 p.error(&text);
             }
             return true;

@@ -2,8 +2,8 @@
 // its `look` is `(race: Orc, sex: Female, skin: 0, face: 0, hair_style: 0, hair_color: 0, beard: 0)` (race and sex may be left out: human male; what the other numbers can
 // be depends on the race and sex, the editor offers only those that exist). Left out: not hostile, health 100, respawn 5 minutes, no title, no loot, nothing to say.
 [
-    (id: "wolf", kind: 1, name: "Wolf", body: Beast(model: r"Creature\Wolf\Wolf.m2", skins: [(11, r"Creature\Wolf\WolfSkinTimber.blp"), (12, r"Creature\Wolf\WolfSkinTimberAlpha.blp")], scale: 0.9), hostile: true, health: 50.0, bite_damage: 8.0, loot: Some("wolf")),
-    (id: "black_wolf", kind: 1, name: "Black Wolf", level: 3, body: Beast(model: r"Creature\Wolf\Wolf.m2", skins: [(11, r"Creature\Wolf\WolfSkinBlack.blp"), (12, r"Creature\Wolf\WolfSkinBlackAlpha.blp")], scale: 1.0), hostile: true, health: 95.0, bite_damage: 12.0, loot: Some("black_wolf")),
+    (id: "wolf", kind: 1, name: "Wolf", body: Beast(model: r"Creature\Wolf\Wolf.m2", skins: [(11, r"Creature\Wolf\WolfSkinTimber.blp"), (12, r"Creature\Wolf\WolfSkinTimberAlpha.blp")], scale: 0.9), hostile: true, health: 50.0, melee_damage: 8.0, loot: Some("wolf")),
+    (id: "black_wolf", kind: 1, name: "Black Wolf", level: 3, body: Beast(model: r"Creature\Wolf\Wolf.m2", skins: [(11, r"Creature\Wolf\WolfSkinBlack.blp"), (12, r"Creature\Wolf\WolfSkinBlackAlpha.blp")], scale: 1.0), hostile: true, health: 95.0, melee_damage: 12.0, loot: Some("black_wolf")),
     (id: "deputy_willem", name: "Deputy Willem", title: Some("Stormwind Guard"), body: Humanoid(outfit: ["worn_leather_vest", "scuffed_boots", "longsword", "round_shield"], look: (skin: 2, face: 3, hair_style: 2, hair_color: 3, beard: 3)), gossip: Some((
         greeting: "Greetings, $N. These are quiet days in Northshire, but keep an eye out for wolves in the valley west of here.",
         options: [
@@ -41,10 +41,10 @@
         options: [(text: "What do the brothers need?", action: Say("Meat. A good broth would do more for them than all my prayers, and the boars in the vineyard are fat and plentiful."))],
     ))),
     // ... and their enemies: rats, boars, kobolds and the Redhand.
-    (id: "cellar_rat", kind: 1, name: "Cellar Rat", body: Beast(model: r"Creature\Rat\Rat.m2", skins: [(11, r"Creature\Rat\BrownSkin.blp")], scale: 1.4), hostile: true, health: 22.0, bite_damage: 3.0, loot: Some("rat")),
-    (id: "valley_boar", kind: 1, name: "Valley Boar", level: 2, body: Beast(model: r"Creature\Boar\Boar.m2", skins: [(11, r"Creature\Boar\BoarSkinBrown.blp")], scale: 0.8), hostile: true, health: 70.0, bite_damage: 8.0, loot: Some("boar")),
-    (id: "kobold_miner", kind: 7, name: "Kobold Miner", level: 3, body: Beast(model: r"Creature\Kobold\Kobold.m2", skins: [(11, r"Creature\Kobold\koboldskinNormal.blp")], scale: 1.0), hostile: true, health: 58.0, bite_damage: 7.0, loot: Some("kobold")),
-    (id: "foreman_gribble", kind: 7, name: "Foreman Gribble", title: Some("Kobold Foreman"), level: 5, body: Beast(model: r"Creature\Kobold\Kobold.m2", skins: [(11, r"Creature\Kobold\koboldskinAlbino.blp")], scale: 1.4), hostile: true, health: 170.0, bite_damage: 13.0, respawn: 900.0, loot: Some("gribble")),
-    (id: "redhand_cutpurse", kind: 7, name: "Redhand Cutpurse", level: 3, body: Humanoid(outfit: ["worn_leather_vest", "scuffed_boots", "hatchet"], look: (skin: 3, face: 6, hair_style: 4, hair_color: 0, beard: 5)), hostile: true, health: 80.0, bite_damage: 9.0, loot: Some("cutpurse")),
-    (id: "garrick_thorne", kind: 7, name: "Garrick Thorne", title: Some("Redhand Captain"), level: 5, body: Humanoid(outfit: ["blue_jerkin", "scuffed_boots", "longsword", "round_shield"], look: (skin: 1, face: 2, hair_style: 9, hair_color: 5, beard: 1)), hostile: true, health: 150.0, bite_damage: 12.0, respawn: 900.0, loot: Some("garrick")),
+    (id: "cellar_rat", kind: 1, name: "Cellar Rat", body: Beast(model: r"Creature\Rat\Rat.m2", skins: [(11, r"Creature\Rat\BrownSkin.blp")], scale: 1.4), hostile: true, health: 22.0, melee_damage: 3.0, loot: Some("rat")),
+    (id: "valley_boar", kind: 1, name: "Valley Boar", level: 2, body: Beast(model: r"Creature\Boar\Boar.m2", skins: [(11, r"Creature\Boar\BoarSkinBrown.blp")], scale: 0.8), hostile: true, health: 70.0, melee_damage: 8.0, loot: Some("boar")),
+    (id: "kobold_miner", kind: 7, name: "Kobold Miner", level: 3, body: Beast(model: r"Creature\Kobold\Kobold.m2", skins: [(11, r"Creature\Kobold\koboldskinNormal.blp")], scale: 1.0), hostile: true, health: 58.0, melee_damage: 7.0, loot: Some("kobold")),
+    (id: "foreman_gribble", kind: 7, name: "Foreman Gribble", title: Some("Kobold Foreman"), level: 5, body: Beast(model: r"Creature\Kobold\Kobold.m2", skins: [(11, r"Creature\Kobold\koboldskinAlbino.blp")], scale: 1.4), hostile: true, health: 170.0, melee_damage: 13.0, respawn: 900.0, loot: Some("gribble")),
+    (id: "redhand_cutpurse", kind: 7, name: "Redhand Cutpurse", level: 3, body: Humanoid(outfit: ["worn_leather_vest", "scuffed_boots", "hatchet"], look: (skin: 3, face: 6, hair_style: 4, hair_color: 0, beard: 5)), hostile: true, health: 80.0, melee_damage: 9.0, loot: Some("cutpurse")),
+    (id: "garrick_thorne", kind: 7, name: "Garrick Thorne", title: Some("Redhand Captain"), level: 5, body: Humanoid(outfit: ["blue_jerkin", "scuffed_boots", "longsword", "round_shield"], look: (skin: 1, face: 2, hair_style: 9, hair_color: 5, beard: 1)), hostile: true, health: 150.0, melee_damage: 12.0, respawn: 900.0, loot: Some("garrick")),
 ]

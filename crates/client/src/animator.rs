@@ -113,7 +113,7 @@ fn smoothstep(t: f32) -> f32 {
 /// Whether the animation repeats until the state changes.
 fn looping(id: u16) -> bool {
     // FISHING_CAST throws the line once, then the wait (134) loops.
-    // The last four are the creatures' death, combat wound and unarmed attack (the wolf's bite).
+    // The last four are the creatures' death, combat wound and unarmed attack (the wolf's melee attack).
     !matches!(id, JUMP_START | JUMP_END | ATTACK_1H | ATTACK_2H | ATTACK_UNARMED | ATTACK_2HL | ATTACK_1H_PIERCE | ATTACK_2HL_PIERCE | ATTACK_OFF | ATTACK_OFF_PIERCE | DODGE | 20..=23 | ATTACK_BOW | ATTACK_RIFLE | SPELL_CAST_DIRECTED | SPELL_CAST_OMNI | SHIELD_BLOCK | HIP_SHEATH | 89 | 1 | 9 | 57 | 113 | 181 | FISHING_CAST)
 }
 

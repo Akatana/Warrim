@@ -22,6 +22,9 @@ pub struct Buff {
 /// A buff as saved: the item's id, seconds left, boosts, regeneration and whether it needs calm.
 pub type BuffSave = (String, f32, [i32; 7], (f32, f32), bool);
 
+/// What a spell's timed effects and shown icons are in a save (see `Consumed::timed` and `shown`).
+pub type TimedSave = (Vec<(Timed, f32)>, Vec<(String, f32)>);
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UseError {
     /// The character has not reached the level of the item.
@@ -71,7 +74,7 @@ pub const HEARTH_SECONDS: f32 = 10.0;
 
 /// What a spell of a weapon or of the gear puts on the character for some seconds (see `procs`): an effect the stats take in, health regained every second, or a
 /// shield that hurts whoever hits the character (the damage and its school).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum Timed {
     Gear(UseEffect),
     Regen(f32),
@@ -91,7 +94,7 @@ pub enum Timed {
 #[derive(Default)]
 pub struct Consumed {
     pub buffs: Vec<Buff>,
-    /// What procs put on the character, and the seconds left of each (not saved).
+    /// What procs put on the character, and the seconds left of each.
     pub timed: Vec<(Timed, f32)>,
     cooldowns: HashMap<usize, f32>,
     /// The weapon (an item) that a lure or a stone is on: it is gone when another is wielded. None until the first look after a save is loaded.
@@ -343,6 +346,11 @@ impl Consumed {
         tick
     }
 
+    /// What the character's spells put on him, for the save.
+    pub fn spell_buffs(&self) -> TimedSave {
+        (self.timed.clone(), self.shown.clone())
+    }
+
     /// What works on the character now, by item ids, for the save: the buffs, the item cooldowns, the way home.
     pub fn snapshot(&self) -> (Vec<BuffSave>, Vec<(String, f32)>, Option<f32>) {
         let buffs = self.buffs.iter().map(|b| (items::get(b.item).id.to_string(), b.left, b.boosts, b.regen, b.needs_calm)).collect();
@@ -354,8 +362,8 @@ impl Consumed {
     pub fn restore(&mut self, saved: &crate::save::Save) {
         let find = |id: &str| crate::content::get().items.iter().position(|i| i.id == id);
         self.buffs = saved.buffs.iter().filter_map(|(id, left, boosts, regen, needs_calm)| find(id).map(|item| Buff { item, left: *left, boosts: *boosts, regen: *regen, needs_calm: *needs_calm })).collect();
-        // What a lure or a stone gave to the weapon lasts as long as its buff (the buff is what is saved).
-        self.timed.clear();
+        // What a lure or a stone gave to the weapon is put on again below, for as long as its buff lasts.
+        (self.timed, self.shown) = saved.spell_buffs.clone();
         self.temp_on = None;
         for (item, left) in self.buffs.iter().map(|b| (b.item, b.left)).collect::<Vec<_>>() {
             if let Some(effects) = Self::temp_effects(item) {
@@ -436,12 +444,16 @@ mod tests {
         for slot in 0..3 {
             c.use_item(&mut inv, slot, 10, true).unwrap();
         }
+        c.add_timed(Timed::Shield { amount: 3.0, school: 4 }, 50.0);
+        c.show("Spell_Frost_FrostArmor", 50.0);
         c.tick(5.0, true);
         let mut save = Save::capture(&inv, Progress::new(), &QuestLog::default(), (0.0, 0.0), 0.0, 0.0, 1.0);
         (save.buffs, save.item_cooldowns, save.hearth) = c.snapshot();
+        save.spell_buffs = c.spell_buffs();
         let save: Save = ron::from_str(&ron::to_string(&save).unwrap()).unwrap();
         let mut back = Consumed::default();
         back.restore(&save);
+        assert_eq!(back.spell_buffs(), c.spell_buffs());
         assert_eq!((&back.buffs, back.hearth, back.cooldown(find("i118"))), (&c.buffs, Some(HEARTH_SECONDS - 5.0), c.cooldown(find("i118"))));
         assert!(back.cooldown(find("i118")) > 0.0 && back.boosts()[0] == 5);
     }

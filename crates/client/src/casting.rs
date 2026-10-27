@@ -577,6 +577,7 @@ impl Spellcaster {
                 Rider::Gain { aura, misc, amount, seconds } => {
                     let effect = if aura < 5 { crate::items::UseEffect::Boost(aura as u8, amount as i32, 0.0) } else { crate::items::UseEffect::Equip(aura, misc, amount as i32) };
                     ctx.panels.proc_timed(Timed::Gear(effect), seconds);
+                    ctx.panels.consumed.show(&def.icon, seconds);
                 }
                 Rider::Leap => self.leap = victim.map(|(_, at)| at),
                 Rider::Bleed { amount, seconds } => then.push(Status::Over { amount: (amount * power).round().max(1.0), period: 3.0, seconds }),

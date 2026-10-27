@@ -31,6 +31,8 @@ const DEEPEST: u32 = 2;
 pub enum Effect {
     /// Damage: a physical one is cut by the armor and can be blocked with the shield; a magic one is neither.
     Hurt { amount: f32, physical: bool, school: u32 },
+    /// A blow of a creature of this level: a physical `Hurt` that can also be a critical or a crushing blow.
+    Swing { amount: f32, level: u32 },
     /// Mana taken; a burn hurts for as much as it took.
     Drain { amount: f32, burn: bool },
     /// The spell the player is casting is broken off.
@@ -239,7 +241,7 @@ impl Foes {
     /// What a creature did: shown, and what it does to the player at once.
     pub fn handle(&mut self, foe: Foe, feet: Vec3, wolves: &Creatures, fx: &mut Effects, renderer: &mut Renderer, gpu: &Gpu) -> Vec<Effect> {
         match foe {
-            Foe::Melee(amount) => vec![Effect::Hurt { amount, physical: true, school: 0 }],
+            Foe::Melee(amount, level) => vec![Effect::Swing { amount, level }],
             Foe::Begin { who, spell, at, yaw, height } => {
                 self.stop_glows(who, fx);
                 if let Some(vis) = self.visuals.get(&spell) {

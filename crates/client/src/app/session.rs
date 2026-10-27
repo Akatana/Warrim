@@ -31,6 +31,7 @@ impl State {
         saved.sheathed = player.is_sheathed();
         saved.height = Some(self.camera.pos.y - EYE_HEIGHT);
         (saved.buffs, saved.item_cooldowns, saved.hearth) = panels.consumed.snapshot();
+        saved.spell_buffs = panels.consumed.spell_buffs();
         saved.sneaking = player.is_sneaking();
         saved.look = self.look;
         saved.map = Some(self.map.clone());

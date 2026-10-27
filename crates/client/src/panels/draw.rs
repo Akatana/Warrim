@@ -245,7 +245,11 @@ impl Panels {
                     let text = self.lasts_text(*left);
                     self.tree.set_text(&format!("{button}Duration"), &text);
                 }
-                None => self.tree.show(&button, false),
+                None => {
+                    self.tree.show(&button, false);
+                    // The label is drawn on its own, so the one of the buff that ran out is hidden with it.
+                    self.tree.set_region_hidden(&format!("{button}Duration"), true);
+                }
             }
         }
     }

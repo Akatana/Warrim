@@ -32,7 +32,7 @@
                 hostile: false,
                 neutral: false,
                 health: 100.0,
-                bite_damage: 0.0,
+                melee_damage: 0.0,
                 respawn: 300.0,
                 loot: None,
                 gossip: Some((
@@ -92,7 +92,7 @@
                 hostile: false,
                 neutral: true,
                 health: 10000000.0,
-                bite_damage: 0.0,
+                melee_damage: 0.0,
                 respawn: 30.0,
                 loot: None,
                 gossip: None,

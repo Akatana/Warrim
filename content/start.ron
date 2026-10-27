@@ -2,6 +2,6 @@
 (
     spells: [],
     money: 0,
-    equipment: [(16, "longsword"), (17, "round_shield")],
+    equipment: [],
     bag: [],
 )

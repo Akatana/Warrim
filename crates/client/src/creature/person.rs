@@ -71,12 +71,12 @@ impl Person {
         Ok(Person { character, worn, swinging: false, casting: false, released: false, height, emote: None, run: false })
     }
 
-    /// Stand, run after the player, swing the weapon for a bite, or fall and lie (the model's own death animation) when dead.
+    /// Stand, run after the player, swing the weapon for a melee attack, or fall and lie (the model's own death animation) when dead.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn pose(&mut self, dt: f32, pos: Vec3, yaw: f32, state: State, moving: bool, anims: (u16, u16), forward: Vec3, viewer: Vec3, renderer: &mut Renderer, gpu: &Gpu) {
-        let swinging = matches!(state, State::Bite(..));
+        let swinging = matches!(state, State::Melee(..));
         if swinging && !self.swinging {
-            self.character.attack(BITE_TIME);
+            self.character.attack(MELEE_TIME);
         }
         self.swinging = swinging;
         // A spell: the stance is held while it is cast, and the cast is played once when it goes off.

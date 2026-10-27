@@ -39,7 +39,7 @@ impl Mob {
             return;
         }
         self.state = match self.state {
-            State::Bite(..) | State::Flee(..) | State::Kite(_) => self.state,
+            State::Melee(..) | State::Flee(..) | State::Kite(_) => self.state,
             State::Cast(spell, t, total, fired) => State::Cast(spell, if fired { t } else { (t - PUSHBACK).max(0.0) }, total, fired),
             _ => State::Flinch(0.0),
         };
@@ -54,6 +54,7 @@ impl Mob {
             Status::Over { amount, period, seconds } => self.over.push((amount, period, period, seconds, String::new())),
             Status::Stun(seconds) => self.stun = self.stun.max(seconds),
             Status::Slow(share, seconds) => self.slow = if self.slow.1 > 0.0 { (self.slow.0.min(share), self.slow.1.max(seconds)) } else { (share, seconds) },
+            Status::Tempo(share, seconds) => self.tempo = if self.tempo.1 > 0.0 { (self.tempo.0.min(share), self.tempo.1.max(seconds)) } else { (share, seconds) },
             Status::Root(seconds) => self.root = self.root.max(seconds),
             Status::Fear(seconds) => self.fear = self.fear.max(seconds),
             Status::Sleep(seconds) => (self.stun, self.asleep) = (self.stun.max(seconds), true),
@@ -76,7 +77,7 @@ impl Mob {
         }
         let seconds = match status {
             Status::Over { seconds, .. } | Status::Weaken { seconds, .. } => seconds,
-            Status::Stun(s) | Status::Slow(_, s) | Status::Root(s) | Status::Fear(s) | Status::Sleep(s) | Status::Sheep(s) | Status::Banish(s) => s,
+            Status::Stun(s) | Status::Slow(_, s) | Status::Tempo(_, s) | Status::Root(s) | Status::Fear(s) | Status::Sleep(s) | Status::Sheep(s) | Status::Banish(s) => s,
         };
         if !icon.is_empty() {
             self.over.retain(|o| o.4 != icon);
@@ -96,7 +97,7 @@ impl Mob {
     /// slower (the whole of it, not only its feet: a shortcut, as the gear that slows is rare). Returns the seconds it lives.
     pub(super) fn afflicted(&mut self, dt: f32) -> Option<f32> {
         if self.is_dead() {
-            (self.over, self.stun, self.slow) = (Vec::new(), 0.0, (1.0, 0.0));
+            (self.over, self.stun, self.slow, self.tempo) = (Vec::new(), 0.0, (1.0, 0.0), (1.0, 0.0));
             self.debuffs.clear();
             (self.root, self.fear, self.banish, self.weak, self.asleep) = (0.0, 0.0, 0.0, (1.0, 1.0, 0.0), false);
             return Some(dt);
@@ -135,6 +136,7 @@ impl Mob {
             }
         }
         self.slow.1 = (self.slow.1 - dt).max(0.0);
+        self.tempo.1 = (self.tempo.1 - dt).max(0.0);
         if self.stun > 0.0 {
             self.stun = (self.stun - dt).max(0.0);
             if self.stun <= 0.0 {
@@ -278,7 +280,8 @@ impl Mob {
 
     /// The seconds between its swings.
     pub(super) fn swing(&self) -> f32 {
-        if self.def.brain.swing > 0.0 { self.def.brain.swing } else { 2.0 }
+        let base = if self.def.brain.swing > 0.0 { self.def.brain.swing } else { 2.0 };
+        if self.tempo.1 > 0.0 { base / self.tempo.0.max(0.1) } else { base }
     }
 
     /// Whether it has the mana to back away from a player and cast from afar (twice what its main spell takes, or no need of mana).

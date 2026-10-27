@@ -89,9 +89,9 @@ impl Pickups {
     }
 
     /// The nearest one within `range` yards of `from` (feet, render space) that is there and that a quest wants (`wanted`: items).
-    pub fn near(&self, from: Vec3, range: f32, wanted: &[usize]) -> Option<usize> {
+    pub fn near(&self, from: Vec3, range: f32, wanted: &[usize], seen: impl Fn(Vec3) -> bool) -> Option<usize> {
         let d = |i: usize| Vec3::new(self.list[i].pos.x - from.x, 0.0, self.list[i].pos.z - from.z).length();
-        (0..self.list.len()).filter(|&i| self.usable(i, wanted) && d(i) <= range).min_by(|&a, &b| d(a).total_cmp(&d(b)))
+        (0..self.list.len()).filter(|&i| d(i) <= range && self.usable(i, wanted) && seen(self.list[i].pos)).min_by(|&a, &b| d(a).total_cmp(&d(b)))
     }
 
     /// The one under the pointer at `pos` (pixels) on a `size` screen seen through `camera`, if it can be used.
@@ -147,20 +147,20 @@ mod tests {
         let mut pickups = Pickups { list: vec![pickup(3, 0.0), pickup(4, 2.0), pickup(3, 30.0)] };
         let from = Vec3::new(1.0, 0.0, 0.0);
         // No quest wants anything: nothing can be used. A quest that wants item 3: the near one of them, not the far one or the other item.
-        assert_eq!(pickups.near(from, 3.5, &[]), None);
-        assert_eq!(pickups.near(from, 3.5, &[3]), Some(0));
-        assert_eq!(pickups.near(from, 3.5, &[3, 4]), Some(0));
-        assert_eq!(pickups.near(from, 0.5, &[3]), None);
+        assert_eq!(pickups.near(from, 3.5, &[], |_| true), None);
+        assert_eq!(pickups.near(from, 3.5, &[3], |_| true), Some(0));
+        assert_eq!(pickups.near(from, 3.5, &[3, 4], |_| true), Some(0));
+        assert_eq!(pickups.near(from, 0.5, &[3], |_| true), None);
         // Taken: it gives its item once, is not there to use, and the compass no longer points to it.
         assert_eq!(pickups.take(0), Some(3));
-        assert_eq!((pickups.take(0), pickups.near(from, 3.5, &[3])), (None, None));
+        assert_eq!((pickups.take(0), pickups.near(from, 3.5, &[3], |_| true)), (None, None));
         assert_eq!(pickups.holding(3).len(), 1);
         // Its time is counted down, and it is back.
         pickups.count_down(11.0);
-        assert_eq!(pickups.near(from, 3.5, &[3]), Some(0));
+        assert_eq!(pickups.near(from, 3.5, &[3], |_| true), Some(0));
         // One that does not vanish stays to be used again.
         pickups.list[1].vanish = false;
         assert_eq!((pickups.take(1), pickups.take(1)), (Some(4), Some(4)));
-        assert_eq!(pickups.near(from, 3.5, &[4]), Some(1));
+        assert_eq!(pickups.near(from, 3.5, &[4], |_| true), Some(1));
     }
 }

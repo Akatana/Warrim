@@ -127,9 +127,9 @@ impl Nodes {
     }
 
     /// The nearest one within `range` yards of `from` (feet, render space) that can be used.
-    pub fn near(&self, from: Vec3, range: f32) -> Option<usize> {
+    pub fn near(&self, from: Vec3, range: f32, seen: impl Fn(Vec3) -> bool) -> Option<usize> {
         let d = |i: usize| Vec3::new(self.list[i].pos.x - from.x, 0.0, self.list[i].pos.z - from.z).length();
-        (0..self.list.len()).filter(|&i| self.usable(i) && d(i) <= range).min_by(|&a, &b| d(a).total_cmp(&d(b)))
+        (0..self.list.len()).filter(|&i| d(i) <= range && self.usable(i) && seen(self.list[i].pos)).min_by(|&a, &b| d(a).total_cmp(&d(b)))
     }
 
     /// The nodes that can be gathered within the compass's range of `pos` that are in view when facing `yaw`: where each is on the band (-1 at its left end, 1
@@ -242,23 +242,23 @@ mod tests {
     fn a_node_is_gathered_as_often_as_it_has_uses_then_it_is_gone_until_its_time_is_up() {
         let mut nodes = nodes_of("n1731", 2);
         let here = Vec3::new(1.0, 0.0, 0.0);
-        assert_eq!(nodes.near(here, 3.5), Some(0));
+        assert_eq!(nodes.near(here, 3.5, |_| true), Some(0));
         // A copper vein always gives copper ore (it is the table's first, sure item).
         let ore = nodes.gather(0, &[]).expect("ore");
         assert!(ore.items.iter().any(|s| crate::items::get(s.item).name == "Copper Ore"));
         // Something left in it can still be taken, and it is not gone while it holds loot.
         assert!(nodes.loot(0).is_some() && nodes.list[0].uses == 1);
         nodes.set_loot(0, Loot::default());
-        assert!(nodes.near(here, 3.5) == Some(0) && nodes.gather(0, &[]).is_some());
+        assert!(nodes.near(here, 3.5, |_| true) == Some(0) && nodes.gather(0, &[]).is_some());
         // The last use is spent: with nothing left to take it is gone, and back after its time.
         nodes.set_loot(0, Loot::default());
-        assert_eq!((nodes.near(here, 3.5), nodes.gather(0, &[])), (None, None));
+        assert_eq!((nodes.near(here, 3.5, |_| true), nodes.gather(0, &[])), (None, None));
         assert_eq!(nodes.snapshot(), vec![(0, 10.0)]);
         let mut again = nodes_of("n1731", 2);
         again.restore(&nodes.snapshot());
         assert_eq!(again.list[0].gone, Some(10.0));
         nodes.count_down(11.0);
-        assert_eq!(nodes.near(here, 3.5), Some(0));
+        assert_eq!(nodes.near(here, 3.5, |_| true), Some(0));
         assert!(nodes.list[0].uses >= 1);
     }
 }

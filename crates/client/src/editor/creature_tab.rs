@@ -157,7 +157,7 @@ pub(super) fn model_label(path: &str) -> String {
     }
 }
 
-/// How a creature fights beyond the bite: its mana, the time between its swings, its shot, whom it calls, and the events of its script (each written as the
+/// How a creature fights beyond the melee attack: its mana, the time between its swings, its shot, whom it calls, and the events of its script (each written as the
 /// content file has it, with a sentence over it that says what it means).
 pub(super) fn fighting_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut RawCreature) {
     let b = &mut c.brain;
@@ -293,7 +293,7 @@ pub(super) fn creature_form(g: &mut Gui, y: &mut f32, x: f32, w: f32, c: &mut Ra
     }
     hint(g, y, x, "The attitude above is what the Alliance finds; the Horde's own view is kept only when it differs.");
     value_row(g, y, x, w, "Health", 104, &mut c.health);
-    value_row(g, y, x, w, "Damage per hit", 105, &mut c.bite_damage);
+    value_row(g, y, x, w, "Damage per hit", 105, &mut c.melee_damage);
     value_row(g, y, x, w, "Back after death (s)", 106, &mut c.respawn);
     if let RawBody::Beast { scale, .. } = &mut c.body {
         value_row(g, y, x, w, "Size", 111, scale);

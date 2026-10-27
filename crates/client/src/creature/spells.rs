@@ -107,7 +107,7 @@ impl Mob {
             self.apply(sp);
         }
         let boost = self.boost();
-        self.out.push(Act::Cast(Cast { spell: sp.spell, aim, friend, from: self.pos, yaw: self.yaw, level: self.def.level, melee: self.def.bite_damage * boost, shot: self.def.brain.shot * boost }));
+        self.out.push(Act::Cast(Cast { spell: sp.spell, aim, friend, from: self.pos, yaw: self.yaw, level: self.def.level, melee: self.def.melee_damage * boost, shot: self.def.brain.shot * boost }));
         if sp.effects.iter().any(|e| e.kind == 96) {
             self.charge = CHARGE_TIME;
         }

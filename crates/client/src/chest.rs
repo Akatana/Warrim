@@ -159,10 +159,11 @@ impl Chests {
     }
 
     /// The nearest chest within `range` yards of `from` (feet, render space) that has something to give: closed, or open with loot.
-    pub fn near(&self, from: Vec3, range: f32) -> Option<usize> {
+    /// Only chests `seen` accepts (given where it stands) count.
+    pub fn near(&self, from: Vec3, range: f32, seen: impl Fn(Vec3) -> bool) -> Option<usize> {
         let d = |c: &Chest| Vec3::new(c.pos.x - from.x, 0.0, c.pos.z - from.z).length();
         (0..self.chests.len())
-            .filter(|&i| d(&self.chests[i]) <= range && (self.chests[i].state == State::Closed || self.chests[i].loot.is_some()))
+            .filter(|&i| d(&self.chests[i]) <= range && (self.chests[i].state == State::Closed || self.chests[i].loot.is_some()) && seen(self.chests[i].pos))
             .min_by(|&a, &b| d(&self.chests[a]).total_cmp(&d(&self.chests[b])))
     }
 

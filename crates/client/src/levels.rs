@@ -216,6 +216,15 @@ pub fn attributes(level: u32) -> [i32; 5] {
     [r[2], r[3], r[4], r[5], r[6]].map(i32::from)
 }
 
+/// The percents (critical, crushing) that a blow of a creature of level `mob` is, against a character of level `player` (CMaNGOS `RollMeleeOutcomeAgainst`): a
+/// critical blow (double damage) is 5 and 0.2 more for each level the creature is above; a crushing blow (half as much again) is 15 at three levels above and 10 more
+/// for each further level (2 a point of the skill difference, less 15), and takes the place of a critical one.
+pub fn creature_blow(player: u32, mob: u32) -> (f32, f32) {
+    let above = mob as f32 - player as f32;
+    let crush = if above >= 3.0 { 10.0 * above - 15.0 } else { 0.0 };
+    ((5.0 + above * 0.2).clamp(0.0, 100.0 - crush), crush)
+}
+
 /// The percent chance that a blow of a weapon misses a creature of level `mob` when the character is of level `player` and the gear gives `hit` percent
 /// (CMaNGOS `CalculateEffectiveMissChance` against a creature): 5, and for each point its defense is above the weapon skill (both 5 a level) 0.1 more (0.04 less
 /// below), 0.6 more past two levels, never under 1 then.
@@ -286,6 +295,7 @@ mod tests {
 
     #[test]
     fn what_misses_follows_the_levels() {
+        assert_eq!((creature_blow(10, 10), creature_blow(10, 12).1, creature_blow(10, 13).1, creature_blow(10, 15).1), ((5.0, 0.0), 0.0, 15.0, 35.0));
         assert_eq!((melee_miss(10, 10, 0.0), melee_miss(10, 8, 0.0), melee_miss(10, 12, 0.0)), (5.0, 4.6, 6.0));
         assert!((melee_miss(10, 13, 0.0) - 9.0).abs() < 1e-4 && melee_miss(10, 10, 9.0) == 0.0, "{}", melee_miss(10, 13, 0.0));
         assert_eq!((spell_miss(10, 10, 0.0), spell_miss(10, 13, 0.0), spell_miss(10, 10, 9.0)), (4.0, 17.0, 1.0));

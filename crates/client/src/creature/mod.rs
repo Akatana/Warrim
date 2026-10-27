@@ -1,5 +1,5 @@
 //! Creatures: what stands in the world and is not the player. A hostile beast (a wolf) guards its patch, chases the
-//! player once close, bites, flinches when hit, dies and comes back after a while; a person (a guard) stands where
+//! player once close, strikes, flinches when hit, dies and comes back after a while; a person (a guard) stands where
 //! he is and can be talked to. Which kinds exist and where they stand is in `content/` (creatures.ron, spawns.ron).
 //! `Mob` is the behaviour (no graphics, so it is tested on its own); `Creatures` draws them: beasts with the
 //! model's own animations, people as the same dressed human male the player is.
@@ -38,7 +38,7 @@ const DEATH: u16 = 1;
 /// How hard (yards a second) a creature is thrown away from the player as it dies.
 const RAGDOLL_PUSH: f32 = 3.0;
 const WOUND: u16 = 9;
-const BITE: u16 = 16;
+const ATTACK_UNARMED: u16 = 16;
 /// The stance held while a spell is cast at a target, and the cast itself (the animations of `AnimationData.dbc`; a spell's own kit may name others).
 const READY_SPELL: u16 = 51;
 const CAST_SPELL: u16 = 53;
@@ -58,13 +58,13 @@ const LEASH_RANGE: f32 = 40.0;
 /// After giving up, seconds it stands unbothered before it runs home; it heals this share of its health per second on the way.
 const RETURN_WAIT: f32 = 5.0;
 const REGEN: f32 = 0.25;
-/// A bite starts within this distance and lands if the player is still within `BITE_REACH`, yards.
-const BITE_RANGE: f32 = 2.4;
-const BITE_REACH: f32 = 3.2;
-/// Seconds into the 1.5 s bite animation at which the teeth land, and when it is over.
-const BITE_HIT: f32 = 0.55;
-const BITE_TIME: f32 = 1.5;
-/// Seconds between two bites, and of a flinch.
+/// A melee attack starts within this distance and lands if the player is still within `MELEE_REACH`, yards.
+const MELEE_RANGE: f32 = 2.4;
+const MELEE_REACH: f32 = 3.2;
+/// Seconds into the 1.5 s melee attack animation at which the teeth land, and when it is over.
+const MELEE_HIT: f32 = 0.55;
+const MELEE_TIME: f32 = 1.5;
+/// Seconds between two strikes, and of a flinch.
 const FLINCH_TIME: f32 = 0.45;
 /// Seconds a creature stays in its cast animation after a spell has gone off.
 const CAST_AFTER: f32 = 0.5;
@@ -130,8 +130,8 @@ pub enum State {
     /// Walking to a place near home, given in render space.
     Wander(Vec3),
     Chase,
-    /// Seconds into a bite, and whether its damage has been dealt.
-    Bite(f32, bool),
+    /// Seconds into a melee attack, and whether its damage has been dealt.
+    Melee(f32, bool),
     Flinch(f32),
     /// Gave up the chase: seconds it has stood unbothered, then it runs home healing (hit again, it turns on the attacker).
     Return(f32),
@@ -150,7 +150,7 @@ pub enum State {
 impl State {
     /// Whether a creature in this state is in a fight with the player.
     pub fn fights(self) -> bool {
-        matches!(self, State::Chase | State::Bite(..) | State::Flinch(_) | State::Cast(..) | State::Flee(..) | State::Kite(_))
+        matches!(self, State::Chase | State::Melee(..) | State::Flinch(_) | State::Cast(..) | State::Flee(..) | State::Kite(_))
     }
 }
 
@@ -182,6 +182,8 @@ pub enum Status {
     Banish(f32),
     /// Its blows are `dealt` times as hard and it takes `taken` times the damage, for some seconds (a curse, a shout, an armor torn).
     Weaken { dealt: f32, taken: f32, seconds: f32 },
+    /// It swings at this share of its speed (0.75: a quarter slower) for some seconds.
+    Tempo(f32, f32),
 }
 
 /// What the player is, to a creature that looks at him: where he is and faces, how well he is, what he is doing and which spells have hold of him.
@@ -250,7 +252,8 @@ pub enum Act {
 /// What the game does about a creature's act: the damage of a swing, the start of a spell, its end, a spell gone off (with where on friends it shows).
 #[derive(Clone, Debug)]
 pub enum Foe {
-    Melee(f32),
+    /// A swing of this much from a creature of this level.
+    Melee(f32, u32),
     Begin { who: usize, spell: u32, at: Vec3, yaw: f32, height: f32 },
     Stop { who: usize },
     Cast { who: usize, cast: Cast, height: f32, allies: Vec<Vec3> },
@@ -264,7 +267,7 @@ struct Pending {
 }
 
 pub struct Mob {
-    /// Its kind: an index into the content's creatures (health, bite damage, respawn time, loot).
+    /// Its kind: an index into the content's creatures (health, melee attack damage, respawn time, loot).
     kind: usize,
     def: &'static CreatureDef,
     /// Feet position in render space and heading (radians, 0 = north, like the camera's yaw).
@@ -319,6 +322,8 @@ pub struct Mob {
     debuffs: Vec<Aura>,
     stun: f32,
     slow: (f32, f32),
+    /// The share of its attack speed it has left and the seconds that lasts (`Status::Tempo`).
+    tempo: (f32, f32),
     /// Seconds it cannot move, seconds it runs in fear, seconds it cannot be hurt, and what weakens it (dealt, taken, seconds left).
     root: f32,
     fear: f32,
@@ -501,6 +506,7 @@ impl Mob {
             debuffs: Vec::new(),
             stun: 0.0,
             slow: (1.0, 0.0),
+            tempo: (1.0, 0.0),
             root: 0.0,
             fear: 0.0,
             banish: 0.0,

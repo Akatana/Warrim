@@ -121,7 +121,7 @@ impl Default for Brain {
 }
 
 impl Brain {
-    /// Whether it is the brain of a creature that only bites (what a file need not say).
+    /// Whether it is the brain of a creature that only strikes (what a file need not say).
     pub fn is_default(&self) -> bool {
         *self == Brain::default()
     }
@@ -146,7 +146,9 @@ pub struct CreatureDef {
     /// (hostile, neutral) as a player on the Horde's side finds it, where that is not as above (`hostile` and `neutral` are what the Alliance finds).
     pub horde: Option<(bool, bool)>,
     pub health: f32,
-    pub bite_damage: f32,
+    pub melee_damage: f32,
+    /// How far a swing strays from `melee_damage`, as a share of it (0.2: from 80% to 120%).
+    pub melee_spread: f32,
     /// Seconds from death until it is back.
     pub respawn: f32,
     /// Id of its drop table, if it drops anything.
@@ -155,7 +157,7 @@ pub struct CreatureDef {
     pub gossip: Option<Gossip>,
     /// What it sells (indexes into the items), in the order of the window.
     pub vendor: Vec<usize>,
-    /// How it fights beyond the bite: what it casts and shoots, with what mana, and who it calls.
+    /// How it fights beyond the melee attack: what it casts and shoots, with what mana, and who it calls.
     pub brain: Brain,
 }
 
@@ -221,7 +223,9 @@ pub struct RawCreature {
     #[serde(default = "hundred")]
     pub health: f32,
     #[serde(default)]
-    pub bite_damage: f32,
+    pub melee_damage: f32,
+    #[serde(default, skip_serializing_if = "no_spread")]
+    pub melee_spread: f32,
     #[serde(default = "respawn_time")]
     pub respawn: f32,
     #[serde(default)]
@@ -230,9 +234,13 @@ pub struct RawCreature {
     pub gossip: Option<Gossip>,
     #[serde(default)]
     pub vendor: Vec<String>,
-    /// How it fights beyond the bite (its script): from `classic_creature_ai.ron` for the original's creatures, edited in the editor.
+    /// How it fights beyond the melee attack (its script): from `classic_creature_ai.ron` for the original's creatures, edited in the editor.
     #[serde(default, skip_serializing_if = "Brain::is_default")]
     pub brain: Brain,
+}
+
+fn no_spread(n: &f32) -> bool {
+    *n == 0.0
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1798,7 +1806,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
             ensure!(vendor.iter().all(|&i| items[i].buy > 0), "creature {}: sells an item that has no price", c.id);
             let sells = c.gossip.as_ref().is_some_and(|g| g.options.iter().any(|o| matches!(o.action, Action::Vendor)));
             ensure!(sells == !vendor.is_empty(), "creature {}: a vendor line needs wares and wares need a vendor line", c.id);
-            Ok(CreatureDef { id: c.id, name: c.name, level: c.level, kind: c.kind, title: c.title, body, hostile: c.hostile, neutral: c.neutral, horde: c.horde, health: c.health, bite_damage: c.bite_damage, respawn: c.respawn, loot: c.loot, gossip: c.gossip, vendor, brain: c.brain })
+            Ok(CreatureDef { id: c.id, name: c.name, level: c.level, kind: c.kind, title: c.title, body, hostile: c.hostile, neutral: c.neutral, horde: c.horde, health: c.health, melee_damage: c.melee_damage, melee_spread: c.melee_spread, respawn: c.respawn, loot: c.loot, gossip: c.gossip, vendor, brain: c.brain })
         })
         .collect::<Result<Vec<_>>>()?;
     for c in &creatures {

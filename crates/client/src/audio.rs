@@ -29,12 +29,12 @@ const PLAYER_MODEL: &str = r"character\human\male\humanmale.mdx";
 /// `WeaponSwingSounds2`: swing weight 1 (medium), not a critical hit.
 const SWING_MEDIUM: (u32, u32) = (1, 0);
 /// The cries of a creature; its model's sound data (`CreatureSoundData.dbc`) gives them: it notices the player, snarls
-/// as it attacks, its bite lands, it is hit, it dies, it growls while idle, its feet hit the ground.
+/// as it attacks, its melee attack lands, it is hit, it dies, it growls while idle, its feet hit the ground.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Cry {
     Aggro,
     Attack,
-    Bite,
+    CustomAttack,
     Wound,
     Death,
     Fidget,
@@ -168,7 +168,7 @@ pub fn is_night(hour: f32) -> bool {
 
 impl SoundBank {
     /// The cries of each creature kind of the content: 1 exertion (the attack snarl), 3 injury, 6 death, 9 footstep set, 10 aggro, 14 fidget,
-    /// 18 custom attack (the bite) of `CreatureSoundData.dbc`, found through the model of each beast. A person cries with the voice of the
+    /// 18 custom attack (the melee attack) of `CreatureSoundData.dbc`, found through the model of each beast. A person cries with the voice of the
     /// player's model.
     fn cries(mount: &Mount) -> Result<Vec<Option<Cries>>> {
         let dbc = |name: &str| -> Result<Dbc> { Ok(Dbc::parse(&mount.read(&format!("DBFilesClient\\{name}.dbc"))?)?) };
@@ -325,7 +325,7 @@ impl SoundBank {
         match cry {
             Cry::Aggro => c.entries[0],
             Cry::Attack => c.entries[1],
-            Cry::Bite => c.entries[2],
+            Cry::CustomAttack => c.entries[2],
             Cry::Wound => c.entries[3],
             Cry::Death => c.entries[4],
             Cry::Fidget => c.entries[5],
@@ -1115,7 +1115,7 @@ mod tests {
         assert!(audio.music.voices.is_empty() && audio.ambience.voices.is_empty());
         // Every effect plays on every surface without trouble.
         let wolf = crate::content::creature_index("wolf");
-        for sfx in [Sfx::Block, Sfx::SwordHit, Sfx::Wound, Sfx::Death, Sfx::Jump, Sfx::ActionButton, Sfx::Footstep, Sfx::Land, Sfx::Swing, Sfx::Exertion, Sfx::Cry(Cry::Aggro, wolf), Sfx::Cry(Cry::Attack, wolf), Sfx::Cry(Cry::Bite, wolf), Sfx::Cry(Cry::Wound, wolf), Sfx::Cry(Cry::Death, wolf)] {
+        for sfx in [Sfx::Block, Sfx::SwordHit, Sfx::Wound, Sfx::Death, Sfx::Jump, Sfx::ActionButton, Sfx::Footstep, Sfx::Land, Sfx::Swing, Sfx::Exertion, Sfx::Cry(Cry::Aggro, wolf), Sfx::Cry(Cry::Attack, wolf), Sfx::Cry(Cry::CustomAttack, wolf), Sfx::Cry(Cry::Wound, wolf), Sfx::Cry(Cry::Death, wolf)] {
             (0..=10).for_each(|surface| audio.play(sfx, surface));
         }
     }
@@ -1215,7 +1215,7 @@ mod tests {
         ids.extend((0..=10).filter_map(|t| bank.footstep(t)));
         ids.extend([bank.swing().unwrap(), bank.exertion()]);
         let wolf = crate::content::creature_index("wolf");
-        ids.extend([Cry::Aggro, Cry::Attack, Cry::Bite, Cry::Wound, Cry::Death, Cry::Fidget].map(|c| bank.cry(wolf, c)));
+        ids.extend([Cry::Aggro, Cry::Attack, Cry::CustomAttack, Cry::Wound, Cry::Death, Cry::Fidget].map(|c| bank.cry(wolf, c)));
         let effects = [Sfx::Block, Sfx::SwordHit, Sfx::Wound, Sfx::Death, Sfx::Jump, Sfx::ActionButton].map(|s| bank.effect(s));
         assert!(effects.iter().all(|&e| bank.entry(e).is_some()), "a combat or interface sound is missing: {effects:?}");
         ids.extend(effects);

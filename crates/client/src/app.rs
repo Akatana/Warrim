@@ -114,14 +114,14 @@ struct FreeCam {
 /// How many times heavier a sneaking player's blow on an unsuspecting creature is.
 const SNEAK_ATTACK: f32 = 3.0;
 /// How close a corpse must be to loot it (yards).
-const LOOT_RANGE: f32 = 5.0;
+const LOOT_RANGE: f32 = 2.5;
 /// How close a friendly creature must be to talk to it (yards).
-const TALK_RANGE: f32 = 5.0;
+const TALK_RANGE: f32 = 2.5;
 /// How far (and how much higher or lower) a bed's origin may be from the feet for it to be slept in.
 const BED_RANGE: f32 = 4.0;
 const BED_HEIGHT: f32 = 3.0;
 /// How near a book, a letter or a plaque has to be to be read, yards.
-const READ_RANGE: f32 = 4.0;
+const READ_RANGE: f32 = 2.5;
 /// How far the player may walk off before the loot or gossip window closes (yards).
 const LOOT_LEAVE: f32 = 8.0;
 
@@ -159,9 +159,23 @@ fn book_spots(props: &[content::Prop], map: &str) -> Vec<(Vec3, u32, String)> {
 }
 
 /// The nearest thing to read within reach of `feet`: the place in `books`.
-fn book_near(books: &[(Vec3, u32, String)], feet: Vec3) -> Option<usize> {
+fn book_near(books: &[(Vec3, u32, String)], feet: Vec3, seen: impl Fn(Vec3) -> bool) -> Option<usize> {
     let reach = |b: &Vec3| ((b.x - feet.x).hypot(b.z - feet.z), (b.y - feet.y).abs());
-    books.iter().enumerate().filter(|(_, (b, ..))| reach(b).0 <= READ_RANGE && reach(b).1 < BED_HEIGHT).min_by(|a, b| reach(&a.1.0).0.total_cmp(&reach(&b.1.0).0)).map(|(i, _)| i)
+    books.iter().enumerate().filter(|(_, (b, ..))| reach(b).0 <= READ_RANGE && reach(b).1 < BED_HEIGHT && seen(*b)).min_by(|a, b| reach(&a.1.0).0.total_cmp(&reach(&b.1.0).0)).map(|(i, _)| i)
+}
+
+/// Whether nothing solid (a wall, a floor, a hill) lies between the camera and the thing at `at` (its base, render space).
+fn clear_view(camera: &crate::camera::Camera, world: &World, at: Vec3) -> bool {
+    let to = at + Vec3::Y * 0.8 - camera.pos;
+    // The ray stops short of the target, so the wall or rock the thing stands in does not count as in the way.
+    world.ray_hit(camera.pos, camera.pos + to - to.normalize() * 0.5).is_none()
+}
+
+/// Whether the thing at `at` is in front of the camera (within about 25 degrees of where it looks, or right beside it) with a clear view of it.
+/// This is what "looking at" it means for the interact key; it is checked last for it costs a ray.
+fn in_sight(camera: &crate::camera::Camera, world: &World, at: Vec3) -> bool {
+    let to = at + Vec3::Y * 0.8 - camera.pos;
+    (to.x.hypot(to.z) < 1.5 || camera.forward().dot(to.normalize()) > 0.9) && clear_view(camera, world, at)
 }
 
 /// Where the stations of the trades (anvils, forges, cooking fires) stand in `map`.
@@ -178,8 +192,8 @@ fn near_station(stations: &[(u32, Vec3)], feet: Vec3, kind: u32) -> bool {
 }
 
 /// Whether a bed is within reach of `feet`.
-fn near_bed(beds: &[Vec3], world: &World, feet: Vec3) -> bool {
-    world.bed_near(feet, BED_RANGE, BED_HEIGHT) || beds.iter().any(|b| (b.x - feet.x).hypot(b.z - feet.z) <= BED_RANGE && (b.y - feet.y).abs() < BED_HEIGHT)
+fn near_bed(beds: &[Vec3], world: &World, feet: Vec3, seen: impl Fn(Vec3) -> bool) -> bool {
+    world.bed_near(feet, BED_RANGE, BED_HEIGHT, &seen) || beds.iter().any(|b| (b.x - feet.x).hypot(b.z - feet.z) <= BED_RANGE && (b.y - feet.y).abs() < BED_HEIGHT && seen(*b))
 }
 
 /// The props of the content that are drawn apart from the map: those picked up and those with physics.

@@ -523,7 +523,7 @@ impl Creatures {
                         let near = helpers.iter().filter(|h| flat(h.1 - c.mob.pos).length() < ally::SOAK_REACH).map(|h| h.0).next();
                         match near {
                             Some(j) if self.rng.next() % 100 < ally::SOAK_PERCENT => soaked.push((j, damage)),
-                            _ => foes.push(Foe::Melee(damage)),
+                            _ => foes.push(Foe::Melee(damage, c.mob.def.level)),
                         }
                     }
                     Act::Strike(damage) => strikes.push((aim.map(|f| f.0), damage)),
@@ -1169,17 +1169,17 @@ impl Creatures {
     /// The nearest creature within `range` yards of `from` that passes `test`.
     fn nearest(&self, from: Vec3, range: f32, test: impl Fn(&Mob) -> bool) -> Option<usize> {
         let dist = |c: &Creature| flat(c.mob.pos - from).length();
-        (0..self.creatures.len()).filter(|&i| test(&self.creatures[i].mob) && dist(&self.creatures[i]) <= range).min_by(|&a, &b| dist(&self.creatures[a]).total_cmp(&dist(&self.creatures[b])))
+        (0..self.creatures.len()).filter(|&i| dist(&self.creatures[i]) <= range && test(&self.creatures[i].mob)).min_by(|&a, &b| dist(&self.creatures[a]).total_cmp(&dist(&self.creatures[b])))
     }
 
     /// The nearest corpse within `range` yards of `from` that still has something to loot.
-    pub fn lootable_near(&self, from: Vec3, range: f32) -> Option<usize> {
-        self.nearest(from, range, |m| m.is_dead() && m.loot.is_some())
+    pub fn lootable_near(&self, from: Vec3, range: f32, seen: impl Fn(Vec3) -> bool) -> Option<usize> {
+        self.nearest(from, range, |m| m.is_dead() && m.loot.is_some() && seen(m.pos))
     }
 
     /// The nearest corpse within `range` yards of `from` that can be skinned: nothing left to loot, not skinned yet, and a beast that gives a hide.
-    pub fn skinnable_near(&self, from: Vec3, range: f32) -> Option<usize> {
-        self.nearest(from, range, |m| m.is_dead() && m.loot.is_none() && !m.skinned && content::get().skins.contains_key(&m.def.id))
+    pub fn skinnable_near(&self, from: Vec3, range: f32, seen: impl Fn(Vec3) -> bool) -> Option<usize> {
+        self.nearest(from, range, |m| m.is_dead() && m.loot.is_none() && !m.skinned && content::get().skins.contains_key(&m.def.id) && seen(m.pos))
     }
 
     /// What a corpse gives to a knife: its table of skinning and its level, if it can be skinned.
@@ -1195,9 +1195,10 @@ impl Creatures {
         }
     }
 
-    /// The nearest living creature within `range` yards of `from` that can be talked to (one that is not hostile).
-    pub fn talkable_near(&self, from: Vec3, range: f32) -> Option<usize> {
-        self.nearest(from, range, |m| !m.def.attackable() && !m.is_ally() && !m.is_dead())
+    /// The nearest living creature within `range` yards of `from` that can be talked to (one that is not hostile) and that
+    /// `seen` accepts (given where it stands: the player faces it, with no wall between).
+    pub fn talkable_near(&self, from: Vec3, range: f32, seen: impl Fn(Vec3) -> bool) -> Option<usize> {
+        self.nearest(from, range, |m| !m.def.attackable() && !m.is_ally() && !m.is_dead() && seen(m.pos))
     }
 
     pub fn def(&self, creature: usize) -> Option<&'static CreatureDef> {
@@ -1229,7 +1230,7 @@ impl Creatures {
         }
     }
 
-    /// Whether any creature is after the player (chasing, biting or flinching): the player is in combat.
+    /// Whether any creature is after the player (chasing, striking or flinching): the player is in combat.
     pub fn engaged(&self) -> bool {
         self.creatures.iter().any(|c| c.mob.state.fights() && !c.mob.is_ally())
     }
@@ -1295,7 +1296,7 @@ impl Creatures {
         self.creatures
             .iter()
             .enumerate()
-            .filter(|(i, c)| !matches!(c.visual, Visual::None) && (npc_names || self.target == Some(*i)))
+            .filter(|(i, c)| !matches!(c.visual, Visual::None) && !c.mob.is_dead() && (npc_names || self.target == Some(*i)))
             .filter_map(|(_, c)| {
                 let head = c.mob.pos + c.name_at;
                 let (x, y) = Self::on_screen(camera, size, head)?;

@@ -308,13 +308,16 @@ impl World {
         let coord = tile_of(x, z);
         let Some(tile) = self.tiles.get(&coord) else { return (None, None) };
         let room = tile.gpu.room_at(at).and_then(|r| self.areas.room(r));
-        if let Some(r) = room.filter(|r| r.area != 0) {
-            return (Some(r.area), room);
-        }
         let (ox, oz) = tile_origin(coord);
         let (lx, lz) = ((x as f64 - ox) as f32, (z as f64 - oz) as f32);
         let (cx, cz) = (((lx / CHUNK_SIZE) as usize).min(15), ((lz / CHUNK_SIZE) as usize).min(15));
-        (tile.areas.get(cz * 16 + cx).copied(), room)
+        let terrain = tile.areas.get(cz * 16 + cx).copied();
+        // A model used in several zones (a farm barn) names the area of one of them: it counts only in the zone of the ground it stands on.
+        let same_zone = |a: u32| terrain.filter(|&t| t != 0).map_or(true, |t| self.areas.zone(a) == self.areas.zone(t));
+        if let Some(r) = room.filter(|r| r.area != 0 && same_zone(r.area)) {
+            return (Some(r.area), room);
+        }
+        (terrain, room)
     }
 }
 
@@ -459,12 +462,12 @@ impl World {
     }
 
     /// Whether a bed of the map or of its buildings is within `range` yards of `at` (sideways) and `height` of it (up or down).
-    pub fn bed_near(&self, at: glam::Vec3, range: f32, height: f32) -> bool {
+    pub fn bed_near(&self, at: glam::Vec3, range: f32, height: f32, seen: impl Fn(glam::Vec3) -> bool) -> bool {
         let (cx, cz) = tile_of(at.x, at.z);
         (-1..=1).flat_map(|dz| (-1..=1).map(move |dx| (cx + dx, cz + dz))).any(|coord| {
             let Some(tile) = self.tiles.get(&coord) else { return false };
             let (ox, oz) = tile_origin(coord);
-            tile.beds.iter().any(|b| (b.x + ox as f32 - at.x).hypot(b.z + oz as f32 - at.z) <= range && (b.y - at.y).abs() < height)
+            tile.beds.iter().any(|b| (b.x + ox as f32 - at.x).hypot(b.z + oz as f32 - at.z) <= range && (b.y - at.y).abs() < height && seen(glam::Vec3::new(b.x + ox as f32, b.y, b.z + oz as f32)))
         })
     }
 

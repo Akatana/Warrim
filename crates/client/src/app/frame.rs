@@ -492,7 +492,7 @@ impl State {
             }
             effects.extend(self.foes.update(dt, feet, wolves, &mut self.effects, &mut self.renderer, &self.gpu));
             cries.extend(self.foes.take_sounds());
-            // A bite on the shield rings instead of sounding like teeth in flesh.
+            // A blow on the shield rings instead of sounding like teeth in flesh.
             let mut blocked = false;
             if let Some(panels) = &self.panels {
                 player.set_block_cost(panels.skills.block_cost_factor());
@@ -514,7 +514,12 @@ impl State {
                 use crate::foes::Effect;
                 // What lands as damage, and whether a shield and armor deal with it (blows) or not (magic).
                 let mut resisted = 1.0;
+                let mut swing = None;
                 let hit = match effect {
+                    Effect::Swing { amount, level } => {
+                        swing = Some(level);
+                        Some((true, amount))
+                    }
                     Effect::Hurt { amount, physical, school } => {
                         resisted = self.panels.as_ref().map_or(1.0, |p| 1.0 - p.stats.resistance(school));
                         Some((physical, amount))
@@ -537,6 +542,7 @@ impl State {
                 if physical {
                     let (dodge, parry, block, held) = self.panels.as_ref().map_or((0.0, 0.0, 0.0, 0.0), |p| (p.stats.dodge, p.stats.parry, p.stats.block, p.stats.block_value));
                     let roll = player.percent();
+                    let mut held_back = false;
                     let word = if roll < dodge {
                         Some("Dodge")
                     } else if roll < dodge + parry {
@@ -544,6 +550,7 @@ impl State {
                     } else if roll < dodge + parry + block {
                         // A block holds back some of the damage; only all of it is a block in the text.
                         amount = (amount - held).max(0.0);
+                        held_back = true;
                         (amount <= 0.0).then_some("Block")
                     } else {
                         None
@@ -556,6 +563,16 @@ impl State {
                     }
                     if word.is_some() {
                         continue;
+                    }
+                    // A blow of a creature that was not dodged, parried or blocked is also a critical or a crushing one by the same sort of roll.
+                    if let (Some(mob), false) = (swing, held_back) {
+                        let (crit, crush) = crate::levels::creature_blow(self.panels.as_ref().map_or(1, |p| p.progress.level), mob);
+                        let roll = player.percent();
+                        if roll < crit {
+                            amount *= 2.0;
+                        } else if roll < crit + crush {
+                            amount *= 1.5;
+                        }
                     }
                 }
                 // What absorbs blows takes up what it can of a physical one.
@@ -624,7 +641,7 @@ impl State {
                 self.low_health &= low;
             }
             drop(t);
-            cries.retain(|&(sfx, _)| !(blocked && matches!(sfx, Sfx::Cry(Cry::Bite, _))));
+            cries.retain(|&(sfx, _)| !(blocked && matches!(sfx, Sfx::Cry(Cry::CustomAttack, _))));
             // The wolves' sounds come from where they are, heard from the camera.
             if let Some(audio) = &mut self.audio {
                 audio.set_listener(render_camera.pos, render_camera.yaw);
@@ -654,17 +671,18 @@ impl State {
                         _ => wolves.set_loot(id, left),
                     }
                 }
-                let chest = self.chests.as_ref().and_then(|c| Some(c.lock(c.near(feet, OPEN_RANGE)?).is_some()));
-                let pickup = self.pickups.as_ref().is_some_and(|p| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv)).is_some());
-                let skin = wolves.skinnable_near(feet, LOOT_RANGE).is_some();
+                let seen = |at| in_sight(&self.camera, &self.world, at);
+                let chest = self.chests.as_ref().and_then(|c| Some(c.lock(c.near(feet, OPEN_RANGE, seen)?).is_some()));
+                let pickup = self.pickups.as_ref().is_some_and(|p| p.near(feet, OPEN_RANGE, &panels.quests.wanted(&panels.inv), seen).is_some());
+                let skin = wolves.skinnable_near(feet, LOOT_RANGE, seen).is_some();
                 let fish_on = self.bobber.as_ref().is_some_and(|b| b.bite_left.is_some());
                 let fish_ready = self.gather.is_none() && crate::fishing::pole_in_hand(&panels.inv) && fishing::water_ahead_of(&self.camera, &self.world).is_some();
-                let node = self.nodes.as_ref().and_then(|n| n.kind(n.near(feet, OPEN_RANGE)?)).map(|k| k.skill == crate::skills::Skill::Mining);
-                let bed = near_bed(&self.beds, &self.world, feet);
-                let book = book_near(&self.books, feet).is_some();
+                let node = self.nodes.as_ref().and_then(|n| n.kind(n.near(feet, OPEN_RANGE, seen)?)).map(|k| k.skill == crate::skills::Skill::Mining);
+                let bed = near_bed(&self.beds, &self.world, feet, seen);
+                let book = book_near(&self.books, feet, seen).is_some();
                 let body = self.bodies.as_ref().is_some_and(|b| b.near(feet, crate::physics::GRAB_RANGE).is_some());
                 let drag = self.bodies.as_ref().is_some_and(|b| b.near_corpse(feet, crate::physics::GRAB_RANGE).is_some());
-                self.hint = match (panels.any_open() || self.lock.is_some(), wolves.lootable_near(feet, LOOT_RANGE), wolves.talkable_near(feet, TALK_RANGE), chest) {
+                self.hint = match (panels.any_open() || self.lock.is_some(), wolves.lootable_near(feet, LOOT_RANGE, seen), wolves.talkable_near(feet, TALK_RANGE, seen), chest) {
                     (true, ..) if panels.loot_open() => Some("Press E to loot all"),
                     (true, ..) => None,
                     (_, Some(_), ..) if drag => Some("Press E to loot, hold E to drag"),

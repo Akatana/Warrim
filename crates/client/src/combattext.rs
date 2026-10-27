@@ -30,6 +30,8 @@ const START_Y: f32 = 384.0;
 const END_Y: f32 = 609.0;
 /// The line height `CombatText_AddMessage` uses to stack messages.
 const LINE: f32 = 16.0;
+/// Hits on enemies closer than this (render units) stack as one pile of numbers.
+const SAME_SPOT: f32 = 3.0;
 
 /// The red of damage and warnings, and the white of the player's own hits.
 pub const RED: [f32; 3] = [1.0, 0.1, 0.1];
@@ -87,8 +89,16 @@ impl Scroller {
         if self.lines.len() >= MAX_LINES {
             self.lines.remove(0);
         }
+        // The same stacking as `add_screen`, relative to the enemy's spot: below the lines still rising from it.
+        let mut lowest = 0.0;
+        for l in self.lines.iter().filter(|l| l.at.is_some_and(|a| a.distance(at) < SAME_SPOT)) {
+            lowest = f32::min(lowest, l.y - LINE - SPACING);
+        }
+        if lowest < -MAX_OFFSET {
+            lowest = 0.0;
+        }
         let x = (self.random(STAGGER_RANGE + 1) - STAGGER_RANGE / 2) as f32;
-        self.lines.push(Line { text, color, scroll: 0.0, x, y: 0.0, start_y: 0.0, at: Some(at) });
+        self.lines.push(Line { text, color, scroll: 0.0, x, y: lowest, start_y: lowest, at: Some(at) });
     }
 
     fn update(&mut self, dt: f32) {
@@ -192,7 +202,7 @@ impl CombatText {
                         continue;
                     }
                     let (x, y) = ((clip.x / clip.w * 0.5 + 0.5) * w, (0.5 - clip.y / clip.w * 0.5) * h);
-                    (x + line.x * s, y - (HEIGHT / 2.0 + (END_Y - START_Y) * line.scroll / SCROLL_TIME) * s)
+                    (x + line.x * s, y - (HEIGHT / 2.0 + line.y) * s)
                 }
             };
             let a = alpha(line.scroll);
@@ -263,6 +273,20 @@ mod tests {
             s.lines.clear();
         }
         assert!(seen.iter().all(|x| (-10..=10).contains(x)) && seen.len() > 10, "{seen:?}");
+    }
+
+    #[test]
+    fn hits_on_one_enemy_stack_but_other_enemies_do_not_push_them() {
+        let mut s = scroller();
+        let (a, b) = (Vec3::ZERO, Vec3::new(20.0, 0.0, 0.0));
+        for at in [a, a, b] {
+            s.add_world(at, "5".into(), WHITE);
+        }
+        let ys: Vec<f32> = s.lines.iter().map(|l| l.y).collect();
+        assert_eq!(ys, [0.0, -26.0, 0.0]);
+        // Piled up past 130 units below, it begins again at the top.
+        (0..5).for_each(|_| s.add_world(a, "5".into(), WHITE));
+        assert_eq!(s.lines.last().unwrap().y, 0.0);
     }
 
     #[test]

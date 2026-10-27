@@ -64,6 +64,8 @@ pub enum Outcome {
     Track(u32),
     /// The character's eyes leave him for some seconds, and go as far from him as this many yards.
     Scout { seconds: f32, reach: f32 },
+    /// What follows puts its auras on creatures as coming from this spell of the original (0: from none), so the target frame lists them.
+    Source(u32),
 }
 
 /// The shapes the shapeshifting spells take (the ids of `ShapeshiftForm.dbc`): the display row of the model and the speed it adds in percent. The stances of a warrior have no
@@ -124,6 +126,8 @@ fn status_of(spell: &ClassicSpell, e: &content::ClassicEffect, points: f32, seco
         56 => Status::Sheep(seconds),
         // A slow's points are negative percents.
         33 => Status::Slow((1.0 + e.low.min(e.high) as f32 / 100.0).clamp(0.1, 1.0), seconds),
+        // Its blows come slower (haste, in negative percents).
+        138 if e.low < 0 => Status::Tempo((1.0 + e.low.min(e.high) as f32 / 100.0).clamp(0.1, 1.0), seconds),
         22 | 68 | 127 => Status::Weaken { dealt: 1.0, taken: WEAKEN_TAKEN, seconds },
         // Disarmed: it hits half as hard.
         67 => Status::Weaken { dealt: 0.5, taken: 1.0, seconds },
@@ -346,7 +350,9 @@ pub fn on_hit(weapon: Stack, speed: f32, level: u32, dice: &mut dyn FnMut() -> u
 pub fn struck(equipment: &[Option<Stack>], shields: &[(f32, u32)], reactions: &[u32], level: u32, dice: &mut dyn FnMut() -> u32, out: &mut Vec<Outcome>) {
     out.extend(shields.iter().map(|&(amount, school)| Outcome::Hurt { school, amount }));
     for spell in reactions.iter().filter_map(|&id| content::classic_spell(id)) {
+        out.push(Outcome::Source(spell.spell));
         run(spell, level, dice, out, 1);
+        out.push(Outcome::Source(0));
     }
     for stack in equipment.iter().flatten() {
         // The worn spells of the item, and those of its enchantment.
@@ -472,6 +478,10 @@ pub fn apply(out: Vec<Outcome>, target: Option<usize>, player: &mut Player, pane
                     panels.error("There is nothing to raise.");
                 }
             }
+            Outcome::Source(id) => match content::classic_spell(id) {
+                Some(s) => wolves.set_source(&s.name, &s.icon, s.dispel),
+                None => wolves.set_source("", "", 0),
+            },
             Outcome::LifeTap(amount) => {
                 let health = &mut player.vitals.health;
                 let given = amount.min(health.current - 1.0).max(0.0);
@@ -544,5 +554,16 @@ mod tests {
         let mut out = Vec::new();
         struck(&[], &[(5.0, 2)], &[], 20, &mut dice(&[0]), &mut out);
         assert_eq!(out, [Outcome::Hurt { school: 2, amount: 5.0 }]);
+    }
+
+    /// Frost Armor leaves a reaction on the caster, and whoever strikes is slowed by Chilled, listed as coming from that spell.
+    #[test]
+    fn frost_armor_slows_whoever_strikes() {
+        let mut cast = Vec::new();
+        run_cast(content::classic_spell(168).unwrap(), 10, &mut dice(&[0]), &mut cast, false);
+        assert!(cast.contains(&Outcome::Timed(Timed::Struck(6136), 1800.0)), "{cast:?}");
+        let mut out = Vec::new();
+        struck(&[], &[], &[6136], 10, &mut dice(&[0]), &mut out);
+        assert!(matches!(out.as_slice(), [Outcome::Source(6136), Outcome::Put(Status::Tempo(..)), Outcome::Put(Status::Slow(..)), Outcome::Source(0)]), "{out:?}");
     }
 }

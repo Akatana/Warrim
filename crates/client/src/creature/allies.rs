@@ -90,9 +90,9 @@ impl Mob {
         self.ally.as_ref().is_some_and(|a| a.pet)
     }
 
-    /// How hard an ally's blow is: its kind's bite (or, for a kind that does not bite, what its level is worth) times its strength.
+    /// How hard an ally's blow is: its kind's melee attack (or, for a kind that does not melee attack, what its level is worth) times its strength.
     fn ally_blow(&self, ally: &Ally) -> f32 {
-        let base = if self.def.bite_damage > 0.0 { self.def.bite_damage } else { 2.0 + self.def.level as f32 * 1.5 };
+        let base = if self.def.melee_damage > 0.0 { self.def.melee_damage } else { 2.0 + self.def.level as f32 * 1.5 };
         base * ally.strength
     }
 
@@ -137,18 +137,18 @@ impl Mob {
             self.pos = player + Vec3::new(1.5, 0.0, 1.5);
         }
         match (self.state, focus) {
-            (State::Bite(t, hit), _) => {
+            (State::Melee(t, hit), _) => {
                 let t = t + dt;
-                let landed = hit || t >= BITE_HIT;
+                let landed = hit || t >= MELEE_HIT;
                 if landed && !hit {
                     acts.push(Act::Strike(self.ally_blow(&ally)));
-                    self.sounds.push(Cry::Bite);
+                    self.sounds.push(Cry::CustomAttack);
                 }
-                self.state = if t >= BITE_TIME {
-                    self.pause = (self.swing() - BITE_TIME).max(0.1);
+                self.state = if t >= MELEE_TIME {
+                    self.pause = (self.swing() - MELEE_TIME).max(0.1);
                     State::Chase
                 } else {
-                    State::Bite(t, landed)
+                    State::Melee(t, landed)
                 };
             }
             (_, Some(at)) => {
@@ -160,14 +160,14 @@ impl Mob {
                     // A spell goes off from where it stands.
                     acts.push(Act::Spell(ally.spell));
                     ally.cool = SPELL_EVERY;
-                    self.state = State::Bite(0.0, true);
+                    self.state = State::Melee(0.0, true);
                     self.sounds.push(Cry::Attack);
-                } else if !ranged && dist <= BITE_RANGE && self.pause == 0.0 {
-                    self.state = State::Bite(0.0, false);
+                } else if !ranged && dist <= MELEE_RANGE && self.pause == 0.0 {
+                    self.state = State::Melee(0.0, false);
                     self.sounds.push(Cry::Attack);
                 } else {
-                    // A fighter goes up to biting range, a caster stands off.
-                    let stand = if ranged { SPELL_REACH * 0.7 } else { BITE_RANGE * 0.8 };
+                    // A fighter goes up to striking range, a caster stands off.
+                    let stand = if ranged { SPELL_REACH * 0.7 } else { MELEE_RANGE * 0.8 };
                     if dist > stand && !stay {
                         let step = self.walk(to / dist * (RUN_SPEED * dt).min(dist - stand), &blocked);
                         self.stepped(step);

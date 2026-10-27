@@ -1820,6 +1820,9 @@ impl Tree {
         if y + hgt > root.h {
             y = root.h - hgt;
         }
+        // Over the owner rather than off screen: a wide tooltip fits on neither side of an owner near an edge.
+        x = x.min(root.w - w).max(0.0);
+        y = y.max(0.0);
         let backdrop = BackdropDef {
             bg_file: Some(r"Interface\Tooltips\UI-Tooltip-Background".into()),
             edge_file: Some(r"Interface\Tooltips\UI-Tooltip-Border".into()),
