@@ -34,7 +34,7 @@ pub fn is_quest_item(item: usize) -> bool {
 }
 
 /// The chance in percent that any kill drops a tome that the character can learn and does not have (`Panels::learnable_tomes`), on top of its drop table.
-pub const TOME_CHANCE: f32 = 3.0;
+pub const TOME_CHANCE: f32 = 10.0;
 
 /// What a kind of creature can drop (`content/loot.ron`): a copper range, and items (by index) with a count range and
 /// a chance in percent.

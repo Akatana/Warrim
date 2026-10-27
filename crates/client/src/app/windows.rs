@@ -84,6 +84,8 @@ impl GlueWindow {
                     Logical::Named(NamedKey::Enter) => Some(GlueKey::Enter),
                     Logical::Named(NamedKey::Escape) => Some(GlueKey::Escape),
                     Logical::Named(NamedKey::Backspace) => Some(GlueKey::Backspace),
+                    Logical::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => Some(GlueKey::Up),
+                    Logical::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => Some(GlueKey::Down),
                     _ => None,
                 };
                 match (key, &event.text) {

@@ -512,6 +512,18 @@ impl ApplicationHandler for App {
         }
         if let Some(state) = self.state.as_mut() {
             state.event(event_loop, event);
+            // Logout: the game (already saved) lets go of the window and the list of characters takes it.
+            if state.logout {
+                let Some(State { window, .. }) = self.state.take() else { return };
+                (self.args.character, self.args.look) = (None, Default::default());
+                match GlueWindow::new(window, self.mount.clone(), None, self.args.audio) {
+                    Ok(glue) => self.glue = Some(glue),
+                    Err(e) => {
+                        self.error = Some(e);
+                        event_loop.exit();
+                    }
+                }
+            }
         }
     }
 

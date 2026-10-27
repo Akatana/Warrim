@@ -71,6 +71,9 @@ impl State {
         }
         if let Some(pl) = &mut panels {
             pl.set_identity(&name, look.race, look.sex);
+            if loaded.is_none() {
+                pl.give_outfit();
+            }
         }
         if let (Some(bar), Some(pl)) = (&mut actionbar, &panels) {
             match loaded.as_ref().filter(|s| !s.bar.is_empty()) {

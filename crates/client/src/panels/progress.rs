@@ -12,6 +12,12 @@ impl Panels {
         content::set_horde(race.horde());
     }
 
+    /// A new character puts on what the original gave its race and sex.
+    pub fn give_outfit(&mut self) {
+        self.inv = Inventory::outfitted(self.race, self.sex);
+        (self.equipment_changed, self.stats_dirty) = (true, true);
+    }
+
     pub fn restore(&mut self, saved: &crate::save::Save) {
         for note in saved.apply(&mut self.inv, &mut self.progress, &mut self.quests) {
             log::warn!("saved game: {note}");

@@ -375,6 +375,14 @@ pub struct Start {
     pub money: u32,
     pub equipment: Vec<(usize, Stack)>,
     pub bag: Vec<Stack>,
+    /// What the original dresses a new character in (`classic_start.ron`), by race and sex: it replaces `equipment`.
+    pub outfits: Vec<Outfit>,
+}
+
+pub struct Outfit {
+    pub race: u32,
+    pub sex: u32,
+    pub items: Vec<usize>,
 }
 
 /// Something a quest asks for.
@@ -1190,6 +1198,14 @@ pub struct RawTable {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawOutfit {
+    race: u32,
+    sex: u32,
+    items: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawStart {
     #[serde(default)]
     spells: Vec<String>,
@@ -1859,6 +1875,8 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
     }
     let bag = raw_start.bag.iter().map(|(id, count)| Ok(Stack { item: item(id)?, count: *count, enchant: 0 })).collect::<Result<Vec<_>>>()?;
     ensure!(bag.len() <= items::BACKPACK_SIZE, "the starting kit does not fit the backpack");
+    let raw_outfits: Vec<RawOutfit> = ron::from_str(&source("classic_start.ron", include_str!("../../../content/classic_start.ron"))).context("classic_start.ron")?;
+    let outfits = raw_outfits.iter().map(|o| Ok(Outfit { race: o.race, sex: o.sex, items: o.items.iter().map(|id| item(id)).collect::<Result<Vec<_>>>()? })).collect::<Result<Vec<_>>>()?;
     let known = raw_start.spells.iter().map(|id| spells.iter().position(|s| s.id == *id).with_context(|| format!("start: unknown spell {id}"))).collect::<Result<Vec<_>>>()?;
     for p in &props {
         let model = p.model.to_ascii_lowercase();
@@ -1915,7 +1933,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         }
         taking.entry(q.turn_in).or_default().push(i);
     }
-    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, pages, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, start: Start { spells: known, money: raw_start.money, equipment, bag } })
+    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, pages, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, start: Start { spells: known, money: raw_start.money, equipment, bag, outfits } })
 }
 
 #[cfg(test)]
@@ -1958,7 +1976,7 @@ mod tests {
     #[test]
     fn the_content_files_are_valid_and_complete() {
         let c = get();
-        assert!(c.items.len() >= 9 && !c.spawns.is_empty() && !c.start.bag.is_empty());
+        assert!(c.items.len() >= 9 && !c.spawns.is_empty());
         // Every creature kind that drops something has its table, and every table has drops that make sense.
         assert!(c.creatures.iter().filter_map(|c| c.loot.as_ref()).all(|t| c.loot.contains_key(t)));
         assert!(c.loot.values().all(|t| t.items.iter().all(|&(i, (low, _), _)| low <= c.items[i].stack)));

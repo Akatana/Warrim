@@ -33,7 +33,7 @@ impl Race {
     pub const ALL: [Race; 8] = [Race::Human, Race::Orc, Race::Dwarf, Race::NightElf, Race::Undead, Race::Tauren, Race::Gnome, Race::Troll];
 
     /// Its row of `ChrRaces.dbc`, which the tables of character customization go by.
-    fn id(self) -> u32 {
+    pub fn id(self) -> u32 {
         if self == Race::Goblin {
             return 9;
         }
@@ -105,7 +105,7 @@ pub enum Sex {
 }
 
 impl Sex {
-    fn id(self) -> u32 {
+    pub fn id(self) -> u32 {
         self as u32
     }
 

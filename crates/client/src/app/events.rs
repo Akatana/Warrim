@@ -320,15 +320,14 @@ impl State {
         // The editor saved what it changed and asked for the game to begin again with it, standing where it stood.
         if self.restart {
             self.save_game();
+            // Back to the list: the app takes the window from the game (`logout` stays set for it to see), no new process.
+            if self.logout {
+                self.restart = false;
+                return;
+            }
             // The same character goes on (not the list again).
             let mut args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--new").collect();
-            if self.logout {
-                // Back to the list: the character is not named, nor is its look.
-                let at = args.iter().position(|a| a == "--character");
-                if let Some(at) = at {
-                    args.drain(at..(at + 2).min(args.len()));
-                }
-            } else if !args.iter().any(|a| a == "--character" || a == "--save" || a == "--no-save") {
+            if !args.iter().any(|a| a == "--character" || a == "--save" || a == "--no-save") {
                 args.extend(["--character".to_string(), self.name.clone()]);
             }
             match std::env::current_exe().and_then(|exe| std::process::Command::new(exe).args(args).spawn()) {

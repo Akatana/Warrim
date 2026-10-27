@@ -16,6 +16,7 @@ impl State {
         saved.bar = self.actionbar.as_ref().map_or_else(Vec::new, |b| b.layout());
         saved.discovered = content::get().pois.iter().zip(&panels.found).filter(|(_, &f)| f).map(|(p, _)| p.id.clone()).collect();
         saved.explored = panels.explored.clone();
+        saved.zone = self.world.area_at(self.camera.pos).map(|a| self.world.areas.display(self.world.areas.zone(a))).unwrap_or_default();
         (saved.hour, saved.time_fixed) = (Some(self.hour), self.fixed_time);
         saved.weather = self.weather.snapshot();
         saved.gone = self.pickups.as_ref().map_or_else(Vec::new, |p| p.snapshot());

@@ -72,6 +72,9 @@ pub struct Save {
     /// `AreaTable` ids the character has been in (the overlays of the world map).
     #[serde(default)]
     pub explored: Vec<u32>,
+    /// The name of the zone the character stands in (for the character list); older saves have none.
+    #[serde(default)]
+    pub zone: String,
     /// The rank of each skill and the uses towards the next one; the spells known, in the order they were learned.
     #[serde(default)]
     pub skills: Vec<(String, u32, f32)>,
@@ -191,6 +194,7 @@ impl Save {
             tracked: quests.tracked.map(|q| content::quest(q).id.clone()),
             discovered: Vec::new(),
             explored: Vec::new(),
+            zone: String::new(),
             skills: Vec::new(),
             recipes: Vec::new(),
             professions: Vec::new(),
@@ -394,7 +398,7 @@ mod tests {
 
     /// A character with a story: worn and carried items, a level, a quest half done and one finished.
     fn story() -> (Inventory, Progress, QuestLog) {
-        let mut inv = Inventory::new();
+        let mut inv = Inventory::old_kit();
         inv.money = 4321;
         assert!(inv.equip_from_bag(1, 60).is_ok());
         inv.cursor = Some(Stack { item: items::find("tough_wolf_meat"), count: 7, enchant: 0 });

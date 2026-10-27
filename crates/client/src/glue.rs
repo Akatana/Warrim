@@ -53,6 +53,8 @@ pub enum Key {
     Enter,
     Escape,
     Backspace,
+    Up,
+    Down,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -65,6 +67,7 @@ struct Listed {
     name: String,
     look: Appearance,
     level: u32,
+    zone: String,
     outfit: Vec<usize>,
 }
 
@@ -218,11 +221,13 @@ impl Glue {
             tree.show(&format!("CharacterCreateClassButton{i}"), false);
         }
         tree.set_text("CharacterSelectBackButtonText", &tree.string("QUIT"));
+        // The list begins where the realm name and its button were.
+        tree.set_point("CharSelectCharacterButton1", Point::TopLeft, None, None, 24.0, -20.0);
         // Where the class buttons were, the customizations begin.
         tree.set_point("CharacterCustomizationButtonFrame1", Point::Top, Some("CharacterCreateClassButton5"), Some(Point::Bottom), 0.0, 79.0);
         // The name box is tinted as the Alliance's (`CharacterCreate_OnLoad`).
         tree.set_backdrop_colors("CharacterCreateNameEdit", Some([0.09, 0.09, 0.19, 1.0]), Some([0.5, 0.5, 0.5, 1.0]));
-        let list: Vec<Listed> = save::list(&dir).into_iter().take(MAX_CHARACTERS).map(|(name, s)| Listed { name, look: s.look, level: s.level(), outfit: s.outfit() }).collect();
+        let list: Vec<Listed> = save::list(&dir).into_iter().take(MAX_CHARACTERS).map(|(name, s)| Listed { name, look: s.look, level: s.level(), zone: s.zone.clone(), outfit: s.outfit() }).collect();
         let cursors = Cursors::load(&mount, &mut renderer.ui, gpu).map_err(|e| log::warn!("no mouse pointer: {e:#}")).ok();
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64) | 1;
         let target = renderer.add_offscreen(gpu, PICTURE);
@@ -356,7 +361,7 @@ impl Glue {
             self.tree.set_text(&format!("{button}Name"), &c.name);
             let info = self.tree.string("CHARACTER_SELECT_INFO").replacen("%d", &c.level.to_string(), 1).replacen("%s", c.look.race.name(), 1);
             self.tree.set_text(&format!("{button}Info"), &info);
-            self.tree.set_text(&format!("{button}Location"), "");
+            self.tree.set_text(&format!("{button}Location"), &c.zone);
         }
         self.mark_selected();
     }
@@ -579,7 +584,7 @@ impl Glue {
                 }
                 Key::Enter if word.eq_ignore_ascii_case("delete") => self.confirm_delete(),
                 Key::Escape => self.deleting = None,
-                Key::Enter => {}
+                _ => {}
             }
             self.tree.show(DELETE, self.deleting.is_some());
             return;
@@ -593,7 +598,14 @@ impl Glue {
                 self.name.pop();
                 self.problem = None;
             }
-            (Screen::Select, Key::Backspace) => {}
+            // Round the ends, as `CharacterSelect_OnKeyDown` does.
+            (Screen::Select, Key::Up | Key::Down) if self.list.len() > 1 => {
+                let n = self.list.len();
+                self.selected = if key == Key::Up { (self.selected + n - 1) % n } else { (self.selected + 1) % n };
+                self.sounds.push("gsCharacterSelection");
+                self.mark_selected();
+            }
+            _ => {}
         }
     }
 
@@ -670,17 +682,18 @@ impl Glue {
         }
         self.tree.draw(ui, gpu, &self.mount, size);
         // What is typed is drawn by hand: into the name box, or the box of the question.
-        let (box_name, text) = match &self.deleting {
-            Some(word) => ("CharacterDeleteEditBox", Some(word.clone())),
-            None if self.screen == Screen::Create => ("CharacterCreateNameEdit", Some(self.name.clone())),
-            None => ("", None),
+        // (box, text, inset from its left edge, line top above the box's middle, font): the question's box has no text insets, the name box has 15.
+        let (box_name, text, inset, rise, font) = match &self.deleting {
+            Some(word) => ("CharacterDeleteEditBox", Some(word.clone()), 0.0, 9.5, "GlueFontHighlight"),
+            None if self.screen == Screen::Create => ("CharacterCreateNameEdit", Some(self.name.clone()), 15.0, 13.0, "GlueEditBoxFont"),
+            None => ("", None, 0.0, 0.0, ""),
         };
         if let (Some(text), Some(r)) = (text, self.tree.rect_of(box_name, size)) {
             let blink = if (self.start.elapsed().as_millis() / 500) % 2 == 0 { "|" } else { "" };
-            // Left aligned, 15 units in from the edge (the box's text insets), in the font of the original's edit boxes.
+            // Left aligned, inside the box's text insets, in the font of the original's edit box.
             let scale = h / crate::uixml::UI_HEIGHT;
-            let at = ((r.x + 15.0) * scale, h - (r.y + r.h / 2.0) * scale - 13.0 * scale);
-            self.tree.draw_text_aligned(ui, gpu, &self.mount, size, "GlueEditBoxFont", &format!("{text}{blink}"), at, 0.0, WHITE_TEXT);
+            let at = ((r.x + inset) * scale, h - (r.y + r.h / 2.0) * scale - rise * scale);
+            self.tree.draw_text_aligned(ui, gpu, &self.mount, size, font, &format!("{text}{blink}"), at, 0.0, WHITE_TEXT);
         }
         if let (Some(problem), Screen::Create, Some(r)) = (&self.problem, self.screen, self.tree.rect_of("CharacterCreateNameEdit", size)) {
             let scale = h / crate::uixml::UI_HEIGHT;

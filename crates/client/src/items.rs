@@ -425,13 +425,42 @@ pub struct Inventory {
 impl Inventory {
     /// The starting kit of `content/start.ron`.
     pub fn new() -> Inventory {
+        Inventory::kit(None)
+    }
+
+    /// The starting kit with what the original puts on a new character of this race and sex (`classic_start.ron`) instead of the kit's worn items:
+    /// what is worn goes in its slot, the rest (food, a second weapon) in the pack. A race the original has no outfit for keeps the kit's worn items.
+    pub fn outfitted(race: crate::character::Race, sex: crate::character::Sex) -> Inventory {
+        Inventory::kit(content::get().start.outfits.iter().find(|o| o.race == race.id() && o.sex == sex.id()))
+    }
+
+    /// The kit these tests were written for (the file may hold less): a hearthstone, spare clothes, linen, a hatchet, lockpicks and a mining pick.
+    #[cfg(test)]
+    pub fn old_kit() -> Inventory {
+        let mut inv = Inventory::new();
+        for (id, count) in [("hearthstone", 1), ("worn_leather_vest", 1), ("scuffed_boots", 1), ("linen_cloth", 3), ("hatchet", 1), ("lockpick", 5), ("i2901", 1)] {
+            assert!(inv.add(Stack { item: find(id), count, enchant: 0 }));
+        }
+        inv
+    }
+
+    fn kit(outfit: Option<&content::Outfit>) -> Inventory {
         let start = &content::get().start;
         let mut inv = Inventory { equipment: [None; SLOTS], bag: vec![None; BACKPACK_SIZE], cursor: None, money: start.money };
-        for &(slot, stack) in &start.equipment {
+        for &(slot, stack) in start.equipment.iter().filter(|_| outfit.is_none()) {
             inv.equipment[slot] = Some(stack);
         }
         for (slot, &stack) in start.bag.iter().enumerate() {
             inv.bag[slot] = Some(stack);
+        }
+        for &item in outfit.map_or(&[][..], |o| &o.items) {
+            let stack = Stack { item, count: 1, enchant: 0 };
+            match get(item).wear.default_slot() {
+                Some(slot) if inv.equipment[slot].is_none() => inv.equipment[slot] = Some(stack),
+                _ => {
+                    inv.add(stack);
+                }
+            }
         }
         inv.tidy();
         inv
@@ -943,6 +972,20 @@ mod tests {
     }
 
     #[test]
+    fn a_new_character_wears_the_outfit_of_the_original_for_its_race() {
+        use crate::character::{Race, Sex};
+        // A human wears the squire's shirt, trousers and shoes and a hammer; the food goes in the pack. There is no hearthstone.
+        let inv = Inventory::outfitted(Race::Human, Sex::Male);
+        let worn = |slot: usize| inv.equipment[slot].map(|s| get(s.item).name);
+        assert_eq!((worn(SHIRT), worn(MAIN_HAND)), (Some("Squire's Shirt"), Some("Battleworn Hammer")));
+        assert!(inv.bag.iter().flatten().any(|s| get(s.item).name == "Refreshing Spring Water"));
+        assert_eq!(inv.count(find("hearthstone")), 0);
+        // Every race has one, the goblins (which the original has none for) keep the kit.
+        assert!(Race::ALL.iter().all(|&r| Inventory::outfitted(r, Sex::Female).equipment.iter().flatten().count() >= 3));
+        assert_eq!(Inventory::outfitted(Race::Goblin, Sex::Male).equipment, Inventory::new().equipment);
+    }
+
+    #[test]
     fn the_starting_kit_gives_the_stats_the_formulas_say() {
         let inv = Inventory::new();
         let s = Stats::of(&inv.equipment, 1, &[0; 7], &[]);
@@ -1033,7 +1076,7 @@ mod tests {
 
     #[test]
     fn items_are_added_to_stacks_then_free_slots_and_a_full_pack_grows() {
-        let mut inv = Inventory::new();
+        let mut inv = Inventory::old_kit();
         // 3 linen in slot 3: 10 more join it.
         assert!(inv.add(Stack { item: find("linen_cloth"), count: 10, enchant: 0 }));
         assert_eq!(inv.bag[3], Some(Stack { item: find("linen_cloth"), count: 13, enchant: 0 }));
@@ -1075,7 +1118,7 @@ mod tests {
 
     #[test]
     fn items_are_counted_and_taken_from_the_last_stacks_first() {
-        let mut inv = Inventory::new();
+        let mut inv = Inventory::old_kit();
         let linen = find("linen_cloth");
         inv.bag[8] = Some(Stack { item: linen, count: 20, enchant: 0 });
         assert_eq!(inv.count(linen), 23);
@@ -1087,7 +1130,7 @@ mod tests {
 
     #[test]
     fn buying_and_selling_move_money_and_items_and_refuse_what_does_not_fit() {
-        let mut inv = Inventory::new();
+        let mut inv = Inventory::old_kit();
         let boots = find("scuffed_boots");
         assert_eq!(inv.buy(boots), Err(Refusal::TooPoor));
         inv.money = 70;
@@ -1133,7 +1176,7 @@ mod tests {
 
     #[test]
     fn items_move_between_the_mouse_the_slots_and_the_pack() {
-        let mut inv = Inventory::new();
+        let mut inv = Inventory::old_kit();
         // Pick up the sword from the main hand, put it in an empty pack slot, pick up the vest, wear it.
         inv.click_equipment(MAIN_HAND, 60).unwrap();
         assert!(inv.equipment[MAIN_HAND].is_none() && inv.cursor.map(|c| c.item) == Some(find("longsword")));
