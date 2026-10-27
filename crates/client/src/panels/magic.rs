@@ -10,6 +10,9 @@ use super::trade;
 
 pub const SPELLBOOK: &str = "SpellBookFrame";
 const SPELL_BUTTONS: usize = 12;
+/// The tabs down the book's side: the general one and one for each of the nine classes (the original's XML has eight).
+pub const BOOK_TABS: usize = 10;
+const TAB_SCALE: f32 = 0.67;
 const SKILL_ROWS: usize = 12;
 const SKILLS: &str = "SkillFrame";
 const RECIPES_BUTTON: &str = "SkillRecipesButton";
@@ -120,10 +123,22 @@ pub fn setup(tree: &mut Tree) -> Result<()> {
     tree.set_region_hidden("MirrorTimer1Text", true);
     tree.instantiate(SPELLBOOK)?;
     tree.show(SPELLBOOK, false);
-    // One book of spells (no pets, no tabs), and the lines of one list.
+    // One book of spells (no pets), and the lines of one list.
     for tab in 1..=3 {
         tree.show(&format!("SpellBookFrameTabButton{tab}"), false);
     }
+    // The side tabs the XML has end at eight; the others are made as it makes them, one under the other.
+    for tab in 9..=BOOK_TABS {
+        let name = format!("SpellBookSkillLineTab{tab}");
+        tree.instantiate_template("SpellBookSkillLineTabTemplate", &name, SPELLBOOK)?;
+        tree.set_point(&name, Point::TopLeft, Some(&format!("SpellBookSkillLineTab{}", tab - 1)), Some(Point::BottomLeft), 0.0, -17.0);
+    }
+    // A third smaller than the original's, so that ten of them stay beside the book.
+    for tab in 1..=BOOK_TABS {
+        tree.set_scale(&format!("SpellBookSkillLineTab{tab}"), TAB_SCALE);
+    }
+    // (an anchor's offset shrinks with the frame's scale: the first tab keeps its place against the book's edge.)
+    tree.set_point("SpellBookSkillLineTab1", Point::TopLeft, Some(SPELLBOOK), Some(Point::TopRight), -32.0 / TAB_SCALE, -65.0 / TAB_SCALE);
     tree.show("SpellBookTabFlashFrame", false);
     for i in 1..=SPELL_BUTTONS {
         let button = format!("SpellButton{i}");
@@ -289,34 +304,79 @@ impl Panels {
         self.drag.take()
     }
 
-    /// The book lists the basic actions, then the spells known.
-    fn book_len(&self) -> usize {
-        BASIC.len() + self.known.len()
+    /// The tabs of the book: the general one (`None`: the basic actions and the spells of no class) and one for each class that has a spell known.
+    fn book_tabs(&self) -> Vec<Option<Skill>> {
+        let known = |class: Skill| self.known.iter().any(|&s| content::spell(s).class == class);
+        std::iter::once(None).chain(skills::ALL.iter().copied().filter(|s| s.group() == Group::Class && known(*s)).map(Some)).collect()
     }
 
-    fn book_action(&self, index: usize) -> Option<Action> {
-        BASIC.get(index).copied().or_else(|| self.known.get(index.checked_sub(BASIC.len())?).map(|&s| Action::Spell(s)))
+    /// What the tab lists, in the order learned: the basic actions on the general tab, then its spells.
+    fn book_entries(&self, tab: Option<Skill>) -> Vec<Action> {
+        let basic = BASIC.into_iter().filter(|_| tab.is_none());
+        let spells = self.known.iter().filter(|&&s| {
+            let class = content::spell(s).class;
+            tab.map_or(class.group() != Group::Class, |t| class == t)
+        });
+        basic.chain(spells.map(|&s| Action::Spell(s))).collect()
+    }
+
+    /// The tab showing (the number of its button less one) and what it lists.
+    fn book_view(&self) -> (usize, Vec<Option<Skill>>, Vec<Action>) {
+        let tabs = self.book_tabs();
+        let tab = self.book_tab.min(tabs.len() - 1);
+        let entries = self.book_entries(tabs[tab]);
+        (tab, tabs, entries)
+    }
+
+    /// The name on the tooltip of the book's tab `i`.
+    pub(super) fn book_tab_name(&self, i: usize) -> Option<&'static str> {
+        self.book_tabs().get(i).map(|t| t.map_or("General", Skill::name))
     }
 
     /// What the book's button `name` (`SpellButton{n}`) shows on the page now.
     pub(super) fn book_entry_of(&self, name: &str) -> Option<Action> {
         let n = name.strip_prefix("SpellButton")?.parse::<usize>().ok().filter(|n| (1..=SPELL_BUTTONS).contains(n))?;
-        self.book_action(self.book_page * SPELL_BUTTONS + button_slot(n))
+        let (tab, _, entries) = self.book_view();
+        entries.get(self.book_page[tab] * SPELL_BUTTONS + button_slot(n)).copied()
     }
 
-    fn book_pages(&self) -> usize {
-        self.book_len().div_ceil(SPELL_BUTTONS).max(1)
+    /// The picture of a tab: in the original the school's icon.
+    fn tab_icon(tab: Option<Skill>) -> &'static str {
+        match tab {
+            None => r"Interface\Icons\INV_Misc_Book_09",
+            Some(Skill::Warrior) => r"Interface\Icons\Ability_Warrior_OffensiveStance",
+            Some(Skill::Paladin) => r"Interface\Icons\Spell_Holy_HolyBolt",
+            Some(Skill::Hunter) => r"Interface\Icons\Ability_Marksmanship",
+            Some(Skill::Rogue) => r"Interface\Icons\Ability_BackStab",
+            Some(Skill::Priest) => r"Interface\Icons\Spell_Holy_PowerWordShield",
+            Some(Skill::Shaman) => r"Interface\Icons\Spell_Nature_LightningShield",
+            Some(Skill::Mage) => r"Interface\Icons\Spell_Frost_FrostBolt02",
+            Some(Skill::Warlock) => r"Interface\Icons\Spell_Shadow_ShadowBolt",
+            Some(_) => r"Interface\Icons\Spell_Nature_HealingTouch",
+        }
     }
 
-    /// `SpellBookFrame_Update`: the spells of the page, their icons and names, and the page buttons.
+    /// `SpellBookFrame_Update`: the tabs, the spells of the page, their icons and names, and the page buttons.
     pub(super) fn fill_spellbook(&mut self) {
         if !self.spellbook_open() {
             return;
         }
-        self.book_page = self.book_page.min(self.book_pages() - 1);
+        let (tab, tabs, entries) = self.book_view();
+        let pages = entries.len().div_ceil(SPELL_BUTTONS).max(1);
+        self.book_tab = tab;
+        self.book_page[tab] = self.book_page[tab].min(pages - 1);
+        let page = self.book_page[tab];
+        for i in 0..BOOK_TABS {
+            let button = format!("SpellBookSkillLineTab{}", i + 1);
+            self.tree.show(&button, i < tabs.len());
+            if let Some(&t) = tabs.get(i) {
+                self.tree.set_button_texture(&button, Some(Self::tab_icon(t)));
+                self.tree.set_checked(&button, i == tab);
+            }
+        }
         for slot in 0..SPELL_BUTTONS {
             let button = format!("SpellButton{}", spell_button(slot));
-            let action = self.book_action(self.book_page * SPELL_BUTTONS + slot);
+            let action = entries.get(page * SPELL_BUTTONS + slot).copied();
             self.tree.show(&button, action.is_some());
             let Some(action) = action else { continue };
             let (icon, name, kind) = match (action, action.basic_icon()) {
@@ -333,9 +393,9 @@ impl Panels {
             self.tree.set_text(&format!("{button}SubSpellName"), kind);
             self.tree.set_region_hidden(&format!("{button}SubSpellName"), false);
         }
-        self.tree.set_text("SpellBookPageText", &format!("Page {}", self.book_page + 1));
-        self.tree.set_enabled("SpellBookPrevPageButton", self.book_page > 0);
-        self.tree.set_enabled("SpellBookNextPageButton", self.book_page + 1 < self.book_pages());
+        self.tree.set_text("SpellBookPageText", &format!("Page {}", page + 1));
+        self.tree.set_enabled("SpellBookPrevPageButton", page > 0);
+        self.tree.set_enabled("SpellBookNextPageButton", page + 1 < pages);
     }
 
     /// The tooltip of a spellbook entry: a spell's, or a basic action's name and what it does.
@@ -347,10 +407,27 @@ impl Panels {
         }
     }
 
-    /// What the numbers of a spell (spells.ron, written for level 1) are multiplied by: the rank of the class skill and the
-    /// character level, which grows like its health so a heal or a bolt keeps its share of it.
+    /// What the numbers of a spell (spells.ron) are multiplied by: the rank of the class skill, and what the talents add for every spell and for the class's.
     pub fn spell_power(&self, class: Skill) -> f32 {
-        self.skills.damage_factor(class) * levels::spell_scale(self.progress.level)
+        self.skills.damage_factor(class) * self.talents.perks().power_factor(class)
+    }
+
+    /// What a spell costs, its cost less what the talents take off.
+    pub fn spell_cost(&self, spell: usize) -> Cost {
+        let k = self.talents.perks().cost_factor();
+        match content::spell(spell).cost {
+            Cost::Mana(n) => Cost::Mana(n * k),
+            Cost::Stamina(n) => Cost::Stamina(n * k),
+        }
+    }
+
+    /// Seconds before a spell can be cast again, and a cast of `ms` milliseconds as the talents shorten it.
+    pub fn spell_cooldown(&self, spell: usize) -> f32 {
+        content::spell(spell).cooldown * self.talents.perks().cooldown_factor()
+    }
+
+    pub fn cast_ms(&self, ms: f32) -> f32 {
+        ms * self.talents.perks().cast_factor()
     }
 
     /// What the worn items add to what a spell does: the damage of its school (the healing for a heal) times what its cast time gives it (CMaNGOS: 1.5 to 3.5
@@ -375,20 +452,12 @@ impl Panels {
         }
     }
 
-    /// What a spell costs at the character level: mana grows like its numbers (stamina does not).
-    pub fn spell_cost(&self, cost: Cost) -> Cost {
-        match cost {
-            Cost::Mana(n) => Cost::Mana(n * levels::spell_scale(self.progress.level)),
-            stamina => stamina,
-        }
-    }
-
     /// The tooltip of a spell: its cost and range, its cooldown, what it does at the skill the character has, and what it is.
     pub(super) fn spell_lines(&self, spell: usize) -> Vec<TipLine> {
         let def = content::spell(spell);
         let power = self.spell_power(def.class);
         let bonus = self.spell_bonus(spell);
-        let cost = match self.spell_cost(def.cost) {
+        let cost = match self.spell_cost(spell) {
             Cost::Mana(n) => format!("{n:.0} Mana"),
             Cost::Stamina(n) => format!("{n:.0} Stamina"),
         };
@@ -404,7 +473,7 @@ impl Panels {
         let mut lines = vec![
             TipLine::new(def.name.clone(), WHITE),
             TipLine::double(cost, range, WHITE, WHITE),
-            TipLine::double("Instant cast", format!("{:.0} sec cooldown", def.cooldown), WHITE, WHITE),
+            TipLine::double("Instant cast", format!("{:.0} sec cooldown", self.spell_cooldown(spell)), WHITE, WHITE),
         ];
         if !effect.is_empty() {
             lines.push(TipLine::new(effect, GOLD));
@@ -428,7 +497,7 @@ impl Panels {
                     Rider::Place { kind: crate::content::PlaceKind::Well, .. } => "A well of healing stands here.".to_string(),
                     Rider::Conjure { item, count } => format!("Makes {count} {}.", crate::items::all().iter().find(|it| it.id == format!("i{item}")).map_or("item", |it| it.name)),
                     Rider::Gain { aura, amount, seconds, .. } => match aura {
-                        0..=4 => format!("Raises your {} by {:.0} for {seconds:.0} seconds.", ["strength", "agility", "stamina", "intellect", "spirit"][aura as usize], amount * self.progress.level as f32),
+                        0..=4 => format!("Raises your {} by {:.0} for {seconds:.0} seconds.", ["strength", "agility", "stamina", "intellect", "spirit"][aura as usize], amount),
                         52 => format!("Raises your chance to land a critical blow by {amount:.0}% for {seconds:.0} seconds."),
                         71 => format!("Raises your chance to land a critical spell by {amount:.0}% for {seconds:.0} seconds."),
                         _ => format!("Lasts {seconds:.0} seconds."),
@@ -565,8 +634,10 @@ impl Panels {
         match name {
             "SpellBookCloseButton" => self.toggle_spellbook(),
             "SpellBookPrevPageButton" | "SpellBookNextPageButton" => {
-                let next = name == "SpellBookNextPageButton";
-                self.book_page = if next { (self.book_page + 1).min(self.book_pages() - 1) } else { self.book_page.saturating_sub(1) };
+                let (tab, _, entries) = self.book_view();
+                let last = entries.len().div_ceil(SPELL_BUTTONS).max(1) - 1;
+                let page = &mut self.book_page[tab];
+                *page = if name == "SpellBookNextPageButton" { (*page + 1).min(last) } else { page.saturating_sub(1) };
                 self.events.push(Sfx::Named("igSpellBokPageTurn"));
                 self.fill_spellbook();
             }
@@ -593,6 +664,11 @@ impl Panels {
                 self.skills_wheel(if name.ends_with("UpButton") { 1.0 } else { -1.0 });
             }
             _ => {
+                if let Some(i) = name.strip_prefix("SpellBookSkillLineTab").and_then(|n| n.parse::<usize>().ok()) {
+                    self.book_tab = i - 1;
+                    self.fill_spellbook();
+                    return true;
+                }
                 if let Some(i) = name.strip_prefix("SkillTypeLabel").and_then(|n| n.parse::<usize>().ok()) {
                     if let Some(&Row::Header(group)) = rows(&self.skill_list.folded, &self.skills).get(self.skill_list.offset + i - 1) {
                         let g = GROUPS.iter().position(|&x| x == group).unwrap_or(0);

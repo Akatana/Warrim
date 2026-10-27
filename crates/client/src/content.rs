@@ -726,9 +726,6 @@ pub struct SpellDef {
     pub effect: Effect,
     #[serde(default)]
     pub then: Vec<Rider>,
-    /// Taught by a talent (`talents.ron`) instead of a tome.
-    #[serde(default)]
-    pub talent: bool,
     pub description: String,
 }
 

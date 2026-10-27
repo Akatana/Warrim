@@ -84,19 +84,6 @@ impl Panels {
         true
     }
 
-    /// Give a spell back (a talent was unlearned): it is no longer known, and the action bar loses it.
-    pub fn forget(&mut self, spell: usize) {
-        if let Some(at) = self.known.iter().position(|&s| s == spell) {
-            self.known.remove(at);
-            self.forgotten.push(spell);
-        }
-    }
-
-    /// The spells given back since the last call.
-    pub fn take_forgotten(&mut self) -> Vec<usize> {
-        std::mem::take(&mut self.forgotten)
-    }
-
     /// The spells learned since the last call.
     pub fn take_learned(&mut self) -> Vec<usize> {
         std::mem::take(&mut self.learned)

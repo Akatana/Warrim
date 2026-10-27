@@ -233,21 +233,9 @@ pub fn spell_miss(player: u32, mob: u32, hit: f32) -> f32 {
     (chance - hit).clamp(1.0, 100.0)
 }
 
-/// How many times the numbers of a spell (written for level 1) are worth at `level`: they grow like the health of the old
-/// level curve did (60 at level 1, 25 more each level), so a heal or a bolt keeps its share of the character's health.
-pub fn spell_scale(level: u32) -> f32 {
-    1.0 + (level.clamp(1, MAX_LEVEL) - 1) as f32 * 25.0 / 60.0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn spells_grow_with_the_level() {
-        assert_eq!(spell_scale(1), 1.0);
-        assert!(spell_scale(60) > 20.0);
-    }
 
     #[test]
     fn each_level_takes_more_than_the_one_before() {

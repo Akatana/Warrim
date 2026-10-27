@@ -1319,10 +1319,25 @@ impl Creatures {
                 if c.hidden.get().0 {
                     return None;
                 }
-                let color = if c.mob.is_ally() { [0.1, 1.0, 0.1, 1.0] } else if c.mob.def.is_hostile() || c.mob.forced_hostile { [1.0, 0.1, 0.1, 1.0] } else if c.mob.def.is_neutral() { [1.0, 0.9, 0.1, 1.0] } else { [0.1, 1.0, 0.1, 1.0] };
+                let color = c.reaction();
                 Some(Label { text: c.mob.def.name.clone(), sub: c.mob.def.title.as_ref().filter(|t| !t.is_empty()).map(|t| format!("<{t}>")), color, x, y, line })
             })
             .collect()
+    }
+
+    /// Where the selected creature stands, the radius of its circle on the ground (`selection::radius` of its model) and the colour of its reaction.
+    pub fn target_circle(&self) -> Option<(Vec3, f32, [f32; 3])> {
+        let c = self.creatures.get(self.target?)?;
+        let radius = match &c.visual {
+            Visual::Person(p) => crate::selection::radius(p.character.m2.bounds_min, p.character.m2.bounds_max, p.tall()),
+            Visual::Beast { shown, .. } => {
+                let rig = self.rigs[*shown].as_ref()?;
+                crate::selection::radius(rig.m2.bounds_min, rig.m2.bounds_max, rig.scale)
+            }
+            Visual::None => return None,
+        };
+        let [r, g, b, _] = c.reaction();
+        Some((c.mob.pos, radius, [r, g, b]))
     }
 
     /// Health bars over the hostile creatures that are hurt, drawn on a `size` screen seen through `camera`.

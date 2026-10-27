@@ -292,6 +292,12 @@ impl State {
             (Some(panels), Some(pos)) => panels.scroll(pos, size, lines),
             _ => false,
         };
+        if !scrolled && shift && lines != 0.0 {
+            // Shift and the wheel turn the action bar's pages (up goes back).
+            if let (Some(bar), Some(p)) = (&mut self.actionbar, &mut self.player) {
+                return bar.turn_page(lines < 0.0, p);
+            }
+        }
         if !scrolled {
             let controller = self.free.as_mut().map_or(&mut self.controller, |f| &mut f.controller);
             controller.fly_speed = (controller.fly_speed * 1.2f32.powf(lines)).clamp(2.0, 2000.0);

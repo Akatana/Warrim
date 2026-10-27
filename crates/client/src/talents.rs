@@ -1,7 +1,9 @@
-//! The talents: three trees of passive perks (`content/talents.ron`), learned with a point per level from level 10. A tier opens with 5 points per tier before it
+//! The talents: three trees of perks (`content/talents.ron`), learned with a point per level from level 10. A tier opens with 5 points per tier before it
 //! spent in its tree, a talent can ask for another to be at its full rank, and a hybrid talent asks for points spent in another tree. The window is
-//! `panels/talents.rs`; what the perks do to the character is `Perks`, which `Stats::of_with` takes in.
+//! `panels/talents.rs`; what the perks do to the character is `Perks`, which `Stats::of_with` takes in, and to its spells (power, cost, cooldown, cast time) the
+//! `Panels` methods of `panels/magic.rs`.
 
+use crate::skills::Skill;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -14,11 +16,10 @@ pub const COLUMNS: usize = 4;
 const PER_TIER: u32 = 5;
 
 /// What one rank of a talent does. Amounts are percent (or percentage points for chances); `...From(attribute, percent)` adds that share of an attribute
-/// (0 strength, 1 agility, 2 stamina, 3 intellect, 4 spirit) to attack power, ranged attack power or spell damage and healing.
+/// (0 strength, 1 agility, 2 stamina, 3 intellect, 4 spirit) to attack power, ranged attack power or spell damage and healing. `SpellPower` is the percent
+/// more that every spell does (`ClassPower`: the spells of one class skill), `SpellCost` and `Cooldown` the percent less, `CastTime` the percent shorter.
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub enum Perk {
-    /// Nothing: the talent teaches a spell (`grants`).
-    Spell,
     AttackPower(f32),
     RangedAttackPower(f32),
     Armor(f32),
@@ -38,15 +39,20 @@ pub enum Perk {
     AttackPowerFrom(usize, f32),
     RangedAttackPowerFrom(usize, f32),
     SpellPowerFrom(usize, f32),
+    SpellPower(f32),
+    ClassPower(Skill, f32),
+    SpellCost(f32),
+    Cooldown(f32),
+    CastTime(f32),
 }
 
 impl Perk {
     /// What one rank gives.
     pub fn amount(self) -> f32 {
         match self {
-            Perk::Spell => 0.0,
             Perk::AttackPower(a) | Perk::RangedAttackPower(a) | Perk::Armor(a) | Perk::Health(a) | Perk::Mana(a) | Perk::Stamina(a) | Perk::Crit(a) | Perk::SpellCrit(a) | Perk::Dodge(a) | Perk::Parry(a) | Perk::Hit(a) | Perk::SpellHit(a) | Perk::ManaRegen(a) | Perk::HealthRegen(a) | Perk::RunSpeed(a) | Perk::Haste(a) => a,
-            Perk::AttackPowerFrom(_, a) | Perk::RangedAttackPowerFrom(_, a) | Perk::SpellPowerFrom(_, a) => a,
+            Perk::AttackPowerFrom(_, a) | Perk::RangedAttackPowerFrom(_, a) | Perk::SpellPowerFrom(_, a) | Perk::ClassPower(_, a) => a,
+            Perk::SpellPower(a) | Perk::SpellCost(a) | Perk::Cooldown(a) | Perk::CastTime(a) => a,
         }
     }
 }
@@ -69,9 +75,6 @@ pub struct Talent {
     /// Tree and points that have to be spent in it first (a hybrid talent).
     #[serde(default)]
     pub needs: Option<(usize, u32)>,
-    /// The id of the spell (`spells.ron`) that learning the first rank teaches.
-    #[serde(default)]
-    pub grants: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,11 +87,6 @@ pub struct Tree {
 }
 
 impl Talent {
-    /// The spell (as the content numbers its spells) that this talent teaches.
-    pub fn spell(&self) -> Option<usize> {
-        self.grants.as_deref().map(crate::content::spell_index)
-    }
-
     /// The tooltip text for `rank` ranks learned.
     pub fn describe(&self, rank: u8) -> String {
         let total = self.perk.amount() * rank as f32;
@@ -233,13 +231,36 @@ pub struct Perks {
     pub attack_power_from: [f32; 5],
     pub ranged_attack_power_from: [f32; 5],
     pub spell_power_from: [f32; 5],
+    /// Percent more for every spell, and for the spells of a class skill; percent less cost, cooldown and cast time.
+    pub spell_power: f32,
+    pub class_power: Vec<(Skill, f32)>,
+    pub spell_cost: f32,
+    pub cooldown: f32,
+    pub cast_time: f32,
 }
 
 impl Perks {
+    /// What the spells of `class` do, as a factor: the spell power of every spell and of the class.
+    pub fn power_factor(&self, class: Skill) -> f32 {
+        1.0 + (self.spell_power + self.class_power.iter().filter(|c| c.0 == class).map(|c| c.1).sum::<f32>()) / 100.0
+    }
+
+    /// Cost, cooldown and cast time as a factor (less, never under half).
+    pub fn cost_factor(&self) -> f32 {
+        (1.0 - self.spell_cost / 100.0).max(0.5)
+    }
+
+    pub fn cooldown_factor(&self) -> f32 {
+        (1.0 - self.cooldown / 100.0).max(0.5)
+    }
+
+    pub fn cast_factor(&self) -> f32 {
+        (1.0 - self.cast_time / 100.0).max(0.5)
+    }
+
     fn add(&mut self, perk: Perk, ranks: f32) {
         let a = perk.amount() * ranks;
         match perk {
-            Perk::Spell => {}
             Perk::AttackPower(_) => self.attack_power += a,
             Perk::RangedAttackPower(_) => self.ranged_attack_power += a,
             Perk::Armor(_) => self.armor += a,
@@ -259,6 +280,14 @@ impl Perks {
             Perk::AttackPowerFrom(i, _) => self.attack_power_from[i] += a,
             Perk::RangedAttackPowerFrom(i, _) => self.ranged_attack_power_from[i] += a,
             Perk::SpellPowerFrom(i, _) => self.spell_power_from[i] += a,
+            Perk::SpellPower(_) => self.spell_power += a,
+            Perk::ClassPower(class, _) => match self.class_power.iter_mut().find(|c| c.0 == class) {
+                Some(c) => c.1 += a,
+                None => self.class_power.push((class, a)),
+            },
+            Perk::SpellCost(_) => self.spell_cost += a,
+            Perk::Cooldown(_) => self.cooldown += a,
+            Perk::CastTime(_) => self.cast_time += a,
         }
     }
 }
@@ -274,10 +303,6 @@ mod tests {
     #[test]
     fn the_trees_fit_the_original_window_and_can_be_climbed() {
         assert_eq!(trees().len(), 3);
-        // Every spell a talent teaches is taught by one talent, and no talent teaches a spell with a tome.
-        for (i, spell) in crate::content::get().spells.iter().enumerate().filter(|(_, s)| s.talent) {
-            assert_eq!(trees().iter().flat_map(|t| &t.talents).filter(|t| t.spell() == Some(i)).count(), 1, "{}", spell.name);
-        }
         for (i, tree) in trees().iter().enumerate() {
             // At most 20 buttons; one talent to a place; ids unique across the trees (the save goes by id).
             assert!(tree.talents.len() <= 20, "{}", tree.name);
@@ -285,11 +310,7 @@ mod tests {
             for t in &tree.talents {
                 assert!((1..=TIERS).contains(&t.tier) && (1..=COLUMNS).contains(&t.column) && t.ranks >= 1, "{}", t.id);
                 assert!(places.insert((t.tier, t.column)), "{}: place taken", t.id);
-                assert!(t.text.contains("{}") || matches!(t.perk, Perk::Spell), "{}", t.id);
-                if let Some(id) = &t.grants {
-                    assert!(t.tier >= 3, "{}: a spell is not for the first two rows", t.id);
-                    assert!(crate::content::get().spells.iter().any(|s| s.id == *id && s.talent), "{}: no talent spell {id}", t.id);
-                }
+                assert!(t.text.contains("{}"), "{}", t.id);
                 assert!(trees().iter().flat_map(|t| &t.talents).filter(|o| o.id == t.id).count() == 1, "{}: id twice", t.id);
                 if let Some((other, points)) = t.needs {
                     assert!(other != i && other < trees().len() && points > 0, "{}", t.id);
@@ -312,6 +333,17 @@ mod tests {
                 assert!(before >= (tier as u32 - 1) * PER_TIER || !tree.talents.iter().any(|t| t.tier == tier), "{}: tier {tier} cannot be opened", tree.name);
             }
         }
+    }
+
+    #[test]
+    fn spell_perks_add_up_by_class_and_never_cut_more_than_half() {
+        let mut p = Perks::default();
+        p.add(Perk::SpellPower(2.0), 5.0);
+        p.add(Perk::ClassPower(Skill::Mage, 4.0), 3.0);
+        p.add(Perk::ClassPower(Skill::Mage, 4.0), 1.0);
+        p.add(Perk::SpellCost(5.0), 20.0);
+        assert!((p.power_factor(Skill::Mage) - 1.26).abs() < 1e-5 && (p.power_factor(Skill::Priest) - 1.1).abs() < 1e-5);
+        assert_eq!((p.cost_factor(), p.cooldown_factor()), (0.5, 1.0));
     }
 
     #[test]

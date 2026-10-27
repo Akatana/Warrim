@@ -318,6 +318,8 @@ struct State {
     /// step since the spray was last looked for.
     ripples: crate::ripples::Ripples,
     ripple_draw: Option<crate::ripples::RippleDraw>,
+    /// What draws the circle under the selected unit.
+    selection_draw: Option<crate::selection::SelectionDraw>,
     water_depth: f32,
     speed: f32,
     stepped: bool,

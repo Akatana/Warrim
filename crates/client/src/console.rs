@@ -34,7 +34,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("recipes", "recipes <trade|all>", "learn every recipe of a trade"),
     ("tp", "tp <place> | tp <north> <west>", "teleport to a place or to coordinates"),
     ("heal", "heal", "fill health, mana and stamina"),
-    ("respec", "respec", "take back every talent point (and the spells talents taught)"),
+    ("respec", "respec", "take back every talent point"),
     ("time", "time <0-24|auto>", "set the hour of the day, or let it run"),
     ("pos", "pos", "say where the character stands"),
     ("prof", "prof", "show or hide the profiler (F3)"),
@@ -405,7 +405,7 @@ mod tests {
             other => panic!("{line}: {:?}", other.map(|_| ())),
         };
         let c = content::get();
-        assert_eq!((n("spell fireball"), n("spell Fireball"), n("spell Arcane Intellect"), n("spell arcane intell")), (1, 1, 1, 1));
+        assert_eq!((n("spell fireball"), n("spell Fireball"), n("spell Arcane Intellect (Rank 2)"), n("spell intellect (rank 3")), (1, 1, 1, 1));
         assert_eq!(n("spell mage"), c.spells.iter().filter(|s| s.class == crate::skills::Skill::Mage).count());
         assert_eq!(n("spell all"), c.spells.len());
         assert!(parse("spell nonsense").is_err() && parse("spell").is_err());

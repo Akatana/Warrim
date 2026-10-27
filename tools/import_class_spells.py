@@ -1,9 +1,8 @@
 """Adds the class spells of the original game (1.12.1) to `content/spells.ron`, each with its tome in `content/items.ron`.
 
-A spell is one the class trainers (or the first spells of a new character) teach; only its first rank is made: the ranks of the original are what the class
-skill and the character level do to the numbers here. Two kinds of entry are made:
-  * what the game's own spell model says directly (a blow, a blow on every enemy near, a heal, a buff, with a bleed, a stun or a slow): the numbers of the original
-    are brought down to the scale of spells.ron (they are written for a character of the level the spell is taught at: `levels::spell_scale`);
+A spell is one the class trainers (or the first spells of a new character) teach; every rank of it is made, rank 1 under the spell's own name and the others
+as "Name (Rank n)", each with its own tome and the numbers of the original. Two kinds of entry are made:
+  * what the game's own spell model says directly (a blow, a blow on every enemy near, a heal, a buff, with a bleed, a stun or a slow): the numbers of the original;
   * the rest `Classic`: the game does what the original's spell (classic_spells.ron) does (src/special.rs): auras on the character, fear, roots, sleep, polymorph,
     dispels, interrupts, conjuring, hiding. What needs a number the game's files do not have (the display of a steed, the item
     a stone is) is given as a rider (`Mount`, `Conjure`). The teleports and portals are left out: the map takes the character to places.
@@ -36,7 +35,11 @@ CLASSES = {1: "Warrior", 2: "Paladin", 3: "Hunter", 4: "Rogue", 5: "Priest", 7: 
 EXTRA = [(13819, "Paladin"), (23214, "Paladin"), (5784, "Warlock"), (23161, "Warlock"),
          # The pets the warlock calls and the hunter's (quests teach them in the original).
          (688, "Warlock"), (697, "Warlock"), (712, "Warlock"), (691, "Warlock"), (1122, "Warlock"),
-         (883, "Hunter"), (2641, "Hunter"), (982, "Hunter"), (1515, "Hunter"), (8681, "Rogue")]
+         (883, "Hunter"), (2641, "Hunter"), (982, "Hunter"), (1515, "Hunter"), (8681, "Rogue"),
+         # Exorcism (the tables give it no family).
+         (879, "Paladin"), (5614, "Paladin"), (5615, "Paladin"), (10312, "Paladin"), (10313, "Paladin"), (10314, "Paladin")]
+# Spells of no family that a trainer lists but that are not the class's (the old rows of the tables, a shaman talent in the warrior's list).
+NOT_CLASS = {"Elemental Fury", "zzOLDHip Shot III"}
 # The look of a tome of each class (the display rows spells.ron's own tomes use in items.ron).
 DISPLAY = {"Warrior": 1155, "Paladin": 918, "Hunter": 3426, "Rogue": 8092, "Priest": 1103, "Shaman": 1246, "Mage": 1317, "Warlock": 1134, "Druid": 3154}
 SCHOOL = {0: "force", 1: "holy light", 2: "fire", 3: "the wrath of nature", 4: "frost", 5: "shadow", 6: "arcane magic"}
@@ -48,7 +51,6 @@ AREA = {22, 16, 28, 24}
 # Weapon blows (a flat extra damage on top of the weapon): the effects of the original that hit with the weapon.
 WEAPON = {17, 31, 58, 121}
 MANA_SHARE = 0.55  # the mana costs of the original, as the hand-made spells of spells.ron have them
-STAT_PER_LEVEL = 0.5  # a stat buff of the original at the top rank gives about this much for each level of the character
 MAX_STUN = 10.0
 MAX_BUFF = 1800.0
 # What src/procs.rs knows how to do with the effects of a spell, by the original's effect and aura numbers: a spell with none of it does nothing here.
@@ -78,9 +80,10 @@ def rank_of(level):
     return 1 if level <= 1 else max(1, min(100, round(level * 100 / 60)))
 
 
-def spell_scale(level):
-    """`levels::spell_scale`: how many times the numbers of a spell written for level 1 are worth at `level`."""
-    return 1.0 + (min(max(level, 1), 60) - 1) * 25.0 / 60.0
+def rank_number(s):
+    """The rank a spell of the original is ("Rank 3"; the first has none written)."""
+    m = re.search(r"\d+", s["Rank1"])
+    return int(m.group()) if m else 1
 
 
 class Tables:
@@ -121,12 +124,11 @@ class Tables:
         return self.icons.get(s["SpellIconID"], "").rsplit("\\", 1)[-1] or "INV_Misc_QuestionMark"
 
 
-def simple(t, s, level):
+def simple(t, s):
     """The spells.ron fields for a spell of the original that the game's own spell model says, or None."""
     if s["PowerType"] not in (0, 1, 3):
         return None
     seconds = t.seconds(s)
-    k = spell_scale(level)
     hit = area = heal = dot = None  # (min, max) of a blow or heal, (min, max, radius) of an area, (per tick, tick ms) of a dot
     then, buffs, enemy_dot, weapon = [], [], False, False
     for n in (1, 2, 3):
@@ -165,17 +167,17 @@ def simple(t, s, level):
         elif kind == 6 and a in (1, 21, 20, 37, 57) and seconds:
             gain = None
             if aura == 29 and 0 <= s["EffectMiscValue%d" % n] <= 4:
-                gain = (s["EffectMiscValue%d" % n], 0, STAT_PER_LEVEL)
+                gain = (s["EffectMiscValue%d" % n], 0, float(max(low, 1)))
             elif aura == 99 and low > 0:
-                gain = (99, 0, round(low / k, 1))
+                gain = (99, 0, float(low))
             if gain:
                 buffs.append("Gain(aura: %d, misc: %d, amount: %s, seconds: %s)" % (gain[0], gain[1], f(gain[2]), f(min(seconds, MAX_BUFF))))
     if enemy_dot and dot:
-        tick = round(dot[0] * 3000.0 / dot[1] / k, 1)
+        tick = round(dot[0] * 3000.0 / dot[1], 1)
         then.insert(0, "Bleed(amount: %s, seconds: %s)" % (f(max(tick, 1.0)), f(min(seconds, 60.0))))
     cd = t.cooldown(s)
     reach = t.ranges.get(s["RangeIndex"], 0)
-    down = lambda v: f(max(round(v / k, 1), 0.0 if v == 0 else 0.5))
+    down = lambda v: f(max(round(v, 1), 0.0 if v == 0 else 0.5))
     # What it is: a heal and a blow in one spell (a drain) is a blow.
     if hit or (then and not area and not heal and not buffs and (s["EffectImplicitTargetA1"] in ENEMY)):
         low, high = hit or (1, 1)
@@ -307,6 +309,7 @@ def main():
         return spell
 
     taught = collections.defaultdict(dict)  # class -> spell -> the level the original teaches it at
+    trained = collections.defaultdict(set)  # class -> the spells its trainers teach (the racial abilities of a new character are not the class's)
     own, template = collections.defaultdict(list), collections.defaultdict(list)
     for r in classicdb.rows(sql, "npc_trainer"):
         own[r["entry"]].append(r)
@@ -320,6 +323,7 @@ def main():
                     level = r["reqlevel"] or spells[sp]["SpellLevel"]
                     old = taught[CLASSES[c["TrainerClass"]]].get(sp)
                     taught[CLASSES[c["TrainerClass"]]][sp] = min(old, level) if old else level
+                    trained[CLASSES[c["TrainerClass"]]].add(sp)
     for r in classicdb.rows(sql, "playercreateinfo_spell"):
         sp = resolve(r["Spell"])
         if r["class"] in CLASSES and sp in spells:
@@ -346,31 +350,35 @@ def main():
     out, items, skipped = [], [], collections.defaultdict(list)
     counts = collections.Counter()
     for class_name in CLASSES.values():
-        firsts = {}
+        ranks = {}  # (name, rank) -> the spell of that rank
         for sp in taught[class_name]:
             s = spells[sp]
             # (A spell that teaches another is not a spell to cast.)
-            # (The rogue's poisons are made by spells of no family.)
-            own = s["SpellFamilyName"] == FAMILY[class_name] or sp in extra or (class_name == "Rogue" and "Poison" in s["SpellName"] and 24 in (s["Effect1"], s["Effect2"], s["Effect3"]))
+            # (Many class spells have no family in the tables: Exorcism, Divine Shield, the poisons, the shaman's weapons...: those the class trainers teach count.)
+            own = s["SpellFamilyName"] == FAMILY[class_name] or (s["SpellFamilyName"] == 0 and sp in trained[class_name] and s["SpellName"] not in NOT_CLASS) or sp in extra or (class_name == "Rogue" and "Poison" in s["SpellName"] and 24 in (s["Effect1"], s["Effect2"], s["Effect3"]))
             if not own or 36 in (s["Effect1"], s["Effect2"], s["Effect3"]):
                 continue
-            if s["SpellName"] not in firsts or (s["SpellLevel"], sp) < (spells[firsts[s["SpellName"]]]["SpellLevel"], firsts[s["SpellName"]]):
-                firsts[s["SpellName"]] = sp
-        out.append("\n    // %s: the spells the trainers of the class teach, first ranks (the skill and the level of the character are what makes them stronger).\n" % class_name)
-        for name, sp in sorted(firsts.items(), key=lambda kv: (taught[class_name][kv[1]], kv[1])):
+            key = (s["SpellName"], rank_number(s))
+            if key not in ranks or (s["SpellLevel"], sp) < (spells[ranks[key]]["SpellLevel"], ranks[key]):
+                ranks[key] = sp
+        out.append("\n    // %s: the spells the trainers of the class teach, every rank (the skill of the class is what makes them stronger).\n" % class_name)
+        for (base, rank), sp in sorted(ranks.items(), key=lambda kv: (taught[class_name][kv[1]], kv[1])):
             s = spells[sp]
-            if name.lower() in have_names or s["Attributes"] & 0x40 or name in AUTO or name.startswith(("Teleport:", "Portal:")) or name == "Astral Recall":
+            name = base if rank == 1 else "%s (Rank %d)" % (base, rank)
+            if name.lower() in have_names or s["Attributes"] & 0x40 or base in AUTO or base.startswith(("Teleport:", "Portal:")) or base == "Astral Recall":
                 continue
             learned = taught[class_name][sp]
-            m, kind = simple(t, s, learned), "own"
+            m, kind = simple(t, s), "own"
             if not m:
                 m, kind = classic(t, s), "classic"
             if not m:
                 sig = " ".join("%d/%d/%d" % (s["Effect%d" % n], s["EffectApplyAuraName%d" % n], s["EffectImplicitTargetA%d" % n]) for n in (1, 2, 3) if s["Effect%d" % n])
-                skipped[class_name].append("%s [%s]" % (name, sig) if os.environ.get("VERBOSE") else name)
+                note = "%s [%s]" % (base, sig) if os.environ.get("VERBOSE") else base
+                if note not in skipped[class_name]:
+                    skipped[class_name].append(note)
                 continue
             counts[kind] += 1
-            sid = slug(name)
+            sid = slug(name)  # (a name that ends in a number, "Rank 2", makes "frostbolt_rank_2")
             if sid in have_ids:
                 sid += "_" + class_name.lower()
             have_ids.add(sid)

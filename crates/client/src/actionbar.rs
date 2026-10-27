@@ -28,6 +28,8 @@ const CHECKED: &str = r"Interface\Buttons\CheckButtonHilight";
 const FONT: &str = r"Fonts\ARIALN.TTF";
 
 const SLOTS: usize = 12;
+/// The pages of buttons (the original has six); Shift and the mouse wheel turn through them.
+const PAGES: usize = 6;
 const BUTTON: f32 = 36.0;
 const BUTTON_STRIDE: f32 = 42.0;
 /// The bar's left half spans 512 units; centred on the screen, its first button starts 8 units in.
@@ -133,7 +135,9 @@ struct Label {
 }
 
 pub struct ActionBar {
-    slots: [Option<Action>; SLOTS],
+    slots: [[Option<Action>; SLOTS]; PAGES],
+    /// The page the buttons shown and used belong to.
+    page: usize,
     /// Slots whose key or mouse button is down.
     held: [bool; SLOTS],
     /// The mouse pointer in pixels, while it is free to use the interface.
@@ -157,6 +161,11 @@ pub struct ActionBar {
     labels: Vec<Option<Label>>,
     font: fontdue::Font,
     bar_text: GlyphSet,
+}
+
+/// The page after `page` (or before it), round the ends.
+fn turned(page: usize, forward: bool) -> usize {
+    (page + if forward { 1 } else { PAGES - 1 }) % PAGES
 }
 
 /// The pictures of the keys written on the buttons.
@@ -188,32 +197,25 @@ impl ActionBar {
         let font = fontdue::Font::from_bytes(mount.read(FONT)?, fontdue::FontSettings::default()).map_err(|e| anyhow::anyhow!("{FONT}: {e}")).context("action bar font")?;
         let labels = hotkey_labels(&font, ui, gpu, &crate::keys::Binds::load().action_labels());
         let white = ui.add_texture(gpu, 1, 1, &[255; 4]);
-        let mut slots = [None; SLOTS];
-        for (slot, a) in slots.iter_mut().zip(BASIC) {
+        let mut slots = [[None; SLOTS]; PAGES];
+        for (slot, a) in slots[0].iter_mut().zip(BASIC) {
             *slot = Some(a);
         }
         let bar_text = GlyphSet::new(ui, gpu, &font, BAR_TEXT_HEIGHT, 1)?;
-        Ok(ActionBar { slots, held: [false; SLOTS], cursor: None, dragging: None, white, status_bar, bar, end_cap, slot_filled, slot_empty, pushed, highlight, checked, icons, item_icons, item_use: None, labels, font, bar_text })
-    }
-
-    /// Take a spell off every button it is on.
-    pub fn forget(&mut self, spell: usize) {
-        for slot in self.slots.iter_mut().filter(|s| **s == Some(Action::Spell(spell))) {
-            *slot = None;
-        }
+        Ok(ActionBar { slots, page: 0, held: [false; SLOTS], cursor: None, dragging: None, white, status_bar, bar, end_cap, slot_filled, slot_empty, pushed, highlight, checked, icons, item_icons, item_use: None, labels, font, bar_text })
     }
 
     /// Put a spell in the first free button.
     pub fn learn(&mut self, spell: usize) {
-        if let Some(free) = self.slots.iter().position(Option::is_none) {
-            self.slots[free] = Some(Action::Spell(spell));
+        if let Some(free) = self.slots.iter_mut().flatten().find(|s| s.is_none()) {
+            *free = Some(Action::Spell(spell));
         }
     }
 
     /// Put `action` on a button, in place of what was there.
     pub fn place(&mut self, slot: usize, action: Action) {
         if slot < SLOTS {
-            self.slots[slot] = Some(action);
+            self.slots[self.page][slot] = Some(action);
         }
     }
 
@@ -228,20 +230,20 @@ impl ActionBar {
 
     /// Lift the action off a button to drag it: it is not used, and the button is empty until it is put down.
     pub fn pick_up(&mut self, slot: usize) {
-        if let Some(a) = self.slots.get_mut(slot).and_then(Option::take) {
+        if let Some(a) = self.slots[self.page].get_mut(slot).and_then(Option::take) {
             self.dragging = Some(a);
         }
     }
 
     /// What is on each button, by id ("" for none), for the saved game.
     pub fn layout(&self) -> Vec<String> {
-        self.slots.iter().map(|s| s.map_or(String::new(), Action::id)).collect()
+        self.slots.iter().flatten().map(|s| s.map_or(String::new(), Action::id)).collect()
     }
 
     /// Put the buttons as saved; ids the content no longer has leave their button empty.
     pub fn restore(&mut self, layout: &[String]) {
-        self.slots = [None; SLOTS];
-        for (slot, id) in self.slots.iter_mut().zip(layout) {
+        self.slots = [[None; SLOTS]; PAGES];
+        for (slot, id) in self.slots.iter_mut().flatten().zip(layout) {
             *slot = Action::from_id(id);
         }
     }
@@ -252,7 +254,7 @@ impl ActionBar {
             return None;
         }
         let mut cast = None;
-        match self.slots[slot] {
+        match self.slots[self.page][slot] {
             Some(Action::Attack) => player.attack_press(),
             Some(Action::Heavy) => player.heavy_attack(),
             Some(Action::Shoot) => player.shoot_press(),
@@ -263,6 +265,13 @@ impl ActionBar {
         }
         player.emit(Sfx::ActionButton);
         cast
+    }
+
+    /// Turn to the next page (`forward`) or the one before, round the ends; held buttons are let go first, since they
+    /// would not find their action on the new page.
+    pub fn turn_page(&mut self, forward: bool, player: &mut Player) {
+        self.release_all(player);
+        self.page = turned(self.page, forward);
     }
 
     /// The item a button asked to use since the last call.
@@ -280,7 +289,7 @@ impl ActionBar {
     /// The key or mouse button of `slot` went up: a held shield comes down, and a tap on the attack makes its swing.
     pub fn release(&mut self, slot: usize, player: &mut Player) {
         if slot < SLOTS && std::mem::take(&mut self.held[slot]) {
-            match self.slots[slot] {
+            match self.slots[self.page][slot] {
                 Some(Action::Block) => player.set_block(false),
                 Some(Action::Attack) => player.attack_release(),
                 Some(Action::Shoot) => player.shoot_release(),
@@ -374,7 +383,7 @@ impl ActionBar {
         for slot in 0..SLOTS {
             let centre = Self::button_left(slot) + BUTTON / 2.0;
             let button = rect(centre, BUTTON_BOTTOM, BUTTON, BUTTON);
-            let action = self.slots[slot];
+            let action = self.slots[self.page][slot];
             if let Some(a) = action {
                 quad(self.icon(a), button, FULL_UV, WHITE, false);
                 // A spell that cannot be cast yet is dark.
@@ -508,6 +517,13 @@ mod tests {
             let path = crate::items::get(i).icon;
             assert!(mount.read(&format!("{path}.blp")).is_ok(), "{path} is missing");
         }
+    }
+
+    #[test]
+    fn pages_turn_round_the_ends() {
+        assert_eq!(turned(0, true), 1);
+        assert_eq!(turned(PAGES - 1, true), 0);
+        assert_eq!(turned(0, false), PAGES - 1);
     }
 
     #[test]

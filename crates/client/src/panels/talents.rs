@@ -244,11 +244,8 @@ impl Panels {
         self.talents.saved()
     }
 
-    /// `respec`: every rank is given back, with the spells they taught.
+    /// `respec`: every rank is given back.
     pub fn respec(&mut self) {
-        for spell in talents::trees().iter().flat_map(|t| &t.talents).filter_map(|t| t.spell()) {
-            self.forget(spell);
-        }
         self.talents.clear();
         self.stats_dirty = true;
         self.refresh();
@@ -389,14 +386,7 @@ impl Panels {
             Some(Lock::Hybrid(other, points)) => lines.push(TipLine::new(format!("Requires {points} points in {other} Talents"), RED)),
             None => {}
         }
-        if !matches!(t.perk, talents::Perk::Spell) {
-            lines.push(TipLine::new(t.describe(rank.max(1)), GOLD));
-        }
-        // What it teaches, as the spellbook shows it.
-        if let Some(spell) = t.spell() {
-            lines.push(TipLine::new("Teaches:", WHITE));
-            lines.extend(self.spell_lines(spell).into_iter().skip(1));
-        }
+        lines.push(TipLine::new(t.describe(rank.max(1)), GOLD));
         if rank > 0 && rank < t.ranks {
             lines.push(TipLine::new("Next rank:", WHITE));
             lines.push(TipLine::new(t.describe(rank + 1), GOLD));
@@ -422,14 +412,6 @@ impl Panels {
                     let level = self.progress.level;
                     let changed = if left { self.talents.learn(tree, t, level) } else { self.talents.unlearn(t) };
                     if changed {
-                        // The first rank of a talent that teaches a spell teaches it; giving that rank back takes it away.
-                        if let Some(spell) = t.spell() {
-                            match (left, self.talents.rank(t)) {
-                                (true, 1) if self.learn(spell) => self.notice(&format!("You have learned a new spell: {}.", content::spell(spell).name)),
-                                (false, 0) => self.forget(spell),
-                                _ => {}
-                            }
-                        }
                         self.stats_dirty = true;
                         self.refresh();
                     }

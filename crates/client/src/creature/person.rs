@@ -196,3 +196,19 @@ pub(super) struct Creature {
     pub(super) beat: u8,
 }
 
+
+impl Creature {
+    /// Red for a hostile creature, yellow for a neutral one, green for a friendly one (its name and the circle under it).
+    pub(super) fn reaction(&self) -> [f32; 4] {
+        let m = &self.mob;
+        if m.is_ally() {
+            [0.1, 1.0, 0.1, 1.0]
+        } else if m.def.is_hostile() || m.forced_hostile {
+            [1.0, 0.1, 0.1, 1.0]
+        } else if m.def.is_neutral() {
+            [1.0, 0.9, 0.1, 1.0]
+        } else {
+            [0.1, 1.0, 0.1, 1.0]
+        }
+    }
+}

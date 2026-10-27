@@ -53,6 +53,7 @@ mod quests;
 mod player;
 mod renderer;
 mod ripples;
+mod selection;
 mod save;
 mod skills;
 mod talents;

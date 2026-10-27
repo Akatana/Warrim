@@ -7,7 +7,6 @@ use crate::consume::Timed;
 use crate::content::{self, Effect, PlaceKind, Rider};
 use crate::creature::Status;
 use crate::items::UseEffect;
-use crate::levels;
 use crate::procs::{self, Outcome};
 use crate::skills::Skill;
 use glam::{Mat4, Vec3};
@@ -167,7 +166,7 @@ fn pulse(ctx: &mut Ctx, s: &Standing, victim: Option<usize>) {
         let panels = &mut *ctx.panels;
         procs::run_cast(classic, level, &mut || panels.consumed.dice(), &mut out, victim.is_some());
     }
-    let k = ctx.panels.spell_power(s.class) / levels::spell_scale(classic.level.max(1));
+    let k = ctx.panels.spell_power(s.class);
     let near = flat(ctx.player.feet() - s.at) <= s.radius;
     let lasts = out.iter().filter_map(|o| if let Outcome::Timed(_, secs) = o { Some(*secs) } else { None }).fold(0.0, f32::max);
     let mut rest = Vec::new();
@@ -267,7 +266,7 @@ pub fn cast(ctx: &mut Ctx, spell: usize, victim: Option<usize>) {
         let panels = &mut *ctx.panels;
         procs::run_cast(classic, level, &mut || panels.consumed.dice(), &mut out, victim.is_some());
     }
-    let k = ctx.panels.spell_power(def.class) / levels::spell_scale(classic.level.max(1));
+    let k = ctx.panels.spell_power(def.class);
     let out: Vec<Outcome> = out.into_iter().map(|o| scaled(o, k)).collect();
     // What lasts is shown among the buffs, with the seconds that are left.
     let lasts = out.iter().filter_map(|o| if let Outcome::Timed(_, s) = o { Some(*s) } else { None }).fold(0.0, f32::max);

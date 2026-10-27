@@ -208,7 +208,7 @@ impl Spellcaster {
                 _ => return Err("Out of range."),
             }
         }
-        let cost = ctx.panels.spell_cost(def.cost);
+        let cost = ctx.panels.spell_cost(spell);
         let enough = match cost {
             Cost::Mana(n) => ctx.player.vitals.mana.current >= n,
             Cost::Stamina(n) => ctx.player.vitals.stamina.current >= n,
@@ -293,7 +293,8 @@ impl Spellcaster {
             ctx.player.dismount();
         }
         let vis = self.visuals.get(spell).cloned().unwrap_or_default();
-        if vis.cast_ms <= 0.0 {
+        let cast_ms = ctx.panels.cast_ms(vis.cast_ms);
+        if cast_ms <= 0.0 {
             return self.go(ctx, spell, feet);
         }
         // The cast: the ready animation and the glows in the hands for as long as it takes.
@@ -303,8 +304,8 @@ impl Spellcaster {
             ctx.panels.emit(Sfx::Hold(entry));
         }
         ctx.player.set_precast(vis.precast.anim);
-        ctx.panels.cast_start(&def.name, vis.cast_ms / 1000.0);
-        self.casting = Some(Casting { spell, elapsed: 0.0, total: vis.cast_ms / 1000.0, glows });
+        ctx.panels.cast_start(&def.name, cast_ms / 1000.0);
+        self.casting = Some(Casting { spell, elapsed: 0.0, total: cast_ms / 1000.0, glows });
     }
 
     fn stop_glows(ctx: &mut Ctx, glows: &[(usize, u32)]) {
@@ -516,7 +517,7 @@ impl Spellcaster {
     fn go(&mut self, ctx: &mut Ctx, spell: usize, feet: Vec3) {
         let def = content::spell(spell);
         let Ok(victim) = self.check(ctx, spell, feet) else { return };
-        if !ctx.player.spend(ctx.panels.spell_cost(def.cost)) {
+        if !ctx.player.spend(ctx.panels.spell_cost(spell)) {
             return;
         }
         let vis = self.visuals.get(spell).cloned().unwrap_or_default();
@@ -574,7 +575,7 @@ impl Spellcaster {
         for rider in &def.then {
             match *rider {
                 Rider::Gain { aura, misc, amount, seconds } => {
-                    let effect = if aura < 5 { crate::items::UseEffect::Boost(aura as u8, (amount * level as f32) as i32, 0.0) } else { crate::items::UseEffect::Equip(aura, misc, amount as i32) };
+                    let effect = if aura < 5 { crate::items::UseEffect::Boost(aura as u8, amount as i32, 0.0) } else { crate::items::UseEffect::Equip(aura, misc, amount as i32) };
                     ctx.panels.proc_timed(Timed::Gear(effect), seconds);
                 }
                 Rider::Leap => self.leap = victim.map(|(_, at)| at),
@@ -623,7 +624,7 @@ impl Spellcaster {
                 None => self.land(ctx, Flight { vis: vis.clone(), pitched: false, target, last_seen: at, from, age: 0.0, duration: 0.0, effect: None, damage, then: then.clone(), source: source.clone() }),
             }
         }
-        ctx.panels.cooldowns[spell] = def.cooldown;
+        ctx.panels.cooldowns[spell] = ctx.panels.spell_cooldown(spell);
         ctx.panels.train(def.class, 1.0);
         ctx.player.set_sneaking(false);
     }
@@ -678,7 +679,7 @@ mod tests {
     #[test]
     fn every_spell_has_its_tome_and_a_basic_one_asks_for_nothing() {
         let c = content::get();
-        for (i, spell) in c.spells.iter().enumerate().filter(|(_, s)| !s.talent) {
+        for (i, spell) in c.spells.iter().enumerate() {
             let tome = c.items.iter().position(|it| it.tome == Some(i));
             let tome = tome.unwrap_or_else(|| panic!("{} has no tome", spell.name));
             // Found: any kill may drop the tomes of what the class skill allows (`Loot::add_tome`), so a tome only has to ask for a rank that can be reached.
@@ -687,7 +688,7 @@ mod tests {
         }
         // Each class has a basic and a greater spell.
         for class in crate::skills::ALL.iter().filter(|s| s.is_class()) {
-            let of = |basic: bool| c.spells.iter().filter(|s| !s.talent && s.class == *class && (s.level == 1) == basic).count();
+            let of = |basic: bool| c.spells.iter().filter(|s| s.class == *class && (s.level == 1) == basic).count();
             assert!(of(true) >= 1 && of(false) >= 1, "{}", class.name());
         }
     }

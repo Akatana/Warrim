@@ -215,6 +215,10 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
     // The target frame with the first creature selected.
     if let (Some(panels), Some(wolves), true) = (&mut panels, &mut wolves, args.target && args.panel.is_empty()) {
         wolves.set_target(0);
+        // (the circle shows here whatever the option says)
+        if let Some(mut draw) = crate::selection::SelectionDraw::new(player_mount, &ModelCache::default(), renderer, gpu) {
+            draw.draw(wolves.target_circle(), |x, z, y| crate::collision::Collider::floor(world, x, z, y), renderer, gpu);
+        }
         // A few debuffs on it, to see how they are listed (a bleed, a curse, a poison).
         for (name, icon, dispel) in [("Rend", "Ability_Gouge", 0), ("Curse of Agony", "Spell_Shadow_CurseOfSargeras", 2), ("Deadly Poison", "Ability_Poisons", 4)] {
             wolves.set_source(name, icon, dispel);

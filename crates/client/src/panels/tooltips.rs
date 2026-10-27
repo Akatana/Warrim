@@ -217,6 +217,9 @@ impl Panels {
         if let Some(action) = self.book_entry_of(name) {
             return Some(self.action_lines(action));
         }
+        if let Some(tab) = name.strip_prefix("SpellBookSkillLineTab").and_then(|n| n.parse::<usize>().ok()).and_then(|i| self.book_tab_name(i - 1)) {
+            return Some(vec![TipLine::new(tab, WHITE)]);
+        }
         if let Some(lines) = self.talent_lines(name).or_else(|| self.trade_lines(name)).or_else(|| self.trainer_lines(name)) {
             return Some(lines);
         }

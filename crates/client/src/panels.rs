@@ -112,12 +112,11 @@ pub struct Panels {
     pub recipes: crate::recipes::Known,
     pub known: Vec<usize>,
     learned: Vec<usize>,
-    /// Spells a talent taught that were given back, for the action bar to drop (`take_forgotten`).
-    forgotten: Vec<usize>,
     /// Seconds left before each spell can be cast again.
     pub cooldowns: Vec<f32>,
-    /// The spellbook's page, the spell a click on it asked to cast, and the skills tab's list.
-    book_page: usize,
+    /// The spellbook's tab and the page each tab is at, the spell a click on it asked to cast, and the skills tab's list.
+    book_tab: usize,
+    book_page: [usize; magic::BOOK_TABS],
     cast_bar: magic::CastBar,
     /// Whether the breath bar (the original's first mirror timer) shows.
     breath_shown: bool,
@@ -368,6 +367,8 @@ impl Panels {
         // The buffs: what works on the character (an elixir, food being eaten) as the icons at the top right, shown while there are any.
         tree.instantiate("BuffFrame")?;
         tree.show("BuffFrame", false);
+        // The original leaves 205 for the minimap, which is not here: the icons go to the corner (`draw_sneak` follows).
+        tree.set_point("BuffFrame", Point::TopRight, Some("UIParent"), Some(Point::TopRight), -10.0, -13.0);
         // The durations under the icons are an option of the original that is off unless it is turned on (`SHOW_BUFF_DURATIONS`).
         // BuffFrame.lua puts each one under its icon (`BuffFrame_OnLoad`), which XML alone does not.
         for i in 0..24 {
@@ -437,7 +438,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), forgotten: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_page: 0, cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), target_auras: Default::default(), calm: true, restored: (0.0, 0.0), steed: None, requests: Vec::new(), pet: None, tracking: None, tracked: Vec::new(), mounted: false, mount_cast: None, lure: (None, false), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, destroying: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_tab: 0, book_page: [0; magic::BOOK_TABS], cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), target_auras: Default::default(), calm: true, restored: (0.0, 0.0), steed: None, requests: Vec::new(), pet: None, tracking: None, tracked: Vec::new(), mounted: false, mount_cast: None, lure: (None, false), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, popup: None, sleep: None, slept: None, sleep_dragging: false, destroying: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
         panels.refresh();
         Ok(panels)
     }
@@ -599,7 +600,7 @@ impl Panels {
     pub fn draw_sneak(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32)) {
         let mount = self.mount.clone();
         let s = screen.1 as f32 / ui_height();
-        let (x, y, size) = (screen.0 as f32 - 205.0 * s - 32.0 * s, 13.0 * s, 32.0 * s);
+        let (x, y, size) = (screen.0 as f32 - 10.0 * s - 32.0 * s, 13.0 * s, 32.0 * s);
         self.tree.draw_icon(ui, gpu, &mount, r"Interface\Icons\Ability_Stealth", [x, y, size, size]);
         self.tree.draw_text_aligned(ui, gpu, &mount, screen, "GameFontNormalSmall", "Sneaking", (x + size / 2.0, y + size + 2.0 * s), 0.5, WHITE);
     }

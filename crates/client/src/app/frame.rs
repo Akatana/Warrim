@@ -146,7 +146,6 @@ impl State {
             self.cast_request = panels.take_spell_click().or(self.cast_request);
             if let Some(bar) = &mut self.actionbar {
                 panels.take_learned().into_iter().for_each(|spell| bar.learn(spell));
-                panels.take_forgotten().into_iter().for_each(|spell| bar.forget(spell));
                 if let Some(item) = bar.take_item_use() {
                     panels.use_item_of(item);
                 }
@@ -693,6 +692,10 @@ impl State {
                 panels.update_quests();
                 let _t = crate::profile::scope("name labels");
                 panels.draw_labels(&mut self.renderer.ui, &self.gpu, size, &wolves.labels(&render_camera, size, self.names, |from, to| self.world.ray_hit(from, to).is_some()));
+                if let Some(draw) = &mut self.selection_draw {
+                    let world = &self.world;
+                    draw.draw(wolves.target_circle().filter(|_| panels.select_circle()), |x, z, max_y| crate::collision::Collider::floor(world, x, z, max_y), &mut self.renderer, &self.gpu);
+                }
             }
             drop(t);
             if let Some(text) = &mut self.combat_text {

@@ -125,6 +125,7 @@ impl State {
         window.set_cursor_visible(cursors.is_none());
         show(&mut renderer, &[(Stage::Objects, 2.0 / 3.0), (Stage::Interface, 0.7)]);
         let ripple_draw = crate::ripples::RippleDraw::new(&player_mount, &ModelCache::default(), &mut renderer, &gpu);
+        let selection_draw = crate::selection::SelectionDraw::new(&player_mount, &ModelCache::default(), &mut renderer, &gpu);
         let editor = player_mount
             .read(r"Fonts\ARIALN.TTF")
             .map_err(anyhow::Error::from)
@@ -250,6 +251,7 @@ impl State {
             wading: false,
             ripples: Default::default(),
             ripple_draw,
+            selection_draw,
             water_depth: 0.0,
             speed: 0.0,
             stepped: false,
