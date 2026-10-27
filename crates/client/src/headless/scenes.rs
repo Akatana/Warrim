@@ -104,6 +104,7 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
     let mut foes = crate::foes::Foes::new(crate::visuals::load_classic(&player_mount).unwrap_or_default());
     if let Some(wolves) = &mut wolves {
         wolves.set_spell_anims(foes.anims());
+        wolves.set_missile_speeds(foes.missile_speeds());
     }
     let mut fires = crate::fires::Fires::default();
     let mut ripples = crate::ripples::Ripples::default();
@@ -437,7 +438,7 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
     bar.draw(&mut renderer.ui, (w, h), &player, args.panel.iter().any(|p| p == "character"), panels.as_ref().map_or(crate::levels::Progress::new(), |p| p.progress), panels.as_ref().map_or(&[][..], |p| &p.cooldowns[..]), &|i| panels.as_ref().map_or((0, 0.0), |p| p.item_state(i)));
     // `--panel pet` shows the pet bar without a pet.
     if args.panel.iter().any(|p| p == "pet") {
-        crate::petbar::PetBar::load(&player_mount, &mut renderer.ui, gpu).draw(&mut renderer.ui, (w, h), crate::creature::PetOrders { attack: Some(0), ..Default::default() }, false, args.cursor);
+        crate::petbar::PetBar::load(&player_mount, &mut renderer.ui, gpu).draw(&mut renderer.ui, (w, h), crate::creature::PetOrders { attack: Some(0), ..Default::default() }, false, &[0, 2, 3], false, args.cursor);
     }
     if args.reticle {
         let art = crate::cursor::Cursors::load(&player_mount, &mut renderer.ui, gpu)?;

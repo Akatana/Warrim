@@ -46,6 +46,18 @@ fn full() -> f32 {
     1.0
 }
 
+/// A pet in the world: its health, whether it lies dead, and what the pet bar told it (the stance: 0 passive, 1 defensive, 2 aggressive).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct PetSave {
+    pub health: f32,
+    pub dead: bool,
+    pub stance: u8,
+    pub stay: bool,
+    /// The share of its mana it has (a save from before pets had mana: all of it).
+    #[serde(default = "full")]
+    pub mana: f32,
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Save {
     version: u32,
@@ -140,6 +152,12 @@ pub struct Save {
     /// The id of the creature that is the character's pet (a beast tamed, a demon called), if there is one.
     #[serde(default)]
     pub pet: Option<String>,
+    /// The pet as it was in the world when the game was saved (it is there again, as it was, when the game is loaded).
+    #[serde(default)]
+    pub pet_now: Option<PetSave>,
+    /// The spells of the original that the character taught his pet (grimoires).
+    #[serde(default)]
+    pub pet_spells: Vec<u32>,
     /// The rest of the world: the hour is held (the console's `time`); the weather of the zones (zone, kind, grade, seconds to the next roll); the
     /// props to pick up that are gone (place, seconds until they are back); the physics props that were moved; the seconds on the lifts' and ships' clock.
     #[serde(default)]
@@ -222,6 +240,8 @@ impl Save {
             spent: [0; 3],
             talents: Vec::new(),
             pet: None,
+            pet_now: None,
+            pet_spells: Vec::new(),
             time_fixed: false,
             weather: Vec::new(),
             gone: Vec::new(),

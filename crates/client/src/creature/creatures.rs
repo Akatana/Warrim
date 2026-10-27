@@ -98,6 +98,12 @@ pub struct Creatures {
     pub ragdolls: bool,
     /// The animations the creatures' spells ask for.
     anims: SpellAnims,
+    /// How fast the missiles of spells fly (yards a second), for the spells that have one: the time a pet's bolt takes to arrive.
+    speeds: HashMap<u32, f32>,
+    /// The spells of pets in the air: who cast them, which spell, at which creature, and the seconds before they land.
+    bolts: Vec<(usize, u32, usize, f32)>,
+    /// What the pet's spells cast by the player's order show (they are told with the creatures' acts of the next update).
+    shows: Vec<Foe>,
 }
 
 /// How far a taming rod reaches, yards, and how long the beast it tames follows, seconds.
@@ -141,7 +147,7 @@ impl Creatures {
         }
         let _ = renderer;
         let _ = gpu;
-        Ok(Creatures { rigs, creatures: Vec::new(), sites, grid, by_kind, free: Vec::new(), pending: HashMap::new(), mount: mount.clone(), cache: ModelCache::default(), budget: MAKE_PER_FRAME, scan: SCAN, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, orders: Default::default(), source: (String::new(), String::new(), 0), ticks: Vec::new(), wanted: Vec::new(), tomes: Vec::new(), ragdolls: true, anims: SpellAnims::new() })
+        Ok(Creatures { rigs, creatures: Vec::new(), sites, grid, by_kind, free: Vec::new(), pending: HashMap::new(), mount: mount.clone(), cache: ModelCache::default(), budget: MAKE_PER_FRAME, scan: SCAN, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, orders: Default::default(), source: (String::new(), String::new(), 0), ticks: Vec::new(), wanted: Vec::new(), tomes: Vec::new(), ragdolls: true, anims: SpellAnims::new(), speeds: HashMap::new(), bolts: Vec::new(), shows: Vec::new() })
     }
 
     /// The creatures at their places that have a model: (kind id, north and west of the place, where it is now in render space).
@@ -390,6 +396,11 @@ impl Creatures {
         self.anims = anims;
     }
 
+    /// How fast the missiles of the spells fly (see `Foes::missile_speeds`).
+    pub fn set_missile_speeds(&mut self, speeds: HashMap<u32, f32>) {
+        self.speeds = speeds;
+    }
+
     /// How tall creature `c` is, yards (where its spells are shown).
     fn height_of(c: &Creature) -> f32 {
         match (&c.visual, &c.mob.def.body) {
@@ -446,7 +457,7 @@ impl Creatures {
         }
         let orders = self.orders;
         let pet_focus: Option<(usize, Vec3)> = orders.attack.or_else(|| orders.pick().and_then(|(reach, fighting)| nearest_foe(self, reach, fighting))).map(|i| (i, self.creatures[i].mob.pos));
-        let helpers: Vec<(usize, Vec3)> = (0..self.creatures.len()).filter(|&i| self.creatures[i].mob.is_pet() && !self.creatures[i].mob.is_dead()).map(|i| (i, self.creatures[i].mob.pos)).collect();
+        let helpers: Vec<(usize, Vec3)> = (0..self.creatures.len()).filter(|&i| self.creatures[i].mob.is_pet() && !self.creatures[i].mob.is_dead() && !self.creatures[i].mob.is_phased()).map(|i| (i, self.creatures[i].mob.pos)).collect();
         let (mut strikes, mut spells, mut soaked, mut gone) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (i, c) in self.creatures.iter_mut().enumerate() {
             let mouth = c.mob.pos + Vec3::Y * 0.8;
@@ -664,8 +675,24 @@ impl Creatures {
                 self.ally_hit(t, damage);
             }
         }
+        // The spells of pets in the air land when their missiles arrive.
+        let (due, flying): (Vec<_>, Vec<_>) = std::mem::take(&mut self.bolts).into_iter().map(|b| (b.0, b.1, b.2, b.3 - dt)).partition(|b| b.3 <= 0.0);
+        self.bolts = flying;
+        for (who, spell, target, _) in due {
+            self.ally_cast(who, spell, Some(target));
+        }
         for (who, spell, target) in spells {
-            self.ally_cast(who, spell, target);
+            let (Some(t), Some(c)) = (target, self.creatures.get(who)) else { continue };
+            let Some(tc) = self.creatures.get(t) else { continue };
+            let from = c.mob.pos + Vec3::Y * Self::height_of(c) * 0.7;
+            let to = tc.mob.pos + Vec3::Y * Self::height_of(tc) * 0.6;
+            let delay = self.speeds.get(&spell).map_or(0.0, |&speed| (from.distance(to) / speed).max(0.1));
+            foes.push(Foe::Bolt { who, spell, from: c.mob.pos, yaw: c.mob.yaw, height: Self::height_of(c), to, delay });
+            if delay > 0.0 {
+                self.bolts.push((who, spell, t, delay));
+            } else {
+                self.ally_cast(who, spell, Some(t));
+            }
         }
         for i in gone {
             self.free_ally(i, renderer);
@@ -715,6 +742,7 @@ impl Creatures {
             }
             foes.push(Foe::Cast { who, cast, height, allies });
         }
+        foes.append(&mut self.shows);
         (foes, cries)
     }
 
@@ -859,6 +887,8 @@ impl Creatures {
     fn ally_hit(&mut self, i: usize, damage: f32) {
         let Some(c) = self.creatures.get_mut(i).filter(|c| c.mob.attackable() && !c.mob.is_dead()) else { return };
         c.mob.hurt(damage);
+        // What a pet deals is the player's: it floats up as a number.
+        self.ticks.push((c.mob.pos + Vec3::Y * 0.9, damage));
         if c.mob.is_dead() {
             self.deaths.push(c.mob.kind);
             c.mob.settle_loot(&self.wanted, &self.tomes);
@@ -869,7 +899,7 @@ impl Creatures {
     fn ally_cast(&mut self, who: usize, spell: u32, target: Option<usize>) {
         let (Some(target), Some(sp)) = (target, content::classic_spell(spell)) else { return };
         let Some(c) = self.creatures.get(who) else { return };
-        let (level, strength) = (c.mob.def.level, c.mob.ally.as_ref().map_or(1.0, |a| a.strength));
+        let level = c.mob.ally.as_ref().map_or(c.mob.def.level, |a| a.level);
         let mut rng = self.rng.next();
         let outcomes = crate::procs::effects_of(sp, level, &mut || {
             rng ^= rng << 13;
@@ -879,7 +909,7 @@ impl Creatures {
         });
         for o in outcomes {
             match o {
-                crate::procs::Outcome::Hurt { amount, .. } => self.ally_hit(target, amount * strength),
+                crate::procs::Outcome::Hurt { amount, .. } => self.ally_hit(target, amount),
                 crate::procs::Outcome::Put(status) => self.afflict(target, status),
                 _ => {}
             }
@@ -958,6 +988,8 @@ impl Creatures {
             ally::PetCommand::Follow => (self.orders.attack, self.orders.stay) = (None, false),
             ally::PetCommand::Stay => (self.orders.attack, self.orders.stay) = (None, true),
             ally::PetCommand::Stance(stance) => self.orders.stance = stance,
+            // The spells are cast by the game (they need the character), not here.
+            ally::PetCommand::Spell(_) => {}
         }
         Ok(())
     }
@@ -967,6 +999,105 @@ impl Creatures {
         if let Some(i) = self.pet() {
             let amount = self.creatures[i].mob.ally_max() * percent / 100.0;
             self.creatures[i].mob.mend(amount);
+        }
+    }
+
+    /// The id of the pet's creature, if the player has one in the world (alive or dead).
+    pub fn pet_id(&self) -> Option<String> {
+        self.pet().map(|i| self.creatures[i].mob.def.id.clone())
+    }
+
+    /// The pet as it is, to be saved: its health, whether it lies dead, and its orders.
+    pub fn pet_save(&self) -> Option<crate::save::PetSave> {
+        let i = self.pet()?;
+        let m = &self.creatures[i].mob;
+        let stance = match self.orders.stance {
+            ally::Stance::Passive => 0,
+            ally::Stance::Defensive => 1,
+            ally::Stance::Aggressive => 2,
+        };
+        let mana = m.ally.as_ref().map_or(1.0, |a| a.mana / a.mana_max.max(1.0));
+        Some(crate::save::PetSave { health: m.health, dead: m.is_dead(), stance, stay: self.orders.stay, mana })
+    }
+
+    /// The pet just called is put as it was saved: its health, the corpse it lay as, and the orders it had.
+    pub fn set_pet_save(&mut self, now: crate::save::PetSave) {
+        let Some(i) = self.pet() else { return };
+        self.orders.stance = match now.stance {
+            0 => ally::Stance::Passive,
+            2 => ally::Stance::Aggressive,
+            _ => ally::Stance::Defensive,
+        };
+        self.orders.stay = now.stay;
+        let m = &mut self.creatures[i].mob;
+        if let Some(a) = &mut m.ally {
+            a.mana = a.mana_max * now.mana.clamp(0.0, 1.0);
+        }
+        if now.dead {
+            m.health = 0.0;
+            m.die();
+        } else {
+            m.health = now.health.clamp(1.0, m.ally_max());
+        }
+    }
+
+    /// The level of the pet's master that the pet has, if the player has a pet in the world.
+    pub fn pet_level(&self) -> Option<u32> {
+        self.pet().and_then(|i| self.creatures[i].mob.ally_level())
+    }
+
+    /// The pet's master went up to `level`: the pet has what the original gives a pet of it.
+    pub fn set_pet_level(&mut self, level: u32) {
+        if let Some(i) = self.pet() {
+            self.creatures[i].mob.set_ally_level(level);
+        }
+    }
+
+    /// The pet is told to cast `spell` of the original at the player (who stands at `to`): a spell that shifts it out of phase works on the pet itself. Err is why it
+    /// cannot; Ok is whether the spell is to be put on the player (the pet paid for it and cast it).
+    pub fn cast_pet_spell(&mut self, spell: u32, to: Vec3) -> Result<bool, &'static str> {
+        let i = self.pet().ok_or("You have no pet.")?;
+        let sp = content::classic_spell(spell).ok_or("Your pet cannot do that.")?;
+        let m = &mut self.creatures[i].mob;
+        if m.is_dead() {
+            return Err("Your pet is dead.");
+        }
+        let Some(a) = &mut m.ally else { return Err("You have no pet.") };
+        if a.cooldowns.iter().any(|c| c.0 == spell) {
+            return Err("That spell is not ready yet.");
+        }
+        let on_pet = sp.effects.iter().any(|e| e.aura == 93);
+        if !on_pet && flat(to - m.pos).length() > Mob::reach(sp) {
+            return Err("Out of range.");
+        }
+        let cost = sp.mana_cost(a.mana_max);
+        if a.mana < cost {
+            return Err("Your pet does not have enough mana.");
+        }
+        (a.mana, a.spent) = (a.mana - cost, 0.0);
+        if sp.cooldown > 0 {
+            a.cooldowns.push((spell, sp.cooldown as f32 / 1000.0));
+        }
+        if on_pet {
+            a.phased = true;
+        }
+        // It casts (the cast animation, the glow and the burst on whoever it is cast on).
+        m.state = State::Cast(spell, 0.0, 0.0, true);
+        let (from, yaw) = (m.pos, m.yaw);
+        let height = Self::height_of(&self.creatures[i]);
+        self.shows.push(Foe::Bolt { who: i, spell, from, yaw, height, to: if on_pet { from + Vec3::Y * height * 0.5 } else { to + Vec3::Y * 1.0 }, delay: 0.0 });
+        Ok(!on_pet)
+    }
+
+    /// Whether the pet is out of phase with the world.
+    pub fn pet_phased(&self) -> bool {
+        self.pet().is_some_and(|i| self.creatures[i].mob.is_phased())
+    }
+
+    /// The pet casts this spell of the original from now on (it learned a better rank).
+    pub fn set_pet_spell(&mut self, spell: u32) {
+        if let Some(a) = self.pet().and_then(|i| self.creatures[i].mob.ally.as_mut()) {
+            a.spell = spell;
         }
     }
 

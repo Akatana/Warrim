@@ -257,6 +257,8 @@ pub enum Foe {
     Begin { who: usize, spell: u32, at: Vec3, yaw: f32, height: f32 },
     Stop { who: usize },
     Cast { who: usize, cast: Cast, height: f32, allies: Vec<Vec3> },
+    /// A spell of a pet goes off at a point `to` of a creature: shown from the pet, with the missile flying to it for `delay` seconds (0: none).
+    Bolt { who: usize, spell: u32, from: Vec3, yaw: f32, height: f32, to: Vec3, delay: f32 },
 }
 
 /// A cast in the making: who it is for, and its flags.

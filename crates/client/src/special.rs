@@ -209,6 +209,75 @@ fn pulse(ctx: &mut Ctx, s: &Standing, victim: Option<usize>) {
     }
 }
 
+/// The creature of the warlock's imp, and its spells in the order of its bar (the order the imp learns them in): the firebolt it casts by itself, the blood pact that is
+/// always on while it is there, and the shift and the shield that the character orders.
+pub const IMP: &str = "c416";
+pub const PET_BAR_SPELLS: [&str; 4] = ["Firebolt", "Blood Pact", "Phase Shift", "Fire Shield"];
+/// How often the pact is renewed, and how long it lasts when it is (a pact lapses a moment after the imp is gone).
+const PACT_EVERY: f32 = 2.0;
+const PACT_LASTS: f32 = 6.0;
+
+/// Of the spells `known` that the pet was taught, the highest rank of the spell called `name` that a pet of `level` can have.
+pub fn best_rank(name: &str, known: &[u32], level: u32) -> Option<u32> {
+    known.iter().filter_map(|&k| content::classic_spell(k).filter(|s| s.name == name && s.level <= level)).max_by_key(|s| s.level).map(|s| s.spell)
+}
+
+/// The spells of the pet bar (the slots after the orders): for an imp (`imp`), the places in `PET_BAR_SPELLS` of its firebolt and of those it was taught.
+pub fn bar_spells(imp: bool, known: &[u32], level: u32) -> Vec<usize> {
+    (0..PET_BAR_SPELLS.len()).filter(|&n| imp && (n == 0 || best_rank(PET_BAR_SPELLS[n], known, level).is_some())).collect()
+}
+
+/// A spell of the pet works on the character (a shield of fire, the pact): what it puts on him, for the seconds the spell lasts or `lasts`, shown among his buffs.
+pub fn put_on_player(panels: &mut crate::panels::Panels, spell: u32, level: u32, lasts: Option<f32>) {
+    let Some(sp) = content::classic_spell(spell) else { return };
+    let mut dice = || panels.consumed.dice();
+    let out = procs::effects_of(sp, level, &mut dice);
+    for o in out {
+        if let Outcome::Timed(what, seconds) = o {
+            let seconds = lasts.unwrap_or(seconds);
+            // What is on him already only lasts longer (the stats are not worked out again for it).
+            match panels.consumed.timed.iter_mut().find(|(t, _)| *t == what) {
+                Some(on) => on.1 = on.1.max(seconds),
+                None => panels.proc_timed(what, seconds),
+            }
+            panels.consumed.show(&sp.icon, seconds);
+        }
+    }
+}
+
+/// The blood pact of an imp that was taught it: while the imp is there and alive, the character has its stamina (renewed every moment, it ends a moment after the imp).
+pub fn pet_auras(panels: &mut crate::panels::Panels, wolves: &crate::creature::Creatures, dt: f32) {
+    panels.pet_aura -= dt;
+    if panels.pet_aura > 0.0 {
+        return;
+    }
+    panels.pet_aura = PACT_EVERY;
+    if wolves.pet_kind().is_some_and(|(id, _)| id == IMP) {
+        let level = panels.progress.level;
+        if let Some(pact) = best_rank("Blood Pact", &panels.pet_spells, level) {
+            put_on_player(panels, pact, level, Some(PACT_LASTS));
+        }
+    }
+}
+
+/// The spell of the original that the pet of creature `entry` casts, when its master is at `level` and has taught it the spells `known`: the first rank that a spell of
+/// the classes calls it with (an imp: its firebolt) or, of that spell's ranks, the highest that he taught it and that is not above the level of the pet; 0 for a pet that only strikes.
+pub fn pet_spell(entry: u32, known: &[u32], level: u32) -> u32 {
+    let base = content::get().spells.iter().flat_map(|s| &s.then).find_map(|r| if let Rider::Summon { entry: e, spell, .. } = *r { (e == entry).then_some(spell) } else { None }).unwrap_or(0);
+    let Some(name) = content::classic_spell(base).map(|s| &s.name) else { return base };
+    best_rank(name, known, level).unwrap_or(base)
+}
+
+/// The pet `id` (the id of its creature) is in the world again beside the player, with the spell it casts and as it was (`now`): after a game is loaded, or a map is left.
+pub fn bring_pet(wolves: &mut crate::creature::Creatures, id: &str, feet: Vec3, yaw: f32, level: u32, known: &[u32], now: Option<crate::save::PetSave>) {
+    if let Some(entry) = id.strip_prefix('c').and_then(|n| n.parse().ok()) {
+        wolves.call_ally(entry, feet + Vec3::new(yaw.sin(), 0.0, -yaw.cos()) * PET_AT, yaw, level, 0.0, pet_spell(entry, known, level), true);
+        if let Some(now) = now {
+            wolves.set_pet_save(now);
+        }
+    }
+}
+
 /// What the riders of a spell do about pets (see `Rider`): called, brought, sent away, revived, healed or tamed.
 pub fn pet_rider(ctx: &mut Ctx, rider: Rider, victim: Option<usize>, feet: Vec3, yaw: f32) {
     let level = ctx.panels.progress.level;
@@ -217,6 +286,8 @@ pub fn pet_rider(ctx: &mut Ctx, rider: Rider, victim: Option<usize>, feet: Vec3,
     match rider {
         Rider::Summon { entry, spell, seconds } => {
             wolves.dismiss_pet();
+            // What stays is the pet that is called again by a spell of the warlock: it casts the best rank it was taught.
+            let spell = if seconds == 0.0 { pet_spell(entry, &ctx.panels.pet_spells, level) } else { spell };
             wolves.call_ally(entry, at, yaw, level, seconds, spell, true);
             // What stays is the pet that is called again by a spell of the hunter.
             if seconds == 0.0 {
@@ -229,7 +300,7 @@ pub fn pet_rider(ctx: &mut Ctx, rider: Rider, victim: Option<usize>, feet: Vec3,
             }
             let entry = ctx.panels.pet.as_ref().and_then(|id| id.strip_prefix('c')).and_then(|n| n.parse().ok());
             match entry {
-                Some(entry) => drop(wolves.call_ally(entry, at, yaw, level, 0.0, 0, true)),
+                Some(entry) => drop(wolves.call_ally(entry, at, yaw, level, 0.0, pet_spell(entry, &ctx.panels.pet_spells, level), true)),
                 None => ctx.panels.error("You have no pet. Tame a beast first."),
             }
         }
@@ -282,6 +353,35 @@ pub fn cast(ctx: &mut Ctx, spell: usize, victim: Option<usize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the imp's other spells do: the pact adds stamina to the character, the shield of fire hurts whoever strikes him for three minutes, the shift puts the imp out
+    /// of phase (an aura of its own).
+    #[test]
+    fn the_spells_of_the_imp_do_what_the_originals_do() {
+        let mut dice = || 12345;
+        let pact = procs::effects_of(content::classic_spell(7804).unwrap(), 20, &mut dice);
+        assert!(pact.iter().any(|o| matches!(o, Outcome::Timed(crate::consume::Timed::Gear(UseEffect::Boost(2, n, _)), _) if *n >= 7)), "{pact:?}");
+        let shield = procs::effects_of(content::classic_spell(2947).unwrap(), 20, &mut dice);
+        assert!(shield.contains(&Outcome::Timed(crate::consume::Timed::Shield { amount: 5.0, school: 2 }, 180.0)), "{shield:?}");
+        assert!(content::classic_spell(4511).unwrap().effects.iter().any(|e| e.aura == 93));
+        // The buttons of the bar are for the spells the pet was taught: the shield from level 14, the shift from level 12.
+        assert_eq!(bar_spells(true, &[2947, 4511, 6307], 20), [0, 1, 2, 3]);
+        assert_eq!(bar_spells(true, &[2947, 4511], 13), [0, 2]);
+        assert_eq!(bar_spells(true, &[], 60), [0]);
+        assert!(bar_spells(false, &[2947], 60).is_empty());
+        assert_eq!(best_rank("Fire Shield", &[2947, 8316], 30), Some(8316));
+    }
+
+    /// The imp comes back casting its firebolt (a pet loaded from a save, or brought over a map switch, knows its spell).
+    #[test]
+    fn a_pet_comes_back_with_its_spell() {
+        assert_eq!(pet_spell(416, &[], 1), 3110);
+        assert_eq!(pet_spell(u32::MAX, &[], 1), 0);
+        // The ranks it was taught, when it is high enough for them: rank 2 of the firebolt wants level 8, rank 3 level 18.
+        assert_eq!(pet_spell(416, &[7799, 7800], 10), 7799);
+        assert_eq!(pet_spell(416, &[7799, 7800], 20), 7800);
+        assert_eq!(pet_spell(416, &[7800], 5), 3110);
+    }
 
     /// What a spell sets down or calls is in the game: the creature (with a model) of a totem or a pet, and the spells they cast.
     #[test]

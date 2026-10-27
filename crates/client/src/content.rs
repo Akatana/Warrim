@@ -872,6 +872,8 @@ pub struct Content {
     pub classic_spells: Vec<ClassicSpell>,
     /// The place in `classic_spells` of each spell (its row in `Spell.dbc`).
     pub classic_index: std::collections::HashMap<u32, usize>,
+    /// What the original gives a pet by the level of its master (`classic_pet_stats.ron`, by the id of its creature): health, mana, intellect, spirit.
+    pub pet_stats: std::collections::HashMap<String, Vec<(u32, u32, u32, u32)>>,
     pub pois: Vec<Poi>,
     /// The doors to other maps (not editable).
     pub portals: Vec<Portal>,
@@ -977,6 +979,12 @@ pub fn creature_index(id: &str) -> usize {
 pub fn classic_spell(id: u32) -> Option<&'static ClassicSpell> {
     let c = get();
     c.classic_index.get(&id).map(|&i| &c.classic_spells[i])
+}
+
+/// What the original gives the pet of the creature `id` when its master is at `level`: health, mana, intellect and spirit; none for a creature that is no pet of its tables.
+pub fn pet_stats(id: &str, level: u32) -> Option<(u32, u32, u32, u32)> {
+    let rows = get().pet_stats.get(id)?;
+    rows.get((level.max(1) as usize - 1).min(rows.len().checked_sub(1)?)).copied()
 }
 
 /// The page `id` of the books (`Prop::page`, `ItemDef::page`).
@@ -1744,6 +1752,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
     let classic_spells: Vec<ClassicSpell> = ron::from_str(&source("classic_spells.ron", include_str!("../../../content/classic_spells.ron"))).context("classic_spells.ron")?;
     let mut seen = HashSet::new();
     ensure!(classic_spells.iter().all(|s| seen.insert(s.spell)), "classic_spells.ron: a spell is used twice");
+    let pet_stats = ron::from_str(&source("classic_pet_stats.ron", include_str!("../../../content/classic_pet_stats.ron"))).context("classic_pet_stats.ron")?;
     let classic_index: std::collections::HashMap<u32, usize> = classic_spells.iter().enumerate().map(|(i, s)| (s.spell, i)).collect();
     for c in &raw_creatures {
         for e in &c.brain.events {
@@ -1941,7 +1950,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         }
         taking.entry(q.turn_in).or_default().push(i);
     }
-    Ok(Content { spells, classic_spells, classic_index, items, pois, portals, pages, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, start: Start { spells: known, money: raw_start.money, equipment, bag, outfits } })
+    Ok(Content { spells, classic_spells, classic_index, pet_stats, items, pois, portals, pages, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, start: Start { spells: known, money: raw_start.money, equipment, bag, outfits } })
 }
 
 #[cfg(test)]

@@ -162,9 +162,13 @@ impl State {
         if let Some(wolves) = &mut wolves {
             wolves.set_routes(spawn_routes(&map));
             wolves.set_spell_anims(foes.anims());
+            wolves.set_missile_speeds(foes.missile_speeds());
         }
         if let (Some(wolves), Some(saved)) = (&mut wolves, &loaded) {
             wolves.restore(&saved.mobs);
+            if let (Some(now), Some(id)) = (saved.pet_now, &saved.pet) {
+                crate::special::bring_pet(wolves, id, start, yaw, saved.level(), &saved.pet_spells, Some(now));
+            }
         }
         camera.aspect = config.width as f32 / config.height as f32;
         camera.far = view_distance * 1.2;

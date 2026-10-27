@@ -207,11 +207,24 @@ impl State {
                     return;
                 }
             }
+            let spells = self.pet_bar_spells();
             let order = self.cursor.filter(|_| self.petbar.is_some() && self.wolves.as_ref().is_some_and(|w| w.pet_orders().is_some())).filter(|&pos| crate::petbar::PetBar::covers(pos, size));
             match (slot, &mut self.actionbar, &mut self.player) {
                 // A button of the pet bar orders the pet; the bar's art between them does nothing.
                 _ if order.is_some() => {
-                    if let (Some(command), Some(wolves)) = (order.and_then(|pos| crate::petbar::PetBar::button_at(pos, size)), self.wolves.as_mut()) {
+                    if let (Some(crate::creature::PetCommand::Spell(n)), Some(wolves), Some(panels)) = (order.and_then(|pos| crate::petbar::PetBar::button_at(pos, size, &spells)), self.wolves.as_mut(), self.panels.as_mut()) {
+                        // A spell of the pet's: it casts it (a shift out of phase on itself, the others on the character).
+                        let level = panels.progress.level;
+                        // (The firebolt it casts by itself and the pact is always on: nothing to order.)
+                        let name = crate::special::PET_BAR_SPELLS[n];
+                        if let Some(spell) = crate::special::best_rank(name, &panels.pet_spells, level).filter(|_| matches!(name, "Phase Shift" | "Fire Shield")) {
+                            match wolves.cast_pet_spell(spell, self.camera.pos - Vec3::Y * EYE_HEIGHT) {
+                                Ok(true) => crate::special::put_on_player(panels, spell, level, None),
+                                Ok(false) => {}
+                                Err(e) => panels.error(e),
+                            }
+                        }
+                    } else if let (Some(command), Some(wolves)) = (order.and_then(|pos| crate::petbar::PetBar::button_at(pos, size, &spells)), self.wolves.as_mut()) {
                         // Attack again stands the pet down, as in the original.
                         let command = match (command, wolves.pet_orders()) {
                             (crate::creature::PetCommand::Attack, Some((o, _))) if o.attack.is_some() => crate::creature::PetCommand::Follow,

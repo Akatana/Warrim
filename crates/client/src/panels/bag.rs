@@ -142,6 +142,21 @@ impl Panels {
         if !taught.is_empty() {
             return self.learn_recipe_item(stack.item, &taught);
         }
+        // A grimoire: using it teaches the pet a rank of its spell, if the character is high enough.
+        let grimoire: Vec<u32> = item.spells.iter().flat_map(|s| s.effects.iter()).filter_map(|e| if let crate::items::UseEffect::Teach(spell) = e { Some(*spell) } else { None }).filter(|&s| content::classic_spell(s).is_some()).collect();
+        if let Some(&spell) = grimoire.first() {
+            if self.progress.level < item.level {
+                return self.error(&self.string("ITEM_MIN_LEVEL").replacen("%d", &item.level.to_string(), 1));
+            }
+            if self.pet_spells.contains(&spell) {
+                return self.error("Your pet already knows that.");
+            }
+            let learned = content::classic_spell(spell).map(|s| format!("{} ({})", s.name, s.rank)).unwrap_or_default();
+            self.pet_spells.push(spell);
+            self.inv.remove(stack.item, 1);
+            self.requests.push(Request::PetSpell);
+            return self.notice(&format!("Your pet has learned {learned}."));
+        }
         // A mount asks for a rank of riding (the skill of the original's tables, 762).
         let steed = item.spells.iter().any(|s| s.effects.iter().any(|e| matches!(e, crate::items::UseEffect::Mount(..))));
         // Getting on takes a cast, and the character must stand still and out of a fight for it; getting down is at once.

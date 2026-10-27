@@ -38,6 +38,8 @@ impl State {
         saved.spent = panels.level_spent();
         saved.talents = panels.talent_ranks();
         saved.pet = panels.pet.clone();
+        saved.pet_spells = panels.pet_spells.clone();
+        saved.pet_now = self.wolves.as_ref().and_then(|w| w.pet_save());
         Some(saved)
     }
 
@@ -121,6 +123,8 @@ impl State {
 
     /// Put the creatures of the map being played in the world, in place of those there were (their models are made as the player comes near).
     pub(super) fn load_creatures(&mut self) {
+        // A pet in the world comes along to the new creatures.
+        let pet = self.wolves.as_ref().and_then(|w| w.pet_id().zip(w.pet_save()));
         if let Some(old) = self.wolves.take() {
             old.retire(&mut self.renderer);
         }
@@ -128,6 +132,11 @@ impl State {
         if let Some(wolves) = &mut self.wolves {
             wolves.set_routes(spawn_routes(&self.map));
             wolves.set_spell_anims(self.foes.anims());
+            wolves.set_missile_speeds(self.foes.missile_speeds());
+            if let (Some((id, now)), Some(panels)) = (pet, &self.panels) {
+                let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
+                crate::special::bring_pet(wolves, &id, feet, self.camera.yaw, panels.progress.level, &panels.pet_spells, Some(now));
+            }
         }
     }
 

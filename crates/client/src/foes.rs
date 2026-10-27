@@ -20,6 +20,8 @@ use std::collections::HashMap;
 const CHEST: f32 = 1.2;
 /// How tall the player is for the placing of a burst on him.
 const HEIGHT: f32 = 1.8;
+/// The keys of the sounds of missiles in flight start here, apart from those of places and lifts.
+const MISSILE_KEYS: u64 = 1 << 62;
 /// Seconds between the ticks of a damage over time that does not say.
 const PERIOD: f32 = 3.0;
 /// The effect of the original that triggers another spell, and how deep such triggers are followed.
@@ -168,9 +170,24 @@ impl Afflictions {
 
 /// A missile on its way to the player.
 struct Missile {
+    /// Where it is now, and the key of its sound (it is heard while it flies, from where it is).
+    at: Vec3,
+    key: u64,
     cast: Cast,
     vis: Visual,
     from: Vec3,
+    age: f32,
+    duration: f32,
+    effect: Option<usize>,
+}
+
+/// A missile of a pet's spell on its way to a creature: only to be seen (the spell has done its work already).
+struct Shot {
+    at: Vec3,
+    key: u64,
+    vis: Visual,
+    from: Vec3,
+    to: Vec3,
     age: f32,
     duration: f32,
     effect: Option<usize>,
@@ -180,6 +197,9 @@ pub struct Foes {
     /// The pictures and sounds of the spells that creatures cast, by their row of `Spell.dbc`.
     visuals: HashMap<u32, Visual>,
     missiles: Vec<Missile>,
+    shots: Vec<Shot>,
+    /// The keys of the sounds of missiles (they count up).
+    keys: u64,
     /// The glows of the casts that are going on, by the creature that casts, with the attachment of the creature each follows (0 for none).
     glows: HashMap<usize, Vec<(usize, u32)>>,
     pub afflictions: Afflictions,
@@ -189,12 +209,24 @@ pub struct Foes {
 
 impl Foes {
     pub fn new(visuals: HashMap<u32, Visual>) -> Foes {
-        Foes { visuals, missiles: Vec::new(), glows: HashMap::new(), afflictions: Afflictions::default(), sounds: Vec::new(), rng: 0x2545_F491 }
+        Foes { visuals, missiles: Vec::new(), shots: Vec::new(), keys: 0, glows: HashMap::new(), afflictions: Afflictions::default(), sounds: Vec::new(), rng: 0x2545_F491 }
     }
 
     /// The animations that the spells ask for: the stance of the cast and the cast.
     pub fn anims(&self) -> SpellAnims {
         self.visuals.iter().map(|(&spell, v)| (spell, (v.precast.anim, v.cast.anim))).collect()
+    }
+
+    /// The sounds of the missiles in the air, as sounds that loop where the missiles are (`Audio::set_places`): they stop when the missiles land.
+    pub fn flying_sounds(&self) -> Vec<(u64, u32, Vec3)> {
+        let missiles = self.missiles.iter().map(|m| (m.key, m.vis.missile_sound, m.at));
+        let shots = self.shots.iter().map(|s| (s.key, s.vis.missile_sound, s.at));
+        missiles.chain(shots).filter_map(|(key, sound, at)| Some((key, sound?, at))).collect()
+    }
+
+    /// How fast the missile of each spell that has one flies, yards a second.
+    pub fn missile_speeds(&self) -> HashMap<u32, f32> {
+        self.visuals.iter().filter(|(_, v)| v.missile.is_some()).map(|(&spell, v)| (spell, v.speed.max(1.0))).collect()
     }
 
     /// The sounds made since the last call, with where they came from.
@@ -233,6 +265,9 @@ impl Foes {
         for m in self.missiles.drain(..) {
             m.effect.into_iter().for_each(|e| fx.stop(e));
         }
+        for s in self.shots.drain(..) {
+            s.effect.into_iter().for_each(|e| fx.stop(e));
+        }
         let who: Vec<usize> = self.glows.keys().copied().collect();
         who.into_iter().for_each(|w| self.stop_glows(w, fx));
         self.afflictions.clear();
@@ -255,6 +290,25 @@ impl Foes {
                 self.stop_glows(who, fx);
                 vec![]
             }
+            Foe::Bolt { who, spell, from, yaw, height, to, delay } => {
+                self.stop_glows(who, fx);
+                let vis = self.visuals.get(&spell).cloned().unwrap_or_default();
+                Self::show(fx, renderer, gpu, &vis.cast, from, yaw, height, false, &|id| wolves.hand(who, id));
+                self.sounds.extend(vis.cast.sound.map(|s| (Sfx::Entry(s), from)));
+                let mouth = from + Vec3::Y * height * 0.7;
+                match vis.missile.as_deref() {
+                    Some(model) if delay > 0.0 => {
+                        let effect = fx.spawn(renderer, gpu, model, true, Mat4::from_translation(mouth));
+                        self.keys += 1;
+                        self.shots.push(Shot { at: mouth, key: MISSILE_KEYS | self.keys, vis, from: mouth, to, age: 0.0, duration: delay, effect });
+                    }
+                    _ => {
+                        Self::show(fx, renderer, gpu, &vis.impact, to, 0.0, 0.0, false, &|_| None);
+                        self.sounds.extend(vis.impact.sound.map(|s| (Sfx::Entry(s), to)));
+                    }
+                }
+                vec![]
+            }
             Foe::Cast { who, cast, height, allies } => {
                 self.stop_glows(who, fx);
                 let vis = self.visuals.get(&cast.spell).cloned().unwrap_or_default();
@@ -274,9 +328,9 @@ impl Foes {
                         let from = wolves.hand(who, 1).map_or(cast.from + Vec3::Y * height * 0.7, |m| m.w_axis.truncate());
                         let to = feet + Vec3::Y * CHEST;
                         let effect = fx.spawn(renderer, gpu, model, true, Mat4::from_translation(from));
-                        self.sounds.extend(vis.missile_sound.map(|s| (Sfx::Entry(s), from)));
                         let duration = (from.distance(to) / vis.speed.max(1.0)).max(0.1);
-                        self.missiles.push(Missile { cast, vis, from, age: 0.0, duration, effect });
+                        self.keys += 1;
+                        self.missiles.push(Missile { at: from, key: MISSILE_KEYS | self.keys, cast, vis, from, age: 0.0, duration, effect });
                         vec![]
                     }
                     _ => self.land(&cast, &vis, feet, 0, fx, renderer, gpu),
@@ -296,12 +350,31 @@ impl Foes {
                 }
             }
         }
+        let mut arrived = Vec::new();
+        for (i, s) in self.shots.iter_mut().enumerate() {
+            s.age += dt;
+            s.at = s.from.lerp(s.to, (s.age / s.duration).min(1.0));
+            if let Some(e) = s.effect {
+                let d = s.to - s.from;
+                fx.set_world(e, Mat4::from_translation(s.from.lerp(s.to, (s.age / s.duration).min(1.0))) * Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - d.x.atan2(-d.z)));
+            }
+            if s.age >= s.duration {
+                arrived.push(i);
+            }
+        }
+        for i in arrived.into_iter().rev() {
+            let s = self.shots.remove(i);
+            s.effect.into_iter().for_each(|e| fx.stop(e));
+            Self::show(fx, renderer, gpu, &s.vis.impact, s.to, 0.0, 0.0, false, &|_| None);
+            self.sounds.extend(s.vis.impact.sound.map(|snd| (Sfx::Entry(snd), s.to)));
+        }
         let to = feet + Vec3::Y * CHEST;
         let mut landed = Vec::new();
         for (i, m) in self.missiles.iter_mut().enumerate() {
             m.age += dt;
             if let Some(e) = m.effect {
                 let here = m.from.lerp(to, (m.age / m.duration).min(1.0));
+                m.at = here;
                 let d = to - m.from;
                 fx.set_world(e, Mat4::from_translation(here) * Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - d.x.atan2(-d.z)));
             }

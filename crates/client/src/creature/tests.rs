@@ -680,3 +680,121 @@ fn a_spells_damage_over_time_is_listed_renewed_not_stacked_and_provokes() {
     assert!((full - wolf.health - (6.0 + 15.0 + 5.0)).abs() < 1e-3, "{}", full - wolf.health);
     assert!(wolf.shown_auras().0.is_empty());
 }
+
+/// A warlock's imp casts its firebolt at what it fights, and the bolt hurts it.
+#[test]
+fn an_imp_casts_its_firebolt_at_its_foe() {
+    let player = Vec3::new(20.0, 0.0, 0.0);
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
+    imp.make_ally(10, 0.0, 3110, true, false);
+    let foe = Vec3::new(20.0, 0.0, 14.0);
+    let acts: Vec<Act> = (0..600).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, open)).collect();
+    let bolts = acts.iter().filter(|a| matches!(a, Act::Spell(3110))).count();
+    assert!(bolts >= 2, "{bolts} bolts, at {:?}", imp.pos);
+    // And it plays its cast animation while the bolt goes off, not a swing.
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
+    imp.make_ally(10, 0.0, 3110, true, false);
+    let seen: Vec<u16> = (0..600).map(|_| { drop(imp.step_ally(1.0 / 60.0, player, Some(foe), false, open)); imp.animation(&Default::default()) }).collect();
+    assert!(seen.contains(&CAST_SPELL) && !seen.contains(&ATTACK_UNARMED), "{:?}", seen.iter().collect::<std::collections::BTreeSet<_>>());
+}
+
+/// A pet casts nothing through a wall: it casts only once it has no wall between it and its foe.
+#[test]
+fn an_imp_does_not_cast_through_a_wall() {
+    let player = Vec3::new(20.0, 0.0, 0.0);
+    let foe = Vec3::new(20.0, 0.0, 14.0);
+    // A wall across z = 8 that the imp cannot pass.
+    let wall = |a: Vec3, b: Vec3| (a.z < 8.0) != (b.z < 8.0);
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
+    imp.make_ally(10, 0.0, 3110, true, false);
+    let acts: Vec<Act> = (0..600).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, wall)).collect();
+    assert!(!acts.iter().any(|a| matches!(a, Act::Begin(_) | Act::Spell(_))), "cast through a wall, at {:?}", imp.pos);
+}
+
+/// An imp's firebolt is begun (the glow, the sound), goes off after its cast time, and is broken off when the foe is gone.
+#[test]
+fn an_imps_firebolt_is_begun_then_goes_off_after_its_cast_time() {
+    let player = Vec3::new(20.0, 0.0, 0.0);
+    let foe = Vec3::new(20.0, 0.0, 14.0);
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
+    imp.make_ally(10, 0.0, 3110, true, false);
+    let seconds = content::classic_spell(3110).unwrap().cast as f32 / 1000.0;
+    let mut log = Vec::new();
+    for n in 0..600 {
+        for act in imp.step_ally(1.0 / 60.0, player, Some(foe), false, open) {
+            log.push((n as f32 / 60.0, matches!(act, Act::Begin(3110)), matches!(act, Act::Spell(3110))));
+        }
+    }
+    let begun = log.iter().find(|a| a.1).expect("begun").0;
+    let gone_off = log.iter().find(|a| a.2).expect("goes off").0;
+    assert!((gone_off - begun - seconds).abs() < 0.1, "{begun} {gone_off} {seconds}");
+    // The foe dies in the making: the cast stops.
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
+    imp.make_ally(10, 0.0, 3110, true, false);
+    let mut acts = Vec::new();
+    for n in 0..120 {
+        acts.extend(imp.step_ally(1.0 / 60.0, player, (n < 30).then_some(foe), false, open));
+    }
+    assert!(acts.iter().any(|a| matches!(a, Act::Begin(_))) && acts.iter().any(|a| matches!(a, Act::Stop)) && !acts.iter().any(|a| matches!(a, Act::Spell(_))), "{acts:?}");
+}
+
+/// A pet has the mana of the original's table for its kind and the level of its master, pays for its spells with it, fights close when it has too little, and
+/// gets it back by its spirit every two seconds, but not within five seconds of spending some.
+#[test]
+fn an_imps_mana_is_the_originals_and_it_runs_dry_and_comes_back() {
+    let player = Vec3::new(20.0, 0.0, 0.0);
+    let foe = Vec3::new(20.0, 0.0, 14.0);
+    let imp_at = |level: u32| {
+        let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
+        imp.make_ally(level, 0.0, 3110, true, false);
+        imp
+    };
+    // The table of CMaNGOS (`pet_levelstats`): 48 mana at level 1 (spirit 23), 1898 at level 60.
+    let max = |imp: &Mob| imp.ally.as_ref().unwrap().mana_max;
+    assert_eq!((max(&imp_at(1)), max(&imp_at(60))), (48.0, 1898.0));
+    // Four bolts of 10 leave 8: it cannot cast, so it goes up to its foe and strikes; five seconds after the last bolt (begun at 7.5 s) its mana comes back at the
+    // next tick (14 s: spirit 23 / 5 + 17 = 21.6) and it casts a fifth (it goes off at 17 s).
+    let mut imp = imp_at(1);
+    let acts: Vec<Act> = (0..60 * 18).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, open)).collect();
+    let bolts = acts.iter().filter(|a| matches!(a, Act::Spell(_))).count();
+    assert_eq!(bolts, 5, "four bolts of 10 mana from 48, then none while it waits, then one more");
+    assert!(acts.iter().any(|a| matches!(a, Act::Strike(_))), "dry, it fights close");
+    // Out of mana from the start: no spell at all.
+    let mut imp = imp_at(1);
+    imp.ally.as_mut().unwrap().mana = 0.0;
+    let acts: Vec<Act> = (0..60 * 2).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, open)).collect();
+    assert!(!acts.iter().any(|a| matches!(a, Act::Spell(_) | Act::Begin(_))), "{acts:?}");
+}
+
+/// A pet has the health of the original's table for its kind and the level of its master, and gets the new level's health and mana (whole) when the master goes up.
+#[test]
+fn an_imp_has_the_originals_health_and_levels_up_with_its_master() {
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::ZERO, 0.0);
+    imp.make_ally(1, 0.0, 3110, true, false);
+    assert_eq!((imp.health, imp.ally_max(), imp.ally.as_ref().unwrap().mana_max), (140.0, 140.0, 48.0));
+    imp.hurt(100.0);
+    imp.ally.as_mut().unwrap().mana = 3.0;
+    imp.set_ally_level(10);
+    assert_eq!((imp.health, imp.ally_max(), imp.ally.as_ref().unwrap().mana, imp.ally_level()), (223.0, 223.0, 147.0, Some(10)));
+    // A pet that lies dead has the new maximum, and is not healed by it; revived, it is half whole.
+    imp.hurt(1e6);
+    imp.set_ally_level(60);
+    assert!(imp.is_dead() && imp.ally_max() == 769.0);
+    imp.revive_ally();
+    assert_eq!(imp.health, 384.5);
+}
+
+/// A pet out of phase is struck by nothing until it attacks: its spell or its blow ends the shift.
+#[test]
+fn a_pet_out_of_phase_is_in_phase_again_when_it_attacks() {
+    let player = Vec3::new(20.0, 0.0, 0.0);
+    let foe = Vec3::new(20.0, 0.0, 14.0);
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
+    imp.make_ally(10, 0.0, 3110, true, false);
+    imp.ally.as_mut().unwrap().phased = true;
+    assert!(imp.is_phased());
+    drop((0..30).flat_map(|_| imp.step_ally(1.0 / 60.0, player, None, false, open)).count());
+    assert!(imp.is_phased(), "it stays out of phase while it does not attack");
+    drop(imp.step_ally(1.0 / 60.0, player, Some(foe), false, open));
+    assert!(!imp.is_phased(), "its spell begins");
+}

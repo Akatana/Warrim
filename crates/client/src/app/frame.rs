@@ -110,10 +110,12 @@ impl State {
         if let Some(audio) = &mut self.audio {
             audio.set_listener(self.camera.pos, self.camera.yaw);
             // The lifts that go sound from where they are, which changes with every frame.
-            match &self.lifts {
-                Some(lifts) => audio.set_places(&[&self.places[..], &lifts.hums()].concat()),
-                None => audio.set_places(&self.places),
+            // And the missiles in the air, which sound until they land.
+            let mut wanted = [&self.places[..], &self.foes.flying_sounds()].concat();
+            if let Some(lifts) = &self.lifts {
+                wanted.extend(lifts.hums());
             }
+            audio.set_places(&wanted);
             audio.set_wading(self.wading);
         }
         drop(t2);
@@ -478,6 +480,16 @@ impl State {
             let (acts, mut cries) = wolves.update(dt, &watch, |x, z, y| crate::collision::Collider::floor(world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), self.bodies.as_mut(), &mut self.renderer, &self.gpu);
             drop(t);
             self.creature_time += timing.elapsed();
+            // The pet has the level of its master, and gives him its pact.
+            if let Some(panels) = &mut self.panels {
+                if wolves.pet_level().is_some_and(|l| l != panels.progress.level) {
+                    wolves.set_pet_level(panels.progress.level);
+                    if let Some(entry) = wolves.pet_id().and_then(|id| id.strip_prefix('c').and_then(|n| n.parse().ok())) {
+                        wolves.set_pet_spell(crate::special::pet_spell(entry, &panels.pet_spells, panels.progress.level));
+                    }
+                }
+                crate::special::pet_auras(panels, wolves, dt);
+            }
             // The ticks of damage over time float up as numbers, like the blows.
             for (at, damage) in wolves.take_ticks() {
                 if let Some(text) = &mut self.combat_text {
@@ -803,6 +815,13 @@ impl State {
                         }
                     }
                 }
+                Request::PetSpell => {
+                    if let (Some(wolves), Some(panels)) = (&mut self.wolves, &self.panels) {
+                        if let Some(entry) = wolves.pet_id().and_then(|id| id.strip_prefix('c').and_then(|n| n.parse().ok())) {
+                            wolves.set_pet_spell(crate::special::pet_spell(entry, &panels.pet_spells, panels.progress.level));
+                        }
+                    }
+                }
                 Request::Scout { seconds, reach } => {
                     self.scout = Some((seconds, reach));
                     self.detached = true;
@@ -906,6 +925,12 @@ impl State {
         }
     }
 
+    /// The places (in `special::PET_BAR_SPELLS`) of the spells that the character's pet was taught and the pet bar has buttons for.
+    pub(super) fn pet_bar_spells(&self) -> Vec<usize> {
+        let imp = self.wolves.as_ref().and_then(|w| w.pet_id()).is_some_and(|id| id == crate::special::IMP);
+        self.panels.as_ref().map_or_else(Vec::new, |p| crate::special::bar_spells(imp, &p.pet_spells, p.progress.level))
+    }
+
     /// Draw the action bar, the windows, the editor, the console and the pointer, and take in what the windows asked of the game. True when
     /// something was discovered (the game is saved).
     fn draw_interface(&mut self, dt: f32, render_camera: &Camera, size: (u32, u32)) -> bool {
@@ -915,7 +940,8 @@ impl State {
             bar.draw(&mut self.renderer.ui, size, player, self.panels.as_ref().is_some_and(|p| p.character_open()), self.panels.as_ref().map_or(crate::levels::Progress::new(), |p| p.progress), cooldowns, &items);
         }
         if let (Some(petbar), Some((orders, dead))) = (&self.petbar, self.wolves.as_ref().and_then(|w| w.pet_orders())) {
-            petbar.draw(&mut self.renderer.ui, size, orders, dead, self.cursor);
+            let (spells, phased) = (self.pet_bar_spells(), self.wolves.as_ref().is_some_and(|w| w.pet_phased()));
+            petbar.draw(&mut self.renderer.ui, size, orders, dead, &spells, phased, self.cursor);
         }
         let mut discovered = false;
         if let Some(panels) = &mut self.panels {

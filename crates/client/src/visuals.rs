@@ -149,6 +149,15 @@ pub fn load_classic(mount: &Mount) -> Result<std::collections::HashMap<u32, Visu
             wanted.extend(s.effects.iter().map(|e| e.trigger).filter(|&t| t != 0));
         }
     }
+    // And the spells of the pets that the classes call, of every rank, and those that the pet bar casts.
+    let mut pet_spells: HashSet<&str> = crate::special::PET_BAR_SPELLS.into_iter().collect();
+    for spell in c.spells.iter().flat_map(|s| &s.then).filter_map(|r| if let content::Rider::Summon { spell, .. } = *r { Some(spell) } else { None }).filter(|&s| s != 0) {
+        pet_spells.extend(content::classic_spell(spell).map(|s| s.name.as_str()));
+    }
+    for s in c.classic_spells.iter().filter(|s| pet_spells.contains(s.name.as_str())) {
+        wanted.insert(s.spell);
+        wanted.extend(s.effects.iter().map(|e| e.trigger).filter(|&t| t != 0));
+    }
     let dbc = |name: &str| -> Result<Dbc> { Ok(Dbc::parse(&mount.read(&format!(r"DBFilesClient\{name}.dbc"))?)?) };
     let (spells, times) = (dbc("Spell")?, dbc("SpellCastTimes")?);
     let tables = Tables::new(mount)?;
@@ -189,6 +198,16 @@ pub fn load(mount: &Mount) -> Result<Vec<Visual>> {
 
 #[cfg(test)]
 mod tests {
+    /// The firebolt of a warlock's imp has its pictures: a missile to fly, and the animation the imp plays.
+    #[test]
+    fn the_firebolt_of_the_imp_is_shown() {
+        let Some(mount) = mpq::find_wow_dir().and_then(|d| Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
+        let all = load_classic(&mount).unwrap();
+        let firebolt = all.get(&3110).expect("firebolt has its visual");
+        eprintln!("{firebolt:?}");
+        assert!(firebolt.missile.is_some() || !firebolt.cast.effects.is_empty() || !firebolt.impact.effects.is_empty());
+    }
+
     use super::*;
 
     #[test]
