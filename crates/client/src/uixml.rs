@@ -38,15 +38,22 @@ pub struct TipLine {
     pub color: [f32; 4],
     pub right_color: [f32; 4],
     pub font: &'static str,
+    /// `AddLine`'s `wrap`: a long text that breaks into lines (never with a right column).
+    pub wrap: bool,
 }
 
 impl TipLine {
     pub fn new(text: impl Into<String>, color: [f32; 4]) -> TipLine {
-        TipLine { left: text.into(), right: None, color, right_color: color, font: "GameTooltipText" }
+        TipLine { left: text.into(), right: None, color, right_color: color, font: "GameTooltipText", wrap: false }
+    }
+
+    pub fn wrapped(mut self) -> TipLine {
+        self.wrap = true;
+        self
     }
 
     pub fn double(left: impl Into<String>, right: impl Into<String>, color: [f32; 4], right_color: [f32; 4]) -> TipLine {
-        TipLine { left: left.into(), right: Some(right.into()), color, right_color, font: "GameTooltipText" }
+        TipLine { left: left.into(), right: Some(right.into()), color, right_color, font: "GameTooltipText", wrap: false }
     }
 }
 
@@ -1769,11 +1776,13 @@ impl Tree {
     }
 
     /// Draw `text` with its line `line` pixels tall, centred on pixel `x` with the bottom of the line at pixel `y` (y down).
-    pub fn draw_text_world(&mut self, ui: &mut Ui, gpu: &Gpu, mount: &Mount, screen: (u32, u32), font: &str, text: &str, (x, y): (f32, f32), line: f32, color: [f32; 4]) {
+    pub fn draw_text_world(&mut self, ui: &mut Ui, gpu: &Gpu, mount: &Mount, screen: (u32, u32), font: &str, text: &str, (x, y): (f32, f32), line: f32, color: [f32; 4], shadow: bool) {
         self.screen = screen;
         let Some(mut style) = self.registry.font_style(font) else { return };
-        // The original draws a unit name plain: its font has neither an outline nor a shadow.
-        style.shadow = None;
+        // The original draws a unit name plain: its font has neither an outline nor a shadow; the nameplate font has a shadow.
+        if !shadow {
+            style.shadow = None;
+        }
         let s = screen_scale(screen);
         self.text_scale = line / (style.height * s);
         let width = self.text_width(ui, gpu, mount, &style, text);
@@ -1784,8 +1793,13 @@ impl Tree {
 
     /// Draw a texture file at a pixel rectangle.
     pub fn draw_icon(&mut self, ui: &mut Ui, gpu: &Gpu, mount: &Mount, path: &str, rect: [f32; 4]) {
+        self.draw_icon_tinted(ui, gpu, mount, path, rect, [1.0; 4]);
+    }
+
+    /// Like `draw_icon`, multiplied by `color`.
+    pub fn draw_icon_tinted(&mut self, ui: &mut Ui, gpu: &Gpu, mount: &Mount, path: &str, rect: [f32; 4], color: [f32; 4]) {
         if let Some(texture) = self.texture(ui, gpu, mount, path) {
-            ui.quad(Quad { texture, rect, uv: FULL_UV, color: [1.0; 4], additive: false });
+            ui.quad(Quad { texture, rect, uv: FULL_UV, color, additive: false });
         }
     }
 
@@ -1802,14 +1816,29 @@ impl Tree {
         let (s, h) = (screen_scale(screen), screen.1 as f32);
         let root = self.root_rect();
         let styles: Vec<Option<FontStyle>> = lines.iter().enumerate().map(|(i, l)| self.registry.font_style(if i == 0 { "GameTooltipHeaderText" } else { l.font })).collect();
-        // The size: 10 units of padding around the lines, 2 between them, 10 between the two columns of a line.
+        // The size as WoW.exe lays it out (FUN_00530640): 10.24 units of padding around the lines, 2 between them, 38.4
+        // between the two columns of a line. A wrapping line widens the tooltip up to 230.4 units when its text is longer,
+        // then breaks at the width the tooltip has by then.
         let (mut width, mut height) = (0.0f32, 0.0f32);
         let mut widths = Vec::new();
+        let mut rows: Vec<Vec<String>> = Vec::new();
         for (l, style) in lines.iter().zip(&styles) {
-            let Some(style) = style else { widths.push((0.0, 0.0)); continue };
+            let Some(style) = style else { widths.push((0.0, 0.0)); rows.push(Vec::new()); continue };
             let (lw, rw) = (self.text_width(ui, gpu, mount, style, &l.left), l.right.as_deref().map_or(0.0, |r| self.text_width(ui, gpu, mount, style, r)));
-            width = width.max(lw + if l.right.is_some() { rw + 10.0 } else { 0.0 });
-            height += style.height + 2.0;
+            if l.wrap && l.right.is_none() {
+                let plain: String = color_spans(&l.left).into_iter().map(|(t, _)| t).collect();
+                let glyphs = self.glyphs(ui, gpu, mount, style).unwrap();
+                let mut natural = lw.min(230.4);
+                if width < natural {
+                    natural = wrap(glyphs, &plain, natural).iter().map(|r| glyphs.width(r)).fold(0.0, f32::max);
+                }
+                width = width.max(natural);
+                rows.push(wrap(glyphs, &plain, width));
+            } else {
+                width = width.max(lw + if l.right.is_some() { rw + 38.4 } else { 0.0 });
+                rows.push(vec![l.left.clone()]);
+            }
+            height += style.height * rows.last().unwrap().len() as f32 + 2.0;
             widths.push((lw, rw));
         }
         let (w, hgt) = (width + 20.0, height - 2.0 + 20.0);
@@ -1835,13 +1864,16 @@ impl Tree {
         };
         self.draw_backdrop(ui, gpu, mount, &backdrop, [x * s, h - (y + hgt) * s, w * s, hgt * s], s);
         let mut top = y + hgt - 10.0;
-        for ((l, style), (_, rw)) in lines.iter().zip(&styles).zip(widths) {
+        for (((l, style), (_, rw)), rows) in lines.iter().zip(&styles).zip(widths).zip(rows) {
             let Some(style) = style else { continue };
-            self.text_at(ui, gpu, mount, style, &l.left, x + 10.0, top, l.color);
-            if let Some(r) = &l.right {
-                self.text_at(ui, gpu, mount, style, r, x + w - 10.0 - rw, top, l.right_color);
+            for row in rows {
+                self.text_at(ui, gpu, mount, style, &row, x + 10.0, top, l.color);
+                if let Some(r) = &l.right {
+                    self.text_at(ui, gpu, mount, style, r, x + w - 10.0 - rw, top, l.right_color);
+                }
+                top -= style.height;
             }
-            top -= style.height + 2.0;
+            top -= 2.0;
         }
     }
 

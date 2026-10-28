@@ -73,6 +73,14 @@ impl Panels {
         self.string(key).replacen("%s", name, 1).replacen("%d", &have.to_string(), 1).replacen("%d", &need.to_string(), 1)
     }
 
+    /// The character set foot in a new area: the message of the original and the experience.
+    pub fn on_explored(&mut self, name: &str, area_level: u32) {
+        let xp = levels::explore_xp(self.progress.level, area_level);
+        let text = if xp > 0 { self.string("ERR_ZONE_EXPLORED_XP").replacen("%s", name, 1).replacen("%d", &xp.to_string(), 1) } else { self.string("ERR_ZONE_EXPLORED").replacen("%s", name, 1) };
+        self.notice(&text);
+        self.gain_xp(xp);
+    }
+
     /// Creatures of these kinds were killed: they give experience, and the kill goals of the quests move on, with a
     /// message each.
     pub fn on_kills(&mut self, kinds: &[usize]) {

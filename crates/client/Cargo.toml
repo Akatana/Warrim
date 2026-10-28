@@ -27,3 +27,5 @@ roxmltree = "0.21.1"
 serde = { version = "1.0.229", features = ["derive"] }
 ron = "0.12.2"
 rapier3d = "0.36"
+rerecast = "0.5.0"
+glam_rerecast = { package = "glam", version = "0.33" }  # the glam that rerecast is built on

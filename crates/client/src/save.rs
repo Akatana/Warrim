@@ -320,7 +320,7 @@ impl Save {
 }
 
 /// Where the saves are kept: the user's application data folder (`rsworld`), or the current folder without one.
-fn base_dir() -> PathBuf {
+pub(crate) fn base_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .or_else(|| std::env::var_os("XDG_DATA_HOME"))
         .map(PathBuf::from)

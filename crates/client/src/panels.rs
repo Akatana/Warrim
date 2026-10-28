@@ -118,6 +118,8 @@ pub struct Panels {
     learned: Vec<usize>,
     /// Seconds left before each spell can be cast again.
     pub cooldowns: Vec<f32>,
+    /// Seconds left of the global cooldown: no spell can begin until it is over (it starts when a cast begins, as in the original).
+    pub gcd: f32,
     /// The spellbook's tab and the page each tab is at, the spell a click on it asked to cast, and the skills tab's list.
     book_tab: usize,
     book_page: [usize; magic::BOOK_TABS],
@@ -184,6 +186,8 @@ pub struct Panels {
     mount_cast: Option<(f32, (u32, i32))>,
     /// A lure or a stone to put on the weapon: the item whose cast the game is to start, and whether the cast is over (then using it does it).
     lure: (Option<usize>, bool),
+    /// Disenchant was chosen in the spellbook and waits for an item of the pack; the pack slot whose cast the game is to start.
+    disenchant: (bool, Option<usize>),
     buyback: Option<(Stack, u32)>,
     /// The quests: what is taken, how far along it is, what is done.
     pub quests: QuestLog,
@@ -463,7 +467,7 @@ impl Panels {
             tree.show(&name, true);
         }
 
-        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), sex: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], book_tab: 0, book_page: [0; magic::BOOK_TABS], cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), target_auras: Default::default(), calm: true, restored: (0.0, 0.0), steed: None, requests: Vec::new(), pet: None, pet_spells: Vec::new(), pet_aura: 0.0, tracking: None, tracked: Vec::new(), mounted: false, mount_cast: None, lure: (None, false), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, book: None, popup: None, sleep: None, slept: None, sleep_dragging: false, destroying: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
+        let mut panels = Panels { name: "Adventurer".into(), race: Default::default(), sex: Default::default(), tree, mount, stats: Stats::of(&inv.equipment, 1, &[0; 7], &[]), progress: Progress::new(), found: vec![false; content::get().pois.len()], map_open: false, map: Default::default(), explored: Vec::new(), travel: None, skills: crate::skills::Skills::new(), recipes: Default::default(), known: content::get().start.spells.clone(), learned: Vec::new(), cooldowns: vec![0.0; content::get().spells.len()], gcd: 0.0, book_tab: 0, book_page: [0; magic::BOOK_TABS], cast_bar: Default::default(), breath_shown: false, spell_click: None, drag: None, skill_list: Default::default(), talents: Default::default(), trade: Default::default(), trainer: Default::default(), craft_request: None, talent_tab: 0, inv, bag_scroll: 0, doll, portrait, doll_turn: 0.0, cursor: None, equipment_changed: false, stats_dirty: false, loot: None, closed_loot: None, events: Vec::new(), messages: Vec::new(), gossip: None, merchant: None, merchant_page: 0, consumed: Default::default(), afflicted: Vec::new(), target_auras: Default::default(), calm: true, restored: (0.0, 0.0), steed: None, requests: Vec::new(), pet: None, pet_spells: Vec::new(), pet_aura: 0.0, tracking: None, tracked: Vec::new(), mounted: false, mount_cast: None, lure: (None, false), disenchant: (false, None), buyback: None, quests: QuestLog::default(), quest_targets: Vec::new(), gossip_lines: Vec::new(), questing: None, seen: Default::default(), ready: Default::default(), log_selected: 0, reward_choice: None, level_ups: 0, book: None, popup: None, sleep: None, slept: None, sleep_dragging: false, destroying: false, points: 0, spent: [0; 3], level_open: false, level_press: None, level_art: None, target_portrait, target: None, menu: Default::default(), keys: Default::default() };
         panels.refresh();
         Ok(panels)
     }
@@ -763,7 +767,9 @@ impl Panels {
         }
         let mut timed = self.consumed.timed_effects();
         timed.extend(self.enchant_effects());
-        self.stats = Stats::of_with(&self.inv.equipment, self.progress.level, &self.consumed.boosts(), &timed, &self.talents.perks());
+        let mut boosts = self.consumed.boosts();
+        boosts.iter_mut().zip(self.spent_attributes()).for_each(|(b, a)| *b += a);
+        self.stats = Stats::of_with(&self.inv.equipment, self.progress.level, &boosts, &timed, &self.talents.perks());
         self.skills.set_bonus(self.stats.skill_bonus);
         self.stats.armor += self.skills.armor_bonus(&self.inv.equipment);
         let [health, mana, stamina] = self.spent_bonus();

@@ -121,7 +121,7 @@ impl Mob {
 
     /// One step of an ally's life, with the player at `player` and what it is to fight (the creature's place) if there is something: it goes for it and strikes, or follows.
     /// A pet that is told to `stay` keeps its place: it strikes what comes within its reach, and does not follow.
-    pub(super) fn step_ally(&mut self, dt: f32, player: Vec3, focus: Option<Vec3>, stay: bool, blocked: impl Fn(Vec3, Vec3) -> bool) -> Vec<Act> {
+    pub(super) fn step_ally(&mut self, dt: f32, player: Vec3, focus: Option<Vec3>, stay: bool, _ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool, nav: &NavMesh) -> Vec<Act> {
         let Some(mut ally) = self.ally.take() else { return Vec::new() };
         // A cast broken off (the pet was hurt, or died, in the making) ends its glow.
         let mut acts: Vec<Act> = self.out.drain(..).filter(|a| matches!(a, Act::Stop)).collect();
@@ -229,7 +229,7 @@ impl Mob {
                     // A fighter goes up to striking range, a caster stands off (but closes in while a wall hides its foe).
                     let stand = if ranged && seen { reach * 0.7 } else { MELEE_RANGE * 0.8 };
                     if dist > stand && !stay {
-                        let step = self.walk(to / dist * (RUN_SPEED * dt).min(dist - stand), &blocked);
+                        let step = self.chase_to(at, stand, RUN_SPEED, dt, false, &[], nav, &blocked);
                         self.stepped(step);
                     }
                     self.state = if stay { State::Idle } else { State::Chase };
@@ -239,7 +239,7 @@ impl Mob {
                 let dist = to_player.length();
                 if !stay && dist > STAY_NEAR * 1.6 {
                     self.turn(to_player);
-                    let step = self.walk(to_player / dist * (RUN_SPEED * dt).min(dist - STAY_NEAR), &blocked);
+                    let step = self.chase_to(player, STAY_NEAR, RUN_SPEED, dt, false, &[], nav, &blocked);
                     self.stepped(step);
                     self.state = State::Chase;
                 } else {

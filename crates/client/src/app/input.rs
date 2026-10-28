@@ -191,6 +191,8 @@ impl State {
                 }
             }
             Some(Cmd::Fly) if pressed => self.toggle_fly(),
+            Some(Cmd::Nameplates) if pressed => self.plates[0] = !self.plates[0],
+            Some(Cmd::FriendNameplates) if pressed => self.plates[1] = !self.plates[1],
             // Stand-in for an enemy: a 10 damage hit, blocked (at a stamina cost) if the shield is up.
             None if pressed && code == KeyCode::KeyH => {
                 if let Some(p) = &mut self.player {

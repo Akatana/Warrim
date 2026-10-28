@@ -16,6 +16,8 @@ pub enum Cmd {
     Run,
     Interact,
     Target,
+    Nameplates,
+    FriendNameplates,
     Sheath,
     View,
     Fly,
@@ -31,7 +33,7 @@ pub enum Cmd {
     Action(usize),
 }
 
-pub const COUNT: usize = 32;
+pub const COUNT: usize = 34;
 
 /// Every command with the header it is listed under (`BINDING_HEADER_*`), its name (also how it is saved), the original's name for it
 /// (`BINDING_NAME_*`, empty when the original has none) and its keys.
@@ -45,6 +47,9 @@ pub const COMMANDS: [(Cmd, &str, &str, &str, [Option<K>; 2]); COUNT] = [
     (Cmd::Run, "MOVEMENT", "Speed up", "", [Some(K::ShiftLeft), Some(K::ShiftRight)]),
     (Cmd::Fly, "MOVEMENT", "Fly", "", [Some(K::KeyF), None]),
     (Cmd::Target, "TARGETING", "Next target", "TARGETNEARESTENEMY", [Some(K::Tab), None]),
+    // The original has these on V and Ctrl-V; V is the view here and there are no chords.
+    (Cmd::Nameplates, "TARGETING", "Toggle enemy nameplates", "NAMEPLATES", [Some(K::KeyJ), None]),
+    (Cmd::FriendNameplates, "TARGETING", "Toggle friendly nameplates", "FRIENDNAMEPLATES", [Some(K::KeyG), None]),
     (Cmd::View, "CAMERA", "Change view", "", [Some(K::KeyV), None]),
     (Cmd::Interact, "MISC", "Interact / loot", "", [Some(K::KeyE), None]),
     (Cmd::Sheath, "MISC", "Sheathe weapon", "TOGGLESHEATH", [Some(K::KeyR), None]),

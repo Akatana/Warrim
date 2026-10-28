@@ -125,6 +125,51 @@ impl Panels {
         self.lure.1 = false;
     }
 
+    /// Disenchant was chosen in the spellbook: the next click on an item of the pack picks what to break (the pack opens to show it).
+    pub fn choose_disenchant(&mut self) {
+        if !self.must_know(crate::skills::Skill::Enchanting) {
+            return;
+        }
+        self.disenchant.0 = true;
+        if !self.backpack_open() {
+            self.toggle_backpack();
+        }
+        self.notice("Disenchant: click an item in your pack.");
+    }
+
+    /// A click on pack slot `slot` while Disenchant waits for an item: true if the click was taken (the cast is to begin, or the item was refused).
+    pub(super) fn disenchant_click(&mut self, slot: usize) -> bool {
+        if !std::mem::take(&mut self.disenchant.0) {
+            return false;
+        }
+        if self.inv.bag[slot].is_some_and(|s| crate::disenchant::can(crate::items::get(s.item))) {
+            self.disenchant.1 = Some(slot);
+        } else {
+            self.error(&self.string("ERR_CANT_BE_DISENCHANTED"));
+        }
+        true
+    }
+
+    /// The pack slot whose disenchanting is to begin now, if one was picked.
+    pub fn take_disenchant(&mut self) -> Option<usize> {
+        self.disenchant.1.take()
+    }
+
+    /// The cast is over: the item in `slot` is destroyed, the skill may rise, and what it gave is to be looted (the original shows it in the loot window, and what is
+    /// left when the window closes is gone with the item).
+    pub fn finish_disenchant(&mut self, slot: usize, rng: &mut u32) -> Option<Loot> {
+        let Some(stack) = self.inv.bag[slot].filter(|s| crate::disenchant::can(crate::items::get(s.item))) else {
+            self.error(&self.string("ERR_CANT_BE_DISENCHANTED"));
+            return None;
+        };
+        self.inv.remove(stack.item, 1);
+        self.skill_up(crate::skills::Skill::Enchanting, crate::disenchant::RANKS, crate::loot::random(rng, 10_000) as f32 / 10_000.0);
+        self.refresh();
+        let mut loot = Loot { copper: 0, items: crate::disenchant::loot(crate::items::get(stack.item), rng) };
+        loot.only_wanted(&self.quests.wanted(&self.inv));
+        Some(loot)
+    }
+
     pub fn use_item_of(&mut self, item: usize) {
         if let Some(slot) = self.inv.bag.iter().position(|s| s.is_some_and(|s| s.item == item)) {
             self.use_item(slot);

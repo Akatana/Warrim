@@ -224,6 +224,7 @@ impl State {
             quit: false,
             reconfigure: false,
             names: true,
+            plates: [true, false],
             ragdolls: true,
             apply: false,
             apply_after: args.apply_after,

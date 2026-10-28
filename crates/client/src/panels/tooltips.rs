@@ -108,11 +108,11 @@ impl Panels {
                 _ => continue,
             };
             if !s.text.is_empty() {
-                lines.push(TipLine::new(format!("{} {}", self.tree.string(trigger), s.text.replace("$z", "Northshire Valley")), [0.12, 1.0, 0.0, 1.0]));
+                lines.push(TipLine::new(format!("{} {}", self.tree.string(trigger), s.text.replace("$z", "Northshire Valley")), [0.12, 1.0, 0.0, 1.0]).wrapped());
             }
         }
         if !item.text.is_empty() {
-            lines.push(TipLine::new(format!("\"{}\"", item.text), [1.0, 0.82, 0.0, 1.0]));
+            lines.push(TipLine::new(format!("\"{}\"", item.text), [1.0, 0.82, 0.0, 1.0]).wrapped());
         }
         lines
     }

@@ -536,6 +536,27 @@ pub struct Water {
     pub skill: i32,
 }
 
+/// A row of what breaking an item gives, as `classic_disenchant.ron` has it (made by `tools/import_disenchant.py`).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDisenchant {
+    item: String,
+    group: u8,
+    chance: f32,
+    low: u32,
+    high: u32,
+}
+
+/// A row of what breaking an item gives: the item and how many, and the chance in percent. Rows of group 0 are rolled one by one; of a group above 0
+/// one row (or none) comes out: one with a chance, and when none is hit one of those without (chance 0).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shatter {
+    pub item: usize,
+    pub group: u8,
+    pub chance: f32,
+    pub count: (u32, u32),
+}
+
 /// A recipe as the file `classic_recipes.ron` has it (made by `tools/import_recipes.py`).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -802,6 +823,8 @@ pub struct ClassicSpell {
     pub cost_percent: u32,
     pub cast: u32,
     pub cooldown: u32,
+    /// The global cooldown it starts (`StartRecoveryTime`); none for a spell that is off it.
+    pub gcd: u32,
     pub range: f32,
     pub duration: u32,
     pub attributes: u32,
@@ -907,6 +930,8 @@ pub struct Content {
     pub fishing: BTreeMap<u32, Water>,
     /// What the enchantments of Enchanting give, by their row of `SpellItemEnchantment.dbc`.
     pub enchants: BTreeMap<u32, Enchant>,
+    /// What breaking an item gives, by the `disenchant` of the item.
+    pub disenchant: BTreeMap<u32, Vec<Shatter>>,
     pub start: Start,
 }
 
@@ -1069,6 +1094,12 @@ pub struct RawItem {
     pub unique: bool,
     #[serde(default)]
     pub durability: u32,
+    /// The item level of the original's tables (what its power is worth; `level` is what the character must have reached to use it).
+    #[serde(default)]
+    pub ilvl: u32,
+    /// The table of `classic_disenchant.ron` that breaking it rolls (the original's `DisenchantID`); 0: it cannot be broken.
+    #[serde(default)]
+    pub disenchant: u32,
     #[serde(default)]
     pub health: i32,
     #[serde(default)]
@@ -1329,7 +1360,7 @@ pub fn look_of(row: &wowfmt::dbc::Record, wear: Wear) -> (Look, Option<(&'static
         }
     }
     let name = |field: usize| Some(row.string(field)).filter(|n| !n.is_empty()).map(|n| leak(n.rsplit_once('.').map_or(n, |(stem, _)| stem)));
-    let visual = items::Visual { geo: [row.u32(7) as u8, row.u32(8) as u8, row.u32(9) as u8], models: [name(1), name(2)], textures: [name(3), name(4)], helm: [row.u32(12) as u16, row.u32(13) as u16], enchant: row.u32(22) as u16, shot: row.u32(10) as u16 };
+    let visual = items::Visual { geo: [row.u32(7) as u8, row.u32(8) as u8, row.u32(9) as u8], cape: row.u32(6) as u8, models: [name(1), name(2)], textures: [name(3), name(4)], helm: [row.u32(12) as u16, row.u32(13) as u16], enchant: row.u32(22) as u16, shot: row.u32(10) as u16 };
     (look, held, visual)
 }
 
@@ -1387,6 +1418,8 @@ fn build_item(raw: RawItem, display: Option<&Displays>, spells: &[SpellDef]) -> 
         bind: raw.bind,
         unique: raw.unique,
         durability: raw.durability,
+        ilvl: raw.ilvl,
+        disenchant: raw.disenchant,
         health: raw.health,
         mana: raw.mana,
         resist: raw.resist,
@@ -1938,6 +1971,15 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
     ensure!(fishing.values().all(|w| raw_loot.contains_key(&w.table)), "classic_fishing.ron: a table of fishing that does not exist");
     let enchants: BTreeMap<u32, Enchant> = ron::from_str(&source("classic_enchants.ron", include_str!("../../../content/classic_enchants.ron"))).context("classic_enchants.ron")?;
     ensure!(recipes.iter().all(|r| r.enchant == 0 || enchants.contains_key(&r.enchant)), "a recipe puts an enchantment on that classic_enchants.ron does not have");
+    let disenchant = ron::from_str::<BTreeMap<u32, Vec<RawDisenchant>>>(&source("classic_disenchant.ron", include_str!("../../../content/classic_disenchant.ron")))
+        .context("classic_disenchant.ron")?
+        .into_iter()
+        .map(|(id, rows)| {
+            let rows = rows.into_iter().map(|r| Ok(Shatter { item: items.iter().position(|i| i.id == r.item).with_context(|| format!("classic_disenchant.ron: no item {}", r.item))?, group: r.group, chance: r.chance, count: (r.low, r.high) })).collect::<Result<Vec<_>>>()?;
+            Ok((id, rows))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    ensure!(items.iter().all(|i| i.disenchant == 0 || disenchant.contains_key(&i.disenchant)), "an item names a table of disenchanting that classic_disenchant.ron does not have");
     for (id, list) in &lessons {
         ensure!(list.iter().all(|l| if l.step.is_some() { classic_index.contains_key(&l.spell) } else { recipe_numbers.contains_key(&l.spell) }), "trainer {id}: a lesson is no recipe or step");
     }
@@ -1950,7 +1992,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         }
         taking.entry(q.turn_in).or_default().push(i);
     }
-    Ok(Content { spells, classic_spells, classic_index, pet_stats, items, pois, portals, pages, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, start: Start { spells: known, money: raw_start.money, equipment, bag, outfits } })
+    Ok(Content { spells, classic_spells, classic_index, pet_stats, items, pois, portals, pages, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, disenchant, start: Start { spells: known, money: raw_start.money, equipment, bag, outfits } })
 }
 
 #[cfg(test)]

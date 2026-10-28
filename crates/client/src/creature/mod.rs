@@ -5,7 +5,7 @@
 //! model's own animations, people as the same dressed human male the player is.
 
 use crate::anim;
-use crate::animator::{Channel, Motion, Rng};
+use crate::animator::{Channel, Motion, Rng, SWIM, SWIM_IDLE};
 use crate::audio::{Cry, Sfx};
 use crate::brain::{self, cast, Aim, Friend, Order, Outcome, Runtime, View};
 use crate::camera::Camera;
@@ -13,6 +13,7 @@ use crate::cursor::Kind;
 use crate::character::{Appearance, Character};
 use crate::content::{self, Body, ClassicSpell, CreatureDef};
 use crate::items::{self, SLOTS};
+use crate::navmesh::{NavMesh, PathFinder};
 use crate::worn::Worn;
 use crate::loot::Loot;
 use crate::quests::Marker;
@@ -20,7 +21,6 @@ use crate::models::{ModelCache, ModelCpu, ModelVertex};
 use crate::physics::{Bodies, RAGDOLL_REACH};
 use crate::ragdoll::Ragdoll;
 use crate::renderer::{Gpu, Renderer};
-use crate::ui::{Quad, Ui, FULL_UV, WHITE};
 use anyhow::{Context, Result};
 use glam::{Mat4, Vec3};
 use mpq::Mount;
@@ -57,6 +57,8 @@ const SNEAK_AGGRO: f32 = 0.35;
 const LEASH_RANGE: f32 = 40.0;
 /// After giving up, seconds it stands unbothered before it runs home; it heals this share of its health per second on the way.
 const RETURN_WAIT: f32 = 5.0;
+/// The most a creature steps down (yards): it does not walk off a ledge or into a gap of a floor.
+const STEP_DOWN: f32 = 1.0;
 const REGEN: f32 = 0.25;
 /// A melee attack starts within this distance and lands if the player is still within `MELEE_REACH`, yards.
 const MELEE_RANGE: f32 = 2.4;
@@ -276,6 +278,21 @@ pub struct Mob {
     pub pos: Vec3,
     pub yaw: f32,
     home: Vec3,
+    /// The places still to walk through on the way the path finder made, the next one last (empty when there is none), whether that way is a straight line
+    /// that no mesh led, whether the way home is walked at once, the path finder (it keeps the way it made), and the seconds until the chase looks at its way again.
+    course: Vec<Vec3>,
+    /// Where the way last made ends (also when it is walked), the state of the chase, and the seconds until a creature in terror picks its next place.
+    dest: Option<Vec3>,
+    chase: Chase,
+    fear_wait: f32,
+    /// It is in water (set from the liquid under it while it moves).
+    pub swimming: bool,
+    loose: bool,
+    fast: bool,
+    finder: Option<Box<PathFinder>>,
+    recheck: f32,
+    /// A stroll's way is made once, at its start.
+    planned: bool,
     pub health: f32,
     pub state: State,
     /// The player is sneaking: it has to come much nearer to be noticed.
@@ -479,6 +496,16 @@ impl Mob {
             pos,
             yaw,
             home: pos,
+            course: Vec::new(),
+            dest: None,
+            chase: Chase::new(),
+            fear_wait: 0.0,
+            swimming: false,
+            loose: false,
+            fast: false,
+            finder: None,
+            recheck: 0.0,
+            planned: false,
             health: def.health,
             state: State::Idle,
             hidden: false,
@@ -564,6 +591,7 @@ impl Mob {
         let (centre, range) = self.roam.map_or((self.home, self.wander), |r| (r.0, r.1));
         let (angle, radius) = (self.random() * std::f32::consts::TAU, self.random() * range);
         self.state = State::Wander(centre + Vec3::new(angle.sin(), 0.0, angle.cos()) * radius);
+        (self.course, self.planned) = (Vec::new(), false);
     }
 
     /// At the place of the patrol it was walking to: it turns to the heading the place asks, does what the place's script says (some of it a while after), stands there as
@@ -635,6 +663,8 @@ mod allies;
 mod behaviour;
 mod combat;
 mod creatures;
+mod steer;
+use steer::{Chase, Mode};
 mod person;
 mod spells;
 #[cfg(test)]
@@ -642,6 +672,6 @@ mod tests;
 
 use allies as ally;
 pub use allies::{Ally, PetCommand, PetOrders, Stance};
-pub use creatures::{screen_box, Creatures, Label, TargetView};
+pub use creatures::{screen_box, Creatures, Label, Plate, TargetView};
 pub(crate) use person::Person;
 use person::*;

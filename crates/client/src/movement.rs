@@ -67,8 +67,20 @@ impl Tri {
     }
 }
 
+/// A triangle of liquid (WoW coordinates, relative to an origin): its navigation area (`NAV_AREA_WATER` or `NAV_AREA_MAGMA_SLIME`) and, for the liquid of the
+/// terrain, the cell of the terrain it is over (counted in cells from the corner of the world, north and west).
+#[derive(Clone, Copy, Debug)]
+pub struct Wet {
+    pub v: [Vec3; 3],
+    pub area: u8,
+    pub cell: Option<(i32, i32)>,
+}
+
 /// Source of collision triangles in WoW coordinates.
 pub trait TriangleSource {
+    /// Append the triangles of liquid overlapping the box (as `gather` does for the solid ones).
+    fn gather_liquid(&self, _origin: [f64; 3], _min: Vec3, _max: Vec3, _out: &mut Vec<Wet>) {}
+
     /// Append the triangles overlapping the box `[origin + min, origin + max]`. Vertices are
     /// returned relative to `origin` (computed in f64 by the implementation).
     fn gather(&self, origin: [f64; 3], min: Vec3, max: Vec3, out: &mut Vec<Tri>);

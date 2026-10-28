@@ -62,7 +62,7 @@ def entry_text(s, spells, cast, icons, ranges, duration, radius):
     if icon:
         out.append("icon: %s" % q(icon.rsplit("\\", 1)[-1]))
     for key, name in (("School", "school"), ("Mechanic", "mechanic"), ("Dispel", "dispel"), ("SpellLevel", "level"), ("BaseLevel", "base_level"), ("MaxLevel", "max_level"),
-                      ("PowerType", "power"), ("ManaCost", "cost"), ("ManaCostPercentage", "cost_percent"), ("RecoveryTime", "cooldown"), ("Attributes", "attributes"),
+                      ("PowerType", "power"), ("ManaCost", "cost"), ("ManaCostPercentage", "cost_percent"), ("RecoveryTime", "cooldown"), ("StartRecoveryTime", "gcd"), ("Attributes", "attributes"),
                       ("SpellFamilyName", "family"), ("SpellFamilyFlags", "family_flags"), ("StackAmount", "stack")):
         if s[key]:
             out.append("%s: %d" % (name, s[key]))

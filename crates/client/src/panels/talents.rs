@@ -387,10 +387,10 @@ impl Panels {
             Some(Lock::Hybrid(other, points)) => lines.push(TipLine::new(format!("Requires {points} points in {other} Talents"), RED)),
             None => {}
         }
-        lines.push(TipLine::new(t.describe(rank.max(1)), GOLD));
+        lines.push(TipLine::new(t.describe(rank.max(1)), GOLD).wrapped());
         if rank > 0 && rank < t.ranks {
             lines.push(TipLine::new("Next rank:", WHITE));
-            lines.push(TipLine::new(t.describe(rank + 1), GOLD));
+            lines.push(TipLine::new(t.describe(rank + 1), GOLD).wrapped());
         }
         if rank < t.ranks && self.talents.free(self.progress.level) > 0 && self.talents.lock(tree, t).is_none() {
             lines.push(TipLine::new("Click to learn", GREEN));

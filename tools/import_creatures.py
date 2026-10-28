@@ -168,6 +168,19 @@ def main():
         pieces[name] = '(id: %s, name: %s, display: %d, classic: true, wear: %s)' % (q(name), q("%s piece %d" % (slot, display)), display, slot)
         return name
 
+    # The weapons people hold are the original's "Monster - ..." items, which the item import leaves out: each is made as a piece, like the armor.
+    raw = {i["entry"]: i for i in classicdb.rows(sql, "item_template")}
+
+    def hand(entry):
+        """The id of the item held: the item itself where the game has it, else a piece made for it."""
+        if entry in loot.items:
+            return loot.name(entry)
+        i = raw[entry]
+        name = "w%d" % entry
+        pieces[name] = '(id: %s, name: %s, display: %d, classic: true, wear: %s, class: %d, sub: %d)' % (
+            q(name), q(i["name"]), i["displayid"], import_items.WEAR[i["InventoryType"]], i["class"], i["subclass"])
+        return name
+
     c_loot, equip, wares = {}, {}, {}
     for r in classicdb.rows(sql, "creature_loot_template"):
         c_loot.setdefault(r["entry"], []).append(r)
@@ -183,7 +196,7 @@ def main():
         if import_items.EXCLUDED.search(c["Name"]) or NOT_REAL.search(c["Name"]) or NOT_REAL.search(c["SubName"] or "") or c["UnitFlags"] & 2:
             continue
         # What a person holds comes from the equipment template, the rest of the outfit from the pieces of his display.
-        held = [loot.name(e) for e in equip.get(c["EquipmentTemplateId"], []) if e in loot.items and import_items.WEAR.get(loot.items[e]["InventoryType"])]
+        held = [hand(e) for e in equip.get(c["EquipmentTemplateId"], []) if e in raw and import_items.WEAR.get(raw[e]["InventoryType"])]
         body = None
         for n in range(1, 5):
             body = c["ModelId%d" % n] and tables.body(c["ModelId%d" % n], c["Scale"], piece, held)

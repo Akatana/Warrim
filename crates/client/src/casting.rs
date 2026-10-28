@@ -281,13 +281,15 @@ impl Spellcaster {
         if self.casting.is_some() {
             return ctx.panels.error("Another action is in progress.");
         }
-        if ctx.panels.cooldowns.get(spell).is_some_and(|&c| c > 0.0) {
+        if ctx.panels.spell_wait(spell) > 0.0 {
+            ctx.panels.sound("SpellFizzleHoly");
             return ctx.panels.error("Spell is not ready yet.");
         }
         if let Err(why) = self.check(ctx, spell, feet) {
             ctx.panels.sound("SpellFizzleHoly");
             return ctx.panels.error(why);
         }
+        ctx.panels.gcd = ctx.panels.gcd.max(Panels::spell_gcd(spell));
         // A spell is cast on foot: the caster gets down from the steed (a shape he has taken he keeps).
         if !ctx.player.is_form() {
             ctx.player.dismount();

@@ -41,6 +41,32 @@ fn opens_a_window(skill: Skill, known: &skills::Skills) -> bool {
     skill.is_profession() && known.knows(skill) && content::get().recipes.iter().any(|r| r.skill == skill)
 }
 
+const DISENCHANT_ICON: &str = r"Interface\Icons\Spell_Holy_RemoveCurse";
+
+/// The picture of a profession in the spellbook: the original's icon for it.
+fn trade_icon(skill: Skill) -> &'static str {
+    match skill {
+        Skill::Alchemy => r"Interface\Icons\Trade_Alchemy",
+        Skill::Blacksmithing => r"Interface\Icons\Trade_BlackSmithing",
+        Skill::Enchanting => r"Interface\Icons\Trade_Engraving",
+        Skill::Engineering => r"Interface\Icons\Trade_Engineering",
+        Skill::Herbalism => r"Interface\Icons\Spell_Nature_NatureTouchGrow",
+        Skill::Leatherworking => r"Interface\Icons\INV_Misc_ArmorKit_17",
+        Skill::Mining => r"Interface\Icons\Spell_Fire_FlameBlades",
+        Skill::Tailoring => r"Interface\Icons\Trade_Tailoring",
+        Skill::Skinning => r"Interface\Icons\INV_Misc_Pelt_Wolf_01",
+        Skill::Fishing => r"Interface\Icons\Trade_Fishing",
+        Skill::Cooking => r"Interface\Icons\INV_Misc_Food_15",
+        Skill::FirstAid => r"Interface\Icons\Spell_Holy_SealOfSacrifice",
+        _ => r"Interface\Icons\INV_Misc_Note_01",
+    }
+}
+
+/// What the spellbook calls a profession's entry: Mining's list is the original's Smelting.
+fn trade_name(skill: Skill) -> &'static str {
+    if skill == Skill::Mining { "Smelting" } else { skill.name() }
+}
+
 /// A line of the skills list.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Row {
@@ -318,7 +344,9 @@ impl Panels {
             let class = content::spell(s).class;
             tab.map_or(class.group() != Group::Class, |t| class == t)
         });
-        basic.chain(spells.map(|&s| Action::Spell(s))).collect()
+        let trades = skills::ALL.iter().copied().filter(|&s| tab.is_none() && opens_a_window(s, &self.skills)).map(Action::Trade);
+        let disenchant = (tab.is_none() && self.skills.knows(Skill::Enchanting)).then_some(Action::Disenchant);
+        basic.chain(spells.map(|&s| Action::Spell(s))).chain(trades).chain(disenchant).collect()
     }
 
     /// The tab showing (the number of its button less one) and what it lists.
@@ -385,6 +413,8 @@ impl Panels {
                     let def = content::spell(i);
                     (format!(r"Interface\Icons\{}", def.icon), def.name.clone(), def.class.name())
                 }
+                (Action::Trade(s), _) => (trade_icon(s).to_string(), trade_name(s).to_string(), "Profession"),
+                (Action::Disenchant, _) => (DISENCHANT_ICON.to_string(), "Disenchant".to_string(), "Enchanting"),
                 (a, icon) => (icon.unwrap_or_default().to_string(), a.basic_info().map_or(String::new(), |(n, _)| n.to_string()), "Basic"),
             };
             self.tree.set_texture(&format!("{button}IconTexture"), Some(&icon));
@@ -403,7 +433,14 @@ impl Panels {
     pub(super) fn action_lines(&self, action: Action) -> Vec<TipLine> {
         match (action, action.basic_info()) {
             (Action::Spell(i), _) => self.spell_lines(i),
-            (_, Some((name, what))) => vec![TipLine::new(name, WHITE), TipLine::new(what, GOLD)],
+            (Action::Trade(Skill::Mining), _) => vec![TipLine::new("Smelting", WHITE), TipLine::new("Smelt ore into bars at a forge. Opens the list of what you can smelt.", GOLD).wrapped(), TipLine::new(format!("Mining skill: {}", self.skills.rank(Skill::Mining)), GREY)],
+            (Action::Trade(s), _) => vec![TipLine::new(s.name(), WHITE), TipLine::new(s.description(), GOLD).wrapped(), TipLine::new(format!("Skill: {}", self.skills.rank(s)), GREY)],
+            (Action::Disenchant, _) => vec![
+                TipLine::new("Disenchant", WHITE),
+                TipLine::new("Breaks a weapon or armor of green, blue or purple quality into dust, essences or shards. Click it, then click the item in your pack.", GOLD).wrapped(),
+                TipLine::new(format!("Enchanting skill: {}", self.skills.rank(Skill::Enchanting)), GREY),
+            ],
+            (_, Some((name, what))) => vec![TipLine::new(name, WHITE), TipLine::new(what, GOLD).wrapped()],
             _ => Vec::new(),
         }
     }
@@ -425,6 +462,17 @@ impl Panels {
     /// Seconds before a spell can be cast again, and a cast of `ms` milliseconds as the talents shorten it.
     pub fn spell_cooldown(&self, spell: usize) -> f32 {
         content::spell(spell).cooldown * self.talents.perks().cooldown_factor()
+    }
+
+    /// Seconds of the global cooldown the spell starts: the original's `StartRecoveryTime`, 1.5 for a spell it has no row of.
+    pub fn spell_gcd(spell: usize) -> f32 {
+        content::classic_spell(content::spell(spell).spell).map_or(1.5, |c| c.gcd as f32 / 1000.0)
+    }
+
+    /// Seconds before the spell can begin: its own cooldown, or what is left of the global one if the spell is on it.
+    pub fn spell_wait(&self, spell: usize) -> f32 {
+        let own = self.cooldowns.get(spell).copied().unwrap_or(0.0);
+        if Self::spell_gcd(spell) > 0.0 { own.max(self.gcd) } else { own }
     }
 
     pub fn cast_ms(&self, ms: f32) -> f32 {
@@ -507,7 +555,7 @@ impl Panels {
                 GOLD,
             ));
         }
-        lines.push(TipLine::new(def.description.clone(), GOLD));
+        lines.push(TipLine::new(def.description.clone(), GOLD).wrapped());
         lines.push(TipLine::new(format!("{} skill: {}", def.class.name(), self.skills.rank(def.class)), GREY));
         lines
     }
@@ -627,8 +675,11 @@ impl Panels {
     /// A click on one of these windows' buttons. False when it was none of them.
     pub(super) fn magic_click(&mut self, name: &str) -> bool {
         if name.strip_prefix("SpellButton").is_some_and(|n| n.parse::<usize>().is_ok()) {
-            if let Some(Action::Spell(spell)) = self.book_entry_of(name) {
-                self.spell_click = Some(spell);
+            match self.book_entry_of(name) {
+                Some(Action::Spell(spell)) => self.spell_click = Some(spell),
+                Some(Action::Trade(skill)) => self.open_trade(skill),
+                Some(Action::Disenchant) => self.choose_disenchant(),
+                _ => {}
             }
             return true;
         }
@@ -695,6 +746,16 @@ impl Panels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The icons are the ones the original's profession spells have (`Spell.dbc` via `SpellIcon.dbc`), and they are in the game files.
+    #[test]
+    fn the_icons_of_the_professions_and_disenchant_are_in_the_game_files() {
+        let Some(mount) = mpq::find_wow_dir().and_then(|d| mpq::Mount::open_wow_dir(d).ok()) else { return eprintln!("skipped: no game data") };
+        let icons = skills::ALL.iter().filter(|s| s.is_profession()).map(|&s| trade_icon(s)).chain([DISENCHANT_ICON]);
+        for path in icons {
+            assert!(mount.read(&format!("{path}.blp")).is_ok(), "{path} is missing");
+        }
+    }
 
     #[test]
     fn the_buttons_of_the_book_run_down_the_left_column_and_then_down_the_right() {

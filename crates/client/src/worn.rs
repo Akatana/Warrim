@@ -202,10 +202,11 @@ pub fn gear_of(mount: &Mount, equipment: &[Option<&'static ItemDef>; SLOTS], loo
         gear.show.push(502 + shape(item));
     }
     // A cape.
-    if let Some(texture) = worn(items::BACK).and_then(|i| i.visual.textures[0]) {
+    if let Some((texture, shape)) = worn(items::BACK).and_then(|i| Some((i.visual.textures[0]?, i.visual.cape))) {
         gear.cape = Some(format!(r"Item\ObjectComponents\Cape\{texture}.blp"));
         gear.hide.push(1501);
-        gear.show.extend(1502..=1506);
+        // The original shows the one part of the cape's shape (1501 + shape); a few rows have shape 0, which is drawn as the plain one.
+        gear.show.push(1501 + u16::from(shape.max(1)));
     }
     // A helmet hides some of the hair and face.
     if let Some(item) = worn(items::HEAD) {

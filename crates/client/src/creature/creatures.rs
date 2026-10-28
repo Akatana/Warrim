@@ -43,6 +43,23 @@ pub struct Label {
     pub line: f32,
 }
 
+/// How far from the player a nameplate shows (yards, `DAT_00c4d988` = 20²), and how far above the name attachment its middle is (the original's
+/// `DAT_0080abfc` is 0.6667; lowered by request, the plates sat too high).
+const PLATE_RANGE: f32 = 20.0;
+const PLATE_LIFT: f32 = 0.3;
+
+/// A nameplate: the middle of its frame on the screen (pixels) and what it tells of the creature.
+pub struct Plate {
+    pub name: String,
+    pub level: u32,
+    /// Health as a share of the most it has.
+    pub fraction: f32,
+    pub color: [f32; 4],
+    pub x: f32,
+    pub y: f32,
+    pub targeted: bool,
+}
+
 /// A place of the map where a creature of some kind stands (a spawn of the content): while the player is far it is only this.
 struct Site {
     kind: usize,
@@ -413,7 +430,7 @@ impl Creatures {
     /// Advance every creature and pose it. Returns what they did that the game acts on (the swings that landed on the player, the spells begun, stopped
     /// and gone off), and the sounds the creatures made with the place they came from.
     #[allow(clippy::too_many_arguments)]
-    pub fn update(&mut self, dt: f32, watch: &Watch, ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool, mut physics: Option<&mut Bodies>, renderer: &mut Renderer, gpu: &Gpu) -> (Vec<Foe>, Vec<(Sfx, Vec3)>) {
+    pub fn update(&mut self, dt: f32, watch: &Watch, ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool, liquid: impl Fn(f32, f32, f32) -> Option<f32>, nav: &NavMesh, mut physics: Option<&mut Bodies>, renderer: &mut Renderer, gpu: &Gpu) -> (Vec<Foe>, Vec<(Sfx, Vec3)>) {
         self.clock_ms += dt * 1000.0;
         let player = watch.feet;
         self.scan += dt;
@@ -442,6 +459,8 @@ impl Creatures {
             .filter(|(_, c)| c.mob.attackable() && !c.mob.is_dead() && flat(c.mob.pos - player).length() <= DRAW_RANGE)
             .map(|(index, c)| Friend { index, pos: c.mob.pos, faction: c.mob.def.brain.faction, dist: 0.0, health: c.mob.health, max: c.mob.def.health, auras: c.mob.aura_ids() })
             .collect();
+        // Where others stand fighting without moving: a creature that wants their place moves aside.
+        let crowd: Vec<Vec3> = self.creatures.iter().filter(|c| c.mob.state.fights() && !c.mob.moving && c.mob.attackable()).map(|c| c.mob.pos).collect();
         let (mut casts, mut summons, mut assists) = (Vec::new(), Vec::new(), Vec::new());
         // What the player's allies fight: what he has selected, if it is a foe within reach of him; else what fights him and is the nearest to him. And who of them soak blows.
         let is_foe = |c: &Creature| c.mob.attackable() && !c.mob.is_dead() && flat(c.mob.pos - player).length() <= ally::GO_FOR;
@@ -507,18 +526,22 @@ impl Creatures {
                 }
             }
             (c.mob.hidden, c.mob.notice) = (watch.sneaking.is_some(), watch.sneaking.unwrap_or(1.0));
+            // The liquid is looked at for those that moved; the rest stay as they were.
+            if c.mob.moving {
+                c.mob.swimming = liquid(c.mob.pos.x, c.mob.pos.z, c.mob.pos.y).is_some_and(|level| c.mob.pos.y < level - 0.4);
+            }
             let height = Self::height_of(c);
             let aim = if c.mob.is_pet() { pet_focus } else { focus };
             let acts = {
                 let _p = crate::profile::sum(&mut step_time);
                 if c.mob.is_ally() {
-                    let acts = c.mob.step_ally(dt, player, aim.map(|f| f.1), c.mob.is_pet() && orders.stay, &blocked);
+                    let acts = c.mob.step_ally(dt, player, aim.map(|f| f.1), c.mob.is_pet() && orders.stay, &ground, &blocked, nav);
                     if let Some(y) = ground(c.mob.pos.x, c.mob.pos.z, c.mob.pos.y) {
-                        c.mob.pos.y = y;
+                        c.mob.settle(y);
                     }
                     acts
                 } else {
-                    c.mob.step(dt, watch, i, &roster, &ground, &blocked)
+                    c.mob.step(dt, watch, i, &roster, &crowd, &ground, &blocked, nav)
                 }
             };
             self.ticks.extend(c.mob.ticked.drain(..).map(|damage| (c.mob.pos + Vec3::Y * 0.9, damage)));
@@ -1472,16 +1495,25 @@ impl Creatures {
         Some((c.mob.pos, radius, [r, g, b]))
     }
 
-    /// Health bars over the hostile creatures that are hurt, drawn on a `size` screen seen through `camera`.
-    pub fn draw_plates(&self, ui: &mut Ui, camera: &Camera, size: (u32, u32)) {
-        let h = size.1 as f32;
-        for c in self.creatures.iter().filter(|c| !c.mob.is_dead() && c.mob.health < c.mob.def.health) {
-            let Some((x, y)) = Self::on_screen(camera, size, c.mob.pos + Vec3::Y * 1.7) else { continue };
-            let (bar_w, bar_h) = (60.0 * h / 768.0, 7.0 * h / 768.0);
-            let fill = (c.mob.health / c.mob.def.health).clamp(0.0, 1.0);
-            let mut quad = |rect: [f32; 4], color: [f32; 4]| ui.quad(Quad { texture: WHITE, rect, uv: FULL_UV, color, additive: false });
-            quad([x - bar_w / 2.0 - 1.0, y - 1.0, bar_w + 2.0, bar_h + 2.0], [0.0, 0.0, 0.0, 0.85]);
-            quad([x - bar_w / 2.0, y, bar_w * fill, bar_h], [0.2 + 0.6 * (1.0 - fill), 0.8 * fill + 0.1, 0.1, 1.0]);
-        }
+    /// The nameplates of the creatures within `PLATE_RANGE` of the player at `feet`, in the order of the original's `FUN_0060f600`: alive, no wall test,
+    /// at the name attachment plus `PLATE_LIFT`. `show` is [enemies, friends] (`DAT_00c4da34` bits 0 and 3); an enemy is a creature the player can attack.
+    pub fn plates(&self, camera: &Camera, size: (u32, u32), feet: Vec3, show: [bool; 2]) -> Vec<Plate> {
+        self.creatures
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !matches!(c.visual, Visual::None) && !c.mob.is_dead() && show[!c.mob.attackable() as usize] && (c.mob.pos - feet).length_squared() < PLATE_RANGE * PLATE_RANGE)
+            .filter_map(|(i, c)| {
+                let (x, y) = Self::on_screen(camera, size, c.mob.pos + c.name_at + Vec3::Y * PLATE_LIFT)?;
+                (x >= 0.0 && y >= 0.0 && x <= size.0 as f32 && y <= size.1 as f32).then(|| Plate {
+                    name: c.mob.def.name.clone(),
+                    level: c.mob.def.level,
+                    fraction: (c.mob.health / c.mob.def.health).clamp(0.0, 1.0),
+                    color: c.reaction(),
+                    x,
+                    y,
+                    targeted: self.target == Some(i),
+                })
+            })
+            .collect()
     }
 }

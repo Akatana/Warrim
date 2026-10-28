@@ -282,6 +282,8 @@ pub struct Weapon {
 pub struct Visual {
     /// The three geoset groups of the row: a sleeve, a robe's skirt, and a third.
     pub geo: [u8; 3],
+    /// The cape's shape (1..=5): which of the mesh parts 1502..=1506 it is drawn with.
+    pub cape: u8,
     /// The models (a helmet; the left and the right shoulder) and their textures, without folder or ending.
     pub models: [Option<&'static str>; 2],
     pub textures: [Option<&'static str>; 2],
@@ -338,6 +340,10 @@ pub struct ItemDef {
     /// Only one of it can be had.
     pub unique: bool,
     pub durability: u32,
+    /// The item level of the original's tables (0: none given); `level` is the level the character must have.
+    pub ilvl: u32,
+    /// The table of what breaking it gives (`Content::disenchant`); 0: it cannot be disenchanted.
+    pub disenchant: u32,
     /// What it adds to health and mana, and its resistances (holy, fire, nature, frost, shadow, arcane).
     pub health: i32,
     pub mana: i32,
@@ -364,7 +370,7 @@ impl ItemDef {
     pub fn plain(wear: Wear) -> ItemDef {
         ItemDef {
             id: "", name: "", icon: "", quality: 1, wear, kind: ("", ""), armor: 0, block: 0, stats: [0; 5], weapon: None, look: Look::NONE, held: None, stack: 1, buy: 0, sell: 0, handling: "", tome: None, page: 0, material: 0,
-            quest: false, class: 0, subclass: 0, level: 0, classes: 0, races: 0, bind: Bind::Never, unique: false, durability: 0, health: 0, mana: 0, resist: [0; 6], more_damage: &[], buy_count: 1,
+            quest: false, class: 0, subclass: 0, level: 0, classes: 0, races: 0, bind: Bind::Never, unique: false, durability: 0, ilvl: 0, disenchant: 0, health: 0, mana: 0, resist: [0; 6], more_damage: &[], buy_count: 1,
             text: "", spells: &[], skill: (0, 0), slots: 0, flags: 0, weight: 0.0, visual: Visual::default(),
         }
     }

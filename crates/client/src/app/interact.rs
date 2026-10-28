@@ -217,6 +217,7 @@ impl State {
             Job::Node(i) => i,
             Job::Make { recipe, more } => return self.finish_make(recipe, more),
             Job::Skin(creature) => return self.finish_skin(creature),
+            Job::Disenchant(slot) => return self.finish_disenchant(slot),
             // The line ran out: it comes back.
             Job::Fish => return panels_cast_stop(self),
             Job::Lure(item) => {

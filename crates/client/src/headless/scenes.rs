@@ -193,7 +193,7 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
                 wolves.set_markers(render_camera.pos, |kind| panels.marker(kind));
             }
             let watch = crate::creature::Watch { feet, yaw, level: 1, health: player.vitals.health.fraction(), mana: 1.0, casting: false, auras: &foes.afflictions.spells(), sneaking: args.sneak.then_some(1.0) };
-            let (acts, _) = wolves.update(1.0 / 60.0, &watch, |x, z, y| crate::collision::Collider::floor(world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), None, renderer, gpu);
+            let (acts, _) = wolves.update(1.0 / 60.0, &watch, |x, z, y| world.walker_floor(x, z, y), |from, to| world.blocked(from, to), |x, z, y| world.liquid_at(x, z, y), &world.nav, None, renderer, gpu);
             let mut effect_list: Vec<crate::foes::Effect> = acts.into_iter().flat_map(|act| foes.handle(act, feet, wolves, &mut effects, renderer, gpu)).collect();
             effect_list.extend(foes.update(1.0 / 60.0, feet, wolves, &mut effects, renderer, gpu));
             for effect in effect_list {
@@ -207,8 +207,8 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
     if let Some(wolves) = &wolves {
         log::info!("creatures in the world: {} made, {} with a model", wolves.counts().0, wolves.counts().1);
         log::info!("the pet: {:?}", wolves.pet_kind());
-        wolves.draw_plates(&mut renderer.ui, &render_camera, (w, h));
         if let Some(panels) = &mut panels {
+            panels.draw_plates(&mut renderer.ui, gpu, (w, h), &wolves.plates(&render_camera, (w, h), feet, [true, true]), wolves.target().is_some());
             panels.draw_labels(&mut renderer.ui, gpu, (w, h), &wolves.labels(&render_camera, (w, h), crate::interface::InterfaceSettings::load().npc_names, |from, to| world.ray_hit(from, to).is_some()));
         }
         text.draw(&mut renderer.ui, &render_camera, (w, h));
@@ -435,7 +435,7 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
     }
     // The player previews show the interface too.
     let bar = crate::actionbar::ActionBar::load(&player_mount, &mut renderer.ui, gpu)?;
-    bar.draw(&mut renderer.ui, (w, h), &player, args.panel.iter().any(|p| p == "character"), panels.as_ref().map_or(crate::levels::Progress::new(), |p| p.progress), panels.as_ref().map_or(&[][..], |p| &p.cooldowns[..]), &|i| panels.as_ref().map_or((0, 0.0), |p| p.item_state(i)));
+    bar.draw(&mut renderer.ui, (w, h), &player, args.panel.iter().any(|p| p == "character"), panels.as_ref().map_or(crate::levels::Progress::new(), |p| p.progress), &|i| panels.as_ref().map_or(0.0, |p| p.spell_wait(i)), &|i| panels.as_ref().map_or((0, 0.0), |p| p.item_state(i)));
     // `--panel pet` shows the pet bar without a pet.
     if args.panel.iter().any(|p| p == "pet") {
         crate::petbar::PetBar::load(&player_mount, &mut renderer.ui, gpu).draw(&mut renderer.ui, (w, h), crate::creature::PetOrders { attack: Some(0), ..Default::default() }, false, &[0, 2, 3], false, args.cursor);

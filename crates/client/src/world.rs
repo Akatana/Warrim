@@ -2,6 +2,7 @@
 //! and answers ground-height / area-name queries.
 
 use crate::collision::{Collider, CollisionMesh};
+use crate::navmesh::{NavCache, NavMesh, BORDER_YARDS, HALF_WORLD, TILE};
 use crate::coords::{tile_of, tile_origin, TileCoord};
 use crate::renderer::{Gpu, Renderer, TileGpu};
 use crate::models::ModelCache;
@@ -35,9 +36,9 @@ struct LoadedTile {
     beds: Vec<glam::Vec3>,
 }
 
-/// `AreaTable.dbc`: area id -> (parent zone id, name).
+/// `AreaTable.dbc`: area id -> (parent zone id, name, exploration level).
 pub struct AreaNames {
-    by_id: HashMap<u32, (u32, String)>,
+    by_id: HashMap<u32, (u32, String, u32)>,
     /// `WMOAreaTable.dbc`: (building, group) -> what the room is; group `u32::MAX` is the building's own row.
     rooms: HashMap<(u32, u32), Room>,
 }
@@ -53,8 +54,8 @@ pub struct Room {
 impl AreaNames {
     pub fn load(mount: &Mount) -> Result<Self> {
         let dbc = Dbc::parse(&mount.read("DBFilesClient\\AreaTable.dbc")?)?;
-        // Fields: 0 id, 1 map, 2 parent zone, 11 name (enUS).
-        let by_id = dbc.iter().map(|r| (r.u32(0), (r.u32(2), r.string(11).to_string()))).collect();
+        // Fields: 0 id, 1 map, 2 parent zone, 10 exploration level, 11 name (enUS).
+        let by_id = dbc.iter().map(|r| (r.u32(0), (r.u32(2), r.string(11).to_string(), r.u32(10)))).collect();
         // WMOAreaTable: 0 id, 1 building, 2 name set, 3 group (-1: the building), 6 ambience, 7 zone music, 10 area id.
         // The first name set of a room is the one it has.
         let mut rooms = HashMap::new();
@@ -73,14 +74,19 @@ impl AreaNames {
 
     /// The zone an area belongs to (the area itself when it is a zone).
     pub fn zone(&self, id: u32) -> u32 {
-        self.by_id.get(&id).map_or(id, |&(parent, _)| if parent != 0 { parent } else { id })
+        self.by_id.get(&id).map_or(id, |&(parent, ..)| if parent != 0 { parent } else { id })
+    }
+
+    /// The area's own name and the level it is worth exploring at.
+    pub fn explore_info(&self, id: u32) -> Option<(&str, u32)> {
+        self.by_id.get(&id).map(|(_, name, level)| (name.as_str(), *level))
     }
 
     /// "Zone - Subzone", or just the zone when the area is a zone itself.
     pub fn display(&self, id: u32) -> String {
-        let Some((parent, name)) = self.by_id.get(&id) else { return format!("area {id}") };
+        let Some((parent, name, _)) = self.by_id.get(&id) else { return format!("area {id}") };
         match self.by_id.get(parent) {
-            Some((_, zone)) if *parent != 0 && *parent != id => format!("{zone} - {name}"),
+            Some((_, zone, _)) if *parent != 0 && *parent != id => format!("{zone} - {name}"),
             _ => name.clone(),
         }
     }
@@ -105,6 +111,11 @@ pub struct World {
     refresh: HashSet<TileCoord>,
     requests: Sender<TileCoord>,
     results: Receiver<(TileCoord, Result<TileCpu>)>,
+    /// The navigation mesh that creatures find their ways on, made tile by tile near the camera, and the tiles that were tried (some have nothing to walk on).
+    pub nav: NavMesh,
+    nav_tried: HashSet<(i32, i32)>,
+    /// The tiles of the mesh kept in a file of the application folder, from the earlier runs and for the next (none when the file cannot be had, or once the props changed).
+    nav_cache: Option<NavCache>,
 }
 
 impl World {
@@ -150,6 +161,9 @@ impl World {
             refresh: HashSet::new(),
             requests: req_tx,
             results: res_rx,
+            nav: NavMesh::default(),
+            nav_tried: HashSet::new(),
+            nav_cache: open_nav_cache(map),
         })
     }
 
@@ -203,11 +217,83 @@ impl World {
 
         self.tiles.retain(|t, _| (t.0 - cx).abs() <= r + 1 && (t.1 - cz).abs() <= r + 1);
         self.refresh.retain(|t| self.tiles.contains_key(t) || self.pending.contains(t));
+        self.update_nav(x, z);
+    }
+
+    /// Make the tiles of the navigation mesh near `(x, z)` (render space) that are still missing, the nearest first, as long as the frame's time allows (at least one).
+    /// A tile is made when the terrain under it is loaded.
+    fn update_nav(&mut self, x: f32, z: f32) {
+        const REACH: f32 = 160.0;
+        const BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
+        let began = std::time::Instant::now();
+        let [north, west, _] = crate::coords::render_to_wow(glam::Vec3::new(x, 0.0, z));
+        let tile = TILE as f32;
+        let (ny, nx) = (((north as f64 + HALF_WORLD) / TILE).floor() as i32, ((west as f64 + HALF_WORLD) / TILE).floor() as i32);
+        let span = (REACH / tile).ceil() as i32;
+        let mut wanted: Vec<(i32, i32)> = Vec::new();
+        for dy in -span..=span {
+            for dx in -span..=span {
+                let t = (nx + dx, ny + dy);
+                if (dx * dx + dy * dy) as f32 * tile * tile <= REACH * REACH && !self.nav_tried.contains(&t) {
+                    wanted.push(t);
+                }
+            }
+        }
+        wanted.sort_by_key(|t| (t.0 - nx).pow(2) + (t.1 - ny).pow(2));
+        for (tx, ty) in wanted {
+            if began.elapsed() > BUDGET {
+                break;
+            }
+            // Kept from before: no terrain needed. (The cache counts tiles from the corner of the world: north first.)
+            if let Some(kept) = self.nav_cache.as_mut().and_then(|c| c.load(ty, tx)) {
+                log::debug!("navigation tile {tx},{ty} read from the cache");
+                self.nav_tried.insert((tx, ty));
+                if let Some(tile) = kept {
+                    self.nav.add_tile(tile);
+                }
+                continue;
+            }
+            // The terrain under the tile, its border and the objects that may reach over it (a few dozen yards) has to be there.
+            const REACH_OF_OBJECTS: f64 = 80.0;
+            let (lo_n, lo_w) = (ty as f64 * TILE - HALF_WORLD - BORDER_YARDS - REACH_OF_OBJECTS, tx as f64 * TILE - HALF_WORLD - BORDER_YARDS - REACH_OF_OBJECTS);
+            let side = TILE + 2.0 * (BORDER_YARDS + REACH_OF_OBJECTS);
+            let corners = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].map(|(a, b)| crate::coords::wow_to_render([(lo_n + a * side) as f32, (lo_w + b * side) as f32, 0.0]));
+            let ready = if self.global {
+                // A dungeon is one building, kept as one copy in the tile the camera is in: the tile is made while the copy is within a tile of it.
+                let here = tile_of(corners[0].x, corners[0].z);
+                self.tiles.keys().any(|c| (c.0 - here.0).abs() <= 1 && (c.1 - here.1).abs() <= 1)
+            } else {
+                // (A square of the map that has no terrain counts as there.)
+                corners.iter().all(|c| {
+                    let t = tile_of(c.x, c.z);
+                    self.tiles.contains_key(&t) || self.failed.contains(&t) || t.0 < 0 || t.1 < 0 || !self.wdt.has_tile(t.0 as usize, t.1 as usize)
+                })
+            };
+            if !ready {
+                continue;
+            }
+            self.nav_tried.insert((tx, ty));
+            // (The tile is counted from the corner of the world: north first.)
+            log::debug!("navigation tile {tx},{ty} built");
+            let built = crate::navmesh::build(&*self, ty, tx);
+            if let Some(cache) = self.nav_cache.as_mut() {
+                let tile = built.as_ref().map(crate::navmesh::MeshTile::from_built);
+                if let Err(e) = cache.save(ty, tx, tile.as_ref()) {
+                    log::warn!("the navigation cache cannot be written: {e}");
+                    self.nav_cache = None;
+                }
+            }
+            if let Some(built) = built {
+                self.nav.add(&built);
+            }
+        }
     }
 
     /// Use these props from now on: the tiles whose props changed are loaded again, and shown as they were until the new ones are there.
     pub fn set_props(&mut self, props: Vec<Prop>) {
         let mut changed = HashSet::new();
+        // (The tiles of the mesh made from now on, and kept from before, are of other props.)
+        self.nav_cache = None;
         {
             let mut old = self.props.write().unwrap_or_else(|e| e.into_inner());
             // Most edits touch one prop among thousands: only what lies between the same beginning and the same end is compared.
@@ -265,6 +351,11 @@ impl World {
         let tile = self.tiles.get(&coord)?;
         let (ox, oz) = tile_origin(coord);
         tile.heights.height_at((x as f64 - ox) as f32, (z as f64 - oz) as f32)
+    }
+
+    /// Where a creature that walks to `(x, z)` with its feet at height `y` stands: the floor within a yard above them, else the terrain.
+    pub fn walker_floor(&self, x: f32, z: f32, y: f32) -> Option<f32> {
+        Collider::floor(self, x, z, y + 1.0).or_else(|| self.height_at(x, z))
     }
 
     /// Footstep surface (`TerrainType.dbc` id) of the terrain under `(x, z)`.
@@ -640,6 +731,41 @@ impl crate::movement::TriangleSource for World {
         }
     }
 
+    fn gather_liquid(&self, origin: [f64; 3], min: glam::Vec3, max: glam::Vec3, out: &mut Vec<crate::movement::Wet>) {
+        use crate::movement::Wet;
+        let (lo, hi) = (
+            glam::DVec3::new(-(origin[1] + max.y as f64), 0.0, -(origin[0] + max.x as f64)),
+            glam::DVec3::new(-(origin[1] + min.y as f64), 0.0, -(origin[0] + min.x as f64)),
+        );
+        // The navigation area of a kind of liquid (0 water, 1 ocean, 2 magma, 3 slime).
+        let area = |kind: usize| if kind >= 2 { 8 } else { 9 };
+        // render -> WoW, then relative to the origin.
+        let to_wow = |p: glam::Vec3| glam::Vec3::new((-(p.z as f64) - origin[0]) as f32, (-(p.x as f64) - origin[1]) as f32, (p.y as f64 - origin[2]) as f32);
+        let mut quad = |q: [glam::Vec3; 4], kind: usize, cell: Option<(i32, i32)>| {
+            // The corners go round the cell: two triangles.
+            let w = q.map(to_wow);
+            out.push(Wet { v: [w[0], w[1], w[2]], area: area(kind), cell });
+            out.push(Wet { v: [w[0], w[2], w[3]], area: area(kind), cell });
+        };
+        let (cx, cz) = (((lo.x + hi.x) / 2.0) as f32, ((lo.z + hi.z) / 2.0) as f32);
+        let reach = ((hi.x - lo.x).max(hi.z - lo.z) / 2.0) as f32 + UNIT_SIZE;
+        for c in self.liquid_cells(cx, cz, reach) {
+            if (c.min.0 as f64) > hi.x || (c.min.0 as f64 + UNIT_SIZE as f64) < lo.x || (c.min.1 as f64) > hi.z || (c.min.1 as f64 + UNIT_SIZE as f64) < lo.z {
+                continue;
+            }
+            let (x0, z0, x1, z1) = (c.min.0, c.min.1, c.min.0 + UNIT_SIZE, c.min.1 + UNIT_SIZE);
+            // (North and west of the cell's middle, counted in cells from the corner of the world.)
+            let key = (((-(z0 + z1) / 2.0) as f64 + HALF_WORLD).div_euclid(UNIT_SIZE as f64) as i32, ((-(x0 + x1) / 2.0) as f64 + HALF_WORLD).div_euclid(UNIT_SIZE as f64) as i32);
+            quad([glam::Vec3::new(x0, c.corners[0], z0), glam::Vec3::new(x1, c.corners[1], z0), glam::Vec3::new(x1, c.corners[3], z1), glam::Vec3::new(x0, c.corners[2], z1)], c.kind, Some(key));
+        }
+        for (q, kind) in self.wmo_cells(cx, cz, reach) {
+            let (qlo, qhi) = (q.iter().fold(glam::Vec3::MAX, |m, p| m.min(*p)), q.iter().fold(glam::Vec3::MIN, |m, p| m.max(*p)));
+            if (qlo.x as f64) <= hi.x && (qhi.x as f64) >= lo.x && (qlo.z as f64) <= hi.z && (qhi.z as f64) >= lo.z {
+                quad(q, kind, None);
+            }
+        }
+    }
+
     fn is_loaded(&self, origin: [f64; 3]) -> bool {
         let (x, z) = (-origin[1], -origin[0]);
         self.tiles.contains_key(&tile_of(x as f32, z as f32))
@@ -658,4 +784,13 @@ fn height_in_quad(x: f32, z: f32, q: &[glam::Vec3; 4]) -> Option<f32> {
         (u >= 0.0 && v >= 0.0 && u + v <= 1.0).then(|| u * a.y + v * b.y + (1.0 - u - v) * c.y)
     };
     over(q[0], q[1], q[2]).or_else(|| over(q[0], q[2], q[3]))
+}
+
+/// The file that keeps the navigation tiles of `map`, stamped with the props of the content (and the builder): none if it cannot be had.
+fn open_nav_cache(map: &str) -> Option<NavCache> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{:?}", crate::content::get().props).hash(&mut hasher);
+    let path = crate::save::base_dir().join("navmesh").join(format!("{map}.nav"));
+    NavCache::open(&path, hasher.finish()).map_err(|e| log::warn!("{}: {e}", path.display())).ok()
 }

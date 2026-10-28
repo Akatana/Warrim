@@ -61,7 +61,7 @@ const DEFAULT_NAME: &str = "Adventurer";
 const CHEST_LOOT: usize = 1_000_000;
 /// Loot window numbers from this one up are the nodes' (veins and herbs).
 const NODE_LOOT: usize = 2_000_000;
-/// The loot window of what a line brought in (nothing is left on the water).
+/// The loot window of what a line brought in or a disenchanted item gave (nothing is left on the water, and the item is gone).
 const FISH_LOOT: usize = 3_000_000;
 
 /// How fast the editor's camera flies at first (yards a second; the wheel changes it).
@@ -85,6 +85,8 @@ enum Job {
     Fish,
     /// A lure or a stone (the item) goes on the weapon.
     Lure(usize),
+    /// The item in this pack slot is broken into dust and shards.
+    Disenchant(usize),
 }
 
 /// Work that begins when the character has drawn the weapons: the line to cast to a spot, a lure to put on.
@@ -292,6 +294,8 @@ struct State {
     reconfigure: bool,
     /// The names over creatures show (the interface options).
     names: bool,
+    /// Nameplates show over enemies and over friends (`NAMEPLATES`, `FRIENDNAMEPLATES`); the original starts with both off, here the enemies' are on like the bars they replace.
+    plates: [bool; 2],
     /// Whether dying creatures fall as ragdolls (the interface options).
     ragdolls: bool,
     /// The editor asked for the content it saved to be taken into use (and when to ask it by itself: `--apply-after`).

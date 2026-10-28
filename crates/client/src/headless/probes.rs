@@ -135,6 +135,16 @@ fn stress_walk(world: &World, camera: &Camera) {
 fn check_spawns(world: &World) {
     let content = crate::content::get();
     let places = content.spawns.iter().map(|s| (s.creature.as_str(), s.at)).chain(content.chests.iter().map(|c| (c.id.as_str(), c.at)));
+    // A spawn at a height of its own (a floor of a building) must find that floor, or its creature drops to the ground below.
+    for s in &content.spawns {
+        let Some(h) = s.height else { continue };
+        let p = crate::coords::wow_to_render([s.at.0, s.at.1, h]);
+        let Some(ground) = world.height_at(p.x, p.z) else { continue };
+        let floor = crate::collision::Collider::floor(world, p.x, p.z, p.y + 1.0);
+        if p.y > ground + 1.5 && floor.is_none_or(|f| (f - p.y).abs() > 1.0) {
+            log::warn!("{} at {:?}: stands at {h} (ground {ground:.1}), floor found {floor:?}", s.creature, s.at);
+        }
+    }
     for (name, at) in places {
         let p = crate::coords::wow_to_render([at.0, at.1, 0.0]);
         let Some(ground) = world.height_at(p.x, p.z) else { log::warn!("{name} at {at:?}: no ground loaded"); continue };
@@ -144,6 +154,74 @@ fn check_spawns(world: &World) {
         }
     }
     log::info!("checked the places of the content");
+}
+
+/// Build the navigation mesh round the camera (tiles within 100 yards), then say how the spawns of the content stand on it and how paths between neighbours come out.
+fn navmesh_probe(args: &Args, world: &World, camera: &Camera) {
+    use crate::navmesh::{from_nav, to_nav, NavMesh, PathFinder, HALF_WORLD, PATHFIND_NORMAL, TILE};
+    let [north, west, _] = render_to_wow(camera.pos);
+    let (ny, nx) = (((north as f64 + HALF_WORLD) / TILE).floor() as i32, ((west as f64 + HALF_WORLD) / TILE).floor() as i32);
+    let began = std::time::Instant::now();
+    let mut mesh = NavMesh::default();
+    let span = (100.0 / TILE).ceil() as i32;
+    for dy in -span..=span {
+        for dx in -span..=span {
+            if let Some(tile) = crate::navmesh::build(world, ny + dy, nx + dx) {
+                mesh.add(&tile);
+            }
+        }
+    }
+    log::info!("navmesh: {} tiles of {} built in {:?}", mesh.tile_count(), (2 * span + 1).pow(2), began.elapsed());
+    let mut kinds = [0usize; 4];
+    for t in &mesh.tiles {
+        for p in &t.polys {
+            kinds[p.flags.trailing_zeros().min(3) as usize] += 1;
+        }
+    }
+    log::info!("navmesh: polygons of ground {}, steep {}, water {}, magma or slime {}", kinds[0], kinds[1], kinds[2], kinds[3]);
+    let near = |at: (f32, f32)| (at.0 - north).hypot(at.1 - west) < 90.0;
+    let spawns: Vec<_> = crate::content::get().spawns.iter().filter(|s| near(s.at) && s.height.is_some() && s.map.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(&args.map))).collect();
+    let q = crate::navmesh::Query { mesh: &mesh, filter: crate::navmesh::Filter { include: crate::navmesh::NAV_GROUND, exclude: 0 } };
+    let (mut on, mut high, mut off) = (0, 0, Vec::new());
+    for s in &spawns {
+        let p = to_nav(glam::Vec3::new(s.at.0, s.at.1, s.height.unwrap_or(0.0)));
+        match q.find_nearest_poly(p, glam::Vec3::splat(5.0)) {
+            Some((_, c)) if (c.y - p.y).abs() < 1.5 => {
+                on += 1;
+                high += (c.y > world.height_at(-s.at.1, -s.at.0).unwrap_or(c.y) + 1.5) as i32;
+            }
+            _ => {
+                let r = crate::coords::wow_to_render([s.at.0, s.at.1, s.height.unwrap_or(0.0)]);
+                off.push((s.creature.as_str(), s.at, p.y, crate::collision::Collider::floor(world, r.x, r.z, r.y + 1.0)))
+            }
+        }
+    }
+    log::info!("navmesh: of {} spawns here {on} are on a polygon at their height ({high} of those above the ground), {} are not", spawns.len(), off.len());
+    for (name, at, z, floor) in off.iter().take(8) {
+        log::info!("  off the mesh: {name} at {at:?} height {z:.1}, the player's floor there {floor:?}");
+    }
+    // Paths between spawns 20 to 60 yards apart.
+    let mut finder = PathFinder::new(false);
+    let (mut paths, mut whole, mut longest, mut worst) = (0, 0, 0.0f32, 1.0f32);
+    for (i, a) in spawns.iter().enumerate() {
+        for b in spawns.iter().skip(i + 1).take(6) {
+            let (pa, pb) = (glam::Vec3::new(a.at.0, a.at.1, a.height.unwrap_or(0.0)), glam::Vec3::new(b.at.0, b.at.1, b.height.unwrap_or(0.0)));
+            let d = pa.distance(pb);
+            if !(20.0..60.0).contains(&d) {
+                continue;
+            }
+            finder.calculate(&mesh, pa, pb, false, false);
+            paths += 1;
+            if finder.kind == PATHFIND_NORMAL {
+                whole += 1;
+                let len: f32 = finder.path.windows(2).map(|w| w[0].distance(w[1])).sum();
+                longest = longest.max(len);
+                worst = worst.max(len / d);
+            }
+        }
+    }
+    log::info!("navmesh: {paths} paths between spawns, {whole} whole (longest {longest:.0} yd, at most {worst:.1} times the straight line)");
+    let _ = from_nav;
 }
 
 fn dump_tris(world: &World, camera: &Camera) {
@@ -250,6 +328,7 @@ pub(super) fn run(args: &Args, world: &World, camera: &Camera, z_given: bool) {
     if args.find_holes { find_holes(world, camera); }
     if args.stress_walk { stress_walk(world, camera); }
     if args.check_spawns { check_spawns(world); }
+    if args.navmesh_probe { navmesh_probe(args, world, camera); }
     if args.dump_tris { dump_tris(world, camera); }
     if args.find_ramps { find_ramps(world, camera); }
     if args.floor_profile { floor_profile(args, world, camera, z_given); }

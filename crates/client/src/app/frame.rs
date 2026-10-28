@@ -132,6 +132,9 @@ impl State {
         if let Some(item) = self.panels.as_mut().and_then(|p| p.take_lure()) {
             self.start_lure(item);
         }
+        if let Some(slot) = self.panels.as_mut().and_then(|p| p.take_disenchant()) {
+            self.start_disenchant(slot);
+        }
         if self.later.is_some() && self.moving {
             self.later = None;
         } else if self.later.is_some() && self.player.as_ref().is_some_and(|p| !p.drawing()) {
@@ -477,7 +480,7 @@ impl State {
             wolves.ragdolls = self.ragdolls;
             let timing = Instant::now();
             let t = crate::profile::scope("creatures.update");
-            let (acts, mut cries) = wolves.update(dt, &watch, |x, z, y| crate::collision::Collider::floor(world, x, z, y + 1.0).or_else(|| world.height_at(x, z)), |from, to| world.blocked(from, to), self.bodies.as_mut(), &mut self.renderer, &self.gpu);
+            let (acts, mut cries) = wolves.update(dt, &watch, |x, z, y| world.walker_floor(x, z, y), |from, to| world.blocked(from, to), |x, z, y| world.liquid_at(x, z, y), &world.nav, self.bodies.as_mut(), &mut self.renderer, &self.gpu);
             drop(t);
             self.creature_time += timing.elapsed();
             // The pet has the level of its master, and gives him its pact.
@@ -662,7 +665,6 @@ impl State {
                 }
             }
             let t = crate::profile::scope("plates, loot, hints");
-            wolves.draw_plates(&mut self.renderer.ui, &render_camera, size);
             // Looting: the window closes when the player walks away, and what is left stays on the corpse.
             if let Some(panels) = &mut self.panels {
                 let (chests, nodes) = (&mut self.chests, &mut self.nodes);
@@ -724,6 +726,7 @@ impl State {
                 panels.update_quests();
                 let _t = crate::profile::scope("name labels");
                 panels.draw_labels(&mut self.renderer.ui, &self.gpu, size, &wolves.labels(&render_camera, size, self.names, |from, to| self.world.ray_hit(from, to).is_some()));
+                panels.draw_plates(&mut self.renderer.ui, &self.gpu, size, &wolves.plates(&render_camera, size, feet, self.plates), wolves.target().is_some());
                 if let Some(draw) = &mut self.selection_draw {
                     let world = &self.world;
                     draw.draw(wolves.target_circle().filter(|_| panels.select_circle()), |x, z, max_y| crate::collision::Collider::floor(world, x, z, max_y), &mut self.renderer, &self.gpu);
@@ -935,9 +938,9 @@ impl State {
     /// something was discovered (the game is saved).
     fn draw_interface(&mut self, dt: f32, render_camera: &Camera, size: (u32, u32)) -> bool {
         if let (Some(bar), Some(player)) = (&self.actionbar, &self.player) {
-            let cooldowns = self.panels.as_ref().map_or(&[][..], |p| &p.cooldowns[..]);
+            let wait = |i| self.panels.as_ref().map_or(0.0, |p| p.spell_wait(i));
             let items = |i| self.panels.as_ref().map_or((0, 0.0), |p| p.item_state(i));
-            bar.draw(&mut self.renderer.ui, size, player, self.panels.as_ref().is_some_and(|p| p.character_open()), self.panels.as_ref().map_or(crate::levels::Progress::new(), |p| p.progress), cooldowns, &items);
+            bar.draw(&mut self.renderer.ui, size, player, self.panels.as_ref().is_some_and(|p| p.character_open()), self.panels.as_ref().map_or(crate::levels::Progress::new(), |p| p.progress), &wait, &items);
         }
         if let (Some(petbar), Some((orders, dead))) = (&self.petbar, self.wolves.as_ref().and_then(|w| w.pet_orders())) {
             let (spells, phased) = (self.pet_bar_spells(), self.wolves.as_ref().is_some_and(|w| w.pet_phased()));
@@ -967,7 +970,12 @@ impl State {
             }
             if self.lock.is_none() {
                 discovered = panels.discover(self.camera.pos - Vec3::Y * EYE_HEIGHT);
-                discovered |= panels.explore(self.area_now);
+                if panels.explore(self.area_now) {
+                    discovered = true;
+                    if let Some((name, level)) = self.area_now.and_then(|a| self.world.areas.explore_info(a)) {
+                        panels.on_explored(name, level);
+                    }
+                }
             }
             if self.grabbed && self.lock.is_none() {
                 let alert = self.player.as_ref().is_some_and(|p| p.is_sneaking()).then(|| self.wolves.as_ref().map_or(0.0, |w| w.alert(self.camera.pos - Vec3::Y * EYE_HEIGHT, panels.progress.level)));

@@ -72,6 +72,10 @@ pub enum Action {
     Spell(usize),
     /// A usable item (an index into the items): the button uses it from the backpack, like a right click.
     Item(usize),
+    /// A profession the spellbook lists: a click opens its recipes. It is not put on the bar.
+    Trade(crate::skills::Skill),
+    /// Breaking an item of the pack into dust and shards (Enchanting). Not put on the bar either.
+    Disenchant,
 }
 
 /// The actions every character has, which the spellbook lists before its spells.
@@ -86,7 +90,7 @@ impl Action {
             Action::Heavy => 2,
             Action::Shoot => 3,
             Action::Spell(i) => 4 + i,
-            Action::Item(_) => return None,
+            Action::Item(_) | Action::Trade(_) | Action::Disenchant => return None,
         })
     }
 
@@ -102,7 +106,7 @@ impl Action {
             Action::Block => ("Block", "Raise your shield for as long as the button is held."),
             Action::Heavy => ("Heavy Attack", "A slow, powerful swing."),
             Action::Shoot => ("Shoot", "Draw your ranged weapon for as long as the button is held, and let fly when it comes up."),
-            Action::Spell(_) | Action::Item(_) => return None,
+            Action::Spell(_) | Action::Item(_) | Action::Trade(_) | Action::Disenchant => return None,
         })
     }
 
@@ -115,6 +119,8 @@ impl Action {
             Action::Shoot => "shoot".into(),
             Action::Spell(i) => crate::content::spell(i).id.clone(),
             Action::Item(i) => format!("item:{}", crate::items::get(i).id),
+            Action::Trade(s) => format!("trade:{}", s.id()),
+            Action::Disenchant => "disenchant".into(),
         }
     }
 
@@ -261,7 +267,7 @@ impl ActionBar {
             Some(Action::Block) => player.set_block(true),
             Some(Action::Spell(i)) => cast = Some(i),
             Some(Action::Item(i)) => self.item_use = Some(i),
-            None => return None,
+            Some(Action::Trade(_) | Action::Disenchant) | None => return None,
         }
         player.emit(Sfx::ActionButton);
         cast
@@ -322,7 +328,7 @@ impl ActionBar {
     /// Queue the bar for drawing on a `size` screen. `player` says which actions are active.
     /// `texts`: show the values on the bars (they also show while the mouse is over a bar), as the original does
     /// while the character sheet is open.
-    pub fn draw(&self, ui: &mut Ui, size: (u32, u32), player: &Player, texts: bool, progress: Progress, cooldowns: &[f32], items: &dyn Fn(usize) -> (u32, f32)) {
+    pub fn draw(&self, ui: &mut Ui, size: (u32, u32), player: &Player, texts: bool, progress: Progress, wait: &dyn Fn(usize) -> f32, items: &dyn Fn(usize) -> (u32, f32)) {
         let (w, h) = (size.0 as f32, size.1 as f32);
         let s = h / crate::uixml::ui_height();
         let cx = w / 2.0;
@@ -387,7 +393,7 @@ impl ActionBar {
             if let Some(a) = action {
                 quad(self.icon(a), button, FULL_UV, WHITE, false);
                 // A spell that cannot be cast yet is dark.
-                if matches!(a, Action::Spell(i) if cooldowns.get(i).is_some_and(|&c| c > 0.0)) {
+                if matches!(a, Action::Spell(i) if wait(i) > 0.0) {
                     quad(Some(self.white), button, FULL_UV, [0.0, 0.0, 0.0, 0.6], false);
                 }
                 // An item is dark while it is out of the backpack or not ready, and shows how many are left.
@@ -417,7 +423,7 @@ impl ActionBar {
                 Some(Action::Heavy) => player.is_heavy_swinging(),
                 Some(Action::Block) => player.is_blocking(),
                 Some(Action::Shoot) => player.is_drawing(),
-                Some(Action::Spell(_) | Action::Item(_)) | None => false,
+                Some(Action::Spell(_) | Action::Item(_) | Action::Trade(_) | Action::Disenchant) | None => false,
             };
             if active {
                 quad(self.checked, button, FULL_UV, WHITE, true);

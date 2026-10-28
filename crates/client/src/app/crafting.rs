@@ -58,6 +58,30 @@ impl State {
         true
     }
 
+    /// The pack item in `slot` was picked for Disenchant: the character casts the original's spell for a few seconds, and then the item is broken.
+    pub(super) fn start_disenchant(&mut self, slot: usize) {
+        let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
+        let Some(panels) = &mut self.panels else { return };
+        if self.gather.is_some() || self.moving {
+            return panels.error("Another action is in progress.");
+        }
+        panels.cast_start("Disenchant", crate::disenchant::SECONDS);
+        let vis = crate::visuals::spell(&self.mount, crate::disenchant::SPELL);
+        let glows = self.in_ctx(|ctx| crate::casting::Spellcaster::gather_begin(ctx, &vis, feet)).unwrap_or_default();
+        self.gather = Some(Gather { job: Job::Disenchant(slot), left: crate::disenchant::SECONDS, glows });
+    }
+
+    /// The cast of Disenchant ended: the item is broken and what it gave is in the pack.
+    pub(super) fn finish_disenchant(&mut self, slot: usize) {
+        let mut rng = (self.start.elapsed().as_nanos() as u32) | 1;
+        let Some(panels) = &mut self.panels else { return };
+        panels.cast_stop();
+        if let Some(loot) = panels.finish_disenchant(slot, &mut rng).filter(|l| !l.is_empty()) {
+            panels.open_loot(FISH_LOOT, loot);
+            self.set_grab(false);
+        }
+    }
+
     /// The cast of a recipe ended: it is made, the skill may rise, and the next one begins if the window asked for more.
     pub(super) fn finish_make(&mut self, r: usize, more: u32) {
         let recipe = &content::get().recipes[r];

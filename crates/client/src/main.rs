@@ -40,6 +40,7 @@ mod nodes;
 mod fishing;
 mod pickups;
 mod recipes;
+mod disenchant;
 mod procs;
 mod profile;
 mod preview;
@@ -47,6 +48,7 @@ mod propedit;
 mod lockpick;
 mod loot;
 mod movement;
+mod navmesh;
 mod content;
 mod panels;
 mod quests;
@@ -132,6 +134,7 @@ USAGE: rsworld [options]
   --chests <open|closed>  headless, with --view: the chests of the world, with their lids open or shut
   --reticle          headless: the aiming dot at the middle of the screen (with --sneak, as the eye of a sneaking player; --alert 0..1 sets how near they are to noticing)
   --check-spawns     headless: warn about content (creatures, chests) standing in a wall or tree
+  --navmesh-probe    headless: build the navigation mesh tile at --pos and report its size and the time it took
   --effect model,ms  headless: a model of effects (a file of Spells) ms after it began, six yards ahead
   --cast a,b         headless, with --creature or --spawns: cast these spells (ids of content/spells.ron) at the first creature
   --editor tab,n,steps  headless: the editor at a tab (places, chests, discoveries, creatures, quests, items or loot) with entry n selected;
@@ -209,6 +212,7 @@ pub struct Args {
     pub cast: Vec<String>,
     pub effect: Option<(String, f32)>,
     pub check_spawns: bool,
+    pub navmesh_probe: bool,
     pub discover: usize,
     pub reticle: bool,
     pub alert: Option<f32>,
@@ -287,6 +291,7 @@ fn parse_args() -> Result<Args> {
         cast: Vec::new(),
         effect: None,
         check_spawns: false,
+        navmesh_probe: false,
         discover: 0,
         reticle: false,
         alert: None,
@@ -396,6 +401,7 @@ fn parse_args() -> Result<Args> {
                 a.effect = Some((path.to_string(), ms.parse()?));
             }
             "--check-spawns" => a.check_spawns = true,
+            "--navmesh-probe" => a.navmesh_probe = true,
             "--creature" => a.creatures = value("--creature")?.split(',').map(String::from).collect(),
             "--creature-at" => a.creature_at = value("--creature-at")?.parse()?,
             "--discover" => a.discover = value("--discover")?.parse()?,

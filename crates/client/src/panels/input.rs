@@ -39,7 +39,7 @@ impl Panels {
         if let Some(name) = hit.map(|h| self.tree.name(h).to_string()).filter(|n| n.contains("OptionsFrameSlider")) {
             self.slider_press(&name, pos, screen);
         }
-        self.drag = hit.filter(|_| left).and_then(|h| self.book_entry_of(self.tree.name(h)).or_else(|| self.bag_entry_of(self.tree.name(h))));
+        self.drag = hit.filter(|_| left).and_then(|h| self.book_entry_of(self.tree.name(h)).or_else(|| self.bag_entry_of(self.tree.name(h)))).filter(|a| !matches!(a, crate::actionbar::Action::Trade(_) | crate::actionbar::Action::Disenchant));
         hit.is_some()
     }
 
@@ -64,6 +64,10 @@ impl Panels {
         let down = std::mem::take(&mut self.tree.pressed);
         let Some(hit) = self.tree.hit_test(pos, screen).filter(|h| Some(*h) == down) else { return };
         let name = self.tree.name(hit).to_string();
+        // A click anywhere but on the pack forgets that Disenchant waits for an item.
+        if !name.starts_with(&format!("{BACKPACK}Item")) {
+            self.disenchant.0 = false;
+        }
         match name.as_str() {
             n if self.magic_click(n) || self.menu_click(n) || self.talent_click(n, left) || self.trade_click(n) || self.trainer_click(n) => {}
             "CharacterFrameCloseButton" => {
@@ -117,7 +121,8 @@ impl Panels {
                     self.equipment_changed = true;
                 } else if let Some(j) = name.strip_prefix(&format!("{BACKPACK}Item")).and_then(|n| n.parse::<usize>().ok()) {
                     let slot = self.bag_index(j);
-                    if left {
+                    if left && self.disenchant_click(slot) {
+                    } else if left {
                         self.inv.click_bag(slot);
                     } else if self.merchant.is_some() {
                         self.sell_item(slot);

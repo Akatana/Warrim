@@ -49,7 +49,7 @@ fn a_wolf_ignores_a_distant_player_then_chases_strikes_and_keeps_striking() {
 }
 
 #[test]
-fn a_wolf_does_not_walk_through_a_wall_but_slides_along_it() {
+fn a_wolf_does_not_walk_through_a_wall_where_there_is_no_mesh_to_lead_it() {
     // A wall across x = 4, and a player behind it, 10 yards east and 3 north.
     let wall = |_: Vec3, to: Vec3| to.x > 4.0;
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
@@ -58,8 +58,6 @@ fn a_wolf_does_not_walk_through_a_wall_but_slides_along_it() {
         wolf.update(1.0 / 60.0, player, flat_ground, wall);
     }
     assert!(wolf.pos.x <= 4.0, "went through: {:?}", wolf.pos);
-    // Along the wall it went towards the player's side.
-    assert!(wolf.pos.z < -2.0, "stuck at {:?}", wolf.pos);
 }
 
 #[test]
@@ -426,7 +424,7 @@ fn a_wolf_follows_the_ground() {
 
 /// Run `seconds` at 60 fps against the player `watch` describes; everything the mob did, in order.
 fn acts_of(mob: &mut Mob, seconds: f32, watch: &Watch) -> Vec<Act> {
-    (0..(seconds * 60.0) as usize).flat_map(|_| mob.step(1.0 / 60.0, watch, 0, &[], flat_ground, open)).collect()
+    (0..(seconds * 60.0) as usize).flat_map(|_| mob.step(1.0 / 60.0, watch, 0, &[], &[], flat_ground, open, &NavMesh::default())).collect()
 }
 
 fn casts(acts: &[Act]) -> Vec<(u32, Aim)> {
@@ -560,9 +558,9 @@ fn how_far_a_creature_notices_the_player_grows_a_yard_for_each_level_it_is_above
     let mut high = Mob::new(content::creature_index("black_wolf"), Vec3::ZERO, 0.0);
     let level = high.def.level;
     let at = |yards: f32| Watch { level: level - 2, ..Watch::at(Vec3::new(yards, 0.0, 0.0)) };
-    high.step(0.1, &at(aggro_range(level, level - 2) + 1.0), 0, &[], flat_ground, open);
+    high.step(0.1, &at(aggro_range(level, level - 2) + 1.0), 0, &[], &[], flat_ground, open, &NavMesh::default());
     assert_eq!(high.state, State::Idle);
-    high.step(0.1, &at(aggro_range(level, level - 2) - 1.0), 0, &[], flat_ground, open);
+    high.step(0.1, &at(aggro_range(level, level - 2) - 1.0), 0, &[], &[], flat_ground, open, &NavMesh::default());
     assert_eq!(high.state, State::Chase);
 }
 
@@ -570,13 +568,13 @@ fn how_far_a_creature_notices_the_player_grows_a_yard_for_each_level_it_is_above
 #[test]
 fn fear_roots_sleep_and_weakness_change_what_a_creature_does() {
     let player = Vec3::new(5.0, 0.0, 0.0);
-    // Terror: it runs away from him (west), then comes back to the fight when the time is up.
+    // Terror: it runs to places round him (the original's flight is to random places round the one it flees from), then comes back to the fight when the time is up.
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
     wolf.afflict(Status::Fear(1.0));
     run(&mut wolf, 0.9, player);
-    assert!(wolf.pos.x < -4.0, "did not run: {:?}", wolf.pos);
+    assert!(wolf.pos.length() > 4.0, "did not run: {:?}", wolf.pos);
     run(&mut wolf, 3.0, player);
-    assert!(wolf.pos.x > -10.0 && wolf.state.fights(), "{:?} {:?}", wolf.pos, wolf.state);
+    assert!(wolf.state.fights(), "{:?} {:?}", wolf.pos, wolf.state);
     // Rooted: it stays where it stands.
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
     wolf.afflict(Status::Root(2.0));
@@ -620,7 +618,7 @@ fn an_ally_follows_the_player_strikes_what_he_fights_and_goes_when_its_time_is_u
     let mut pet = Mob::new(kind(), Vec3::ZERO, 0.0);
     pet.make_ally(30, 10.0, 0, true, false);
     assert!(pet.is_ally() && pet.is_pet() && !pet.attackable());
-    let step = |pet: &mut Mob, seconds: f32, focus: Option<Vec3>| -> Vec<Act> { (0..(seconds * 60.0) as usize).flat_map(|_| pet.step_ally(1.0 / 60.0, player, focus, false, open)).collect() };
+    let step = |pet: &mut Mob, seconds: f32, focus: Option<Vec3>| -> Vec<Act> { (0..(seconds * 60.0) as usize).flat_map(|_| pet.step_ally(1.0 / 60.0, player, focus, false, flat_ground, open, &NavMesh::default())).collect() };
     // Nothing to fight: it runs to the player and stays close.
     step(&mut pet, 4.0, None);
     assert!((pet.pos - player).length() < 6.0, "{:?}", pet.pos);
@@ -650,7 +648,7 @@ fn a_pet_that_stays_keeps_its_place_and_the_stances_pick_their_foes() {
     let player = Vec3::new(20.0, 0.0, 0.0);
     let mut pet = Mob::new(kind(), Vec3::ZERO, 0.0);
     pet.make_ally(30, 0.0, 0, true, false);
-    (0..600).for_each(|_| drop(pet.step_ally(1.0 / 60.0, player, Some(Vec3::new(0.0, 0.0, 15.0)), true, open)));
+    (0..600).for_each(|_| drop(pet.step_ally(1.0 / 60.0, player, Some(Vec3::new(0.0, 0.0, 15.0)), true, flat_ground, open, &NavMesh::default())));
     assert!(pet.pos.length() < 0.01, "{:?}", pet.pos);
     let pick = |stance| PetOrders { stance, ..Default::default() }.pick();
     assert_eq!(pick(Stance::Passive), None);
@@ -688,13 +686,13 @@ fn an_imp_casts_its_firebolt_at_its_foe() {
     let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
     imp.make_ally(10, 0.0, 3110, true, false);
     let foe = Vec3::new(20.0, 0.0, 14.0);
-    let acts: Vec<Act> = (0..600).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, open)).collect();
+    let acts: Vec<Act> = (0..600).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default())).collect();
     let bolts = acts.iter().filter(|a| matches!(a, Act::Spell(3110))).count();
     assert!(bolts >= 2, "{bolts} bolts, at {:?}", imp.pos);
     // And it plays its cast animation while the bolt goes off, not a swing.
     let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
     imp.make_ally(10, 0.0, 3110, true, false);
-    let seen: Vec<u16> = (0..600).map(|_| { drop(imp.step_ally(1.0 / 60.0, player, Some(foe), false, open)); imp.animation(&Default::default()) }).collect();
+    let seen: Vec<u16> = (0..600).map(|_| { drop(imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default())); imp.animation(&Default::default()) }).collect();
     assert!(seen.contains(&CAST_SPELL) && !seen.contains(&ATTACK_UNARMED), "{:?}", seen.iter().collect::<std::collections::BTreeSet<_>>());
 }
 
@@ -707,7 +705,7 @@ fn an_imp_does_not_cast_through_a_wall() {
     let wall = |a: Vec3, b: Vec3| (a.z < 8.0) != (b.z < 8.0);
     let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
     imp.make_ally(10, 0.0, 3110, true, false);
-    let acts: Vec<Act> = (0..600).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, wall)).collect();
+    let acts: Vec<Act> = (0..600).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, wall, &NavMesh::default())).collect();
     assert!(!acts.iter().any(|a| matches!(a, Act::Begin(_) | Act::Spell(_))), "cast through a wall, at {:?}", imp.pos);
 }
 
@@ -721,7 +719,7 @@ fn an_imps_firebolt_is_begun_then_goes_off_after_its_cast_time() {
     let seconds = content::classic_spell(3110).unwrap().cast as f32 / 1000.0;
     let mut log = Vec::new();
     for n in 0..600 {
-        for act in imp.step_ally(1.0 / 60.0, player, Some(foe), false, open) {
+        for act in imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default()) {
             log.push((n as f32 / 60.0, matches!(act, Act::Begin(3110)), matches!(act, Act::Spell(3110))));
         }
     }
@@ -733,7 +731,7 @@ fn an_imps_firebolt_is_begun_then_goes_off_after_its_cast_time() {
     imp.make_ally(10, 0.0, 3110, true, false);
     let mut acts = Vec::new();
     for n in 0..120 {
-        acts.extend(imp.step_ally(1.0 / 60.0, player, (n < 30).then_some(foe), false, open));
+        acts.extend(imp.step_ally(1.0 / 60.0, player, (n < 30).then_some(foe), false, flat_ground, open, &NavMesh::default()));
     }
     assert!(acts.iter().any(|a| matches!(a, Act::Begin(_))) && acts.iter().any(|a| matches!(a, Act::Stop)) && !acts.iter().any(|a| matches!(a, Act::Spell(_))), "{acts:?}");
 }
@@ -755,14 +753,14 @@ fn an_imps_mana_is_the_originals_and_it_runs_dry_and_comes_back() {
     // Four bolts of 10 leave 8: it cannot cast, so it goes up to its foe and strikes; five seconds after the last bolt (begun at 7.5 s) its mana comes back at the
     // next tick (14 s: spirit 23 / 5 + 17 = 21.6) and it casts a fifth (it goes off at 17 s).
     let mut imp = imp_at(1);
-    let acts: Vec<Act> = (0..60 * 18).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, open)).collect();
+    let acts: Vec<Act> = (0..60 * 18).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default())).collect();
     let bolts = acts.iter().filter(|a| matches!(a, Act::Spell(_))).count();
     assert_eq!(bolts, 5, "four bolts of 10 mana from 48, then none while it waits, then one more");
     assert!(acts.iter().any(|a| matches!(a, Act::Strike(_))), "dry, it fights close");
     // Out of mana from the start: no spell at all.
     let mut imp = imp_at(1);
     imp.ally.as_mut().unwrap().mana = 0.0;
-    let acts: Vec<Act> = (0..60 * 2).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, open)).collect();
+    let acts: Vec<Act> = (0..60 * 2).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default())).collect();
     assert!(!acts.iter().any(|a| matches!(a, Act::Spell(_) | Act::Begin(_))), "{acts:?}");
 }
 
@@ -793,8 +791,89 @@ fn a_pet_out_of_phase_is_in_phase_again_when_it_attacks() {
     imp.make_ally(10, 0.0, 3110, true, false);
     imp.ally.as_mut().unwrap().phased = true;
     assert!(imp.is_phased());
-    drop((0..30).flat_map(|_| imp.step_ally(1.0 / 60.0, player, None, false, open)).count());
+    drop((0..30).flat_map(|_| imp.step_ally(1.0 / 60.0, player, None, false, flat_ground, open, &NavMesh::default())).count());
     assert!(imp.is_phased(), "it stays out of phase while it does not attack");
-    drop(imp.step_ally(1.0 / 60.0, player, Some(foe), false, open));
+    drop(imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default()));
     assert!(!imp.is_phased(), "its spell begins");
+}
+
+/// The walled floor of the navigation tests, in render space: the wall runs across z = -10 from x = -30 to 30 (WoW's x = 10, y = -30 to 30).
+fn behind_the_wall() -> (NavMesh, Vec3) {
+    (crate::navmesh::tests::walled_floor(), Vec3::new(0.0, 0.0, -20.0))
+}
+
+#[test]
+fn a_wolf_runs_home_round_a_wall_over_the_mesh_instead_of_through_it() {
+    let (nav, home) = behind_the_wall();
+    let wall = |a: Vec3, b: Vec3| (a.z + 10.0) * (b.z + 10.0) < 0.0 && a.x.abs().max(b.x.abs()) < 30.0;
+    let mut wolf = Mob::new(kind(), home, 0.0);
+    wolf.pos = Vec3::ZERO;
+    wolf.state = State::Return(RETURN_WAIT);
+    let player = Vec3::new(100.0, 0.0, 0.0);
+    let mut last = wolf.pos;
+    for _ in 0..(30.0 * 60.0) as usize {
+        wolf.update_on(1.0 / 60.0, player, flat_ground, wall, &nav);
+        assert!(!wall(last, wolf.pos), "through the wall: {last:?} to {:?}", wolf.pos);
+        last = wolf.pos;
+    }
+    assert!(matches!(wolf.state, State::Idle | State::Wander(_)) && wolf.pos.z < -12.0, "stopped at {:?} ({:?})", wolf.pos, wolf.state);
+}
+
+#[test]
+fn a_wolf_and_a_pet_chase_round_a_wall_over_the_mesh() {
+    let (nav, player) = behind_the_wall();
+    let wall = |a: Vec3, b: Vec3| (a.z + 10.0) * (b.z + 10.0) < 0.0 && a.x.abs().max(b.x.abs()) < 30.0;
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.state = State::Chase;
+    let mut imp = Mob::new(kind(), Vec3::ZERO, 0.0);
+    imp.make_ally(30, 0.0, 0, true, false);
+    for _ in 0..(30.0 * 60.0) as usize {
+        let before = (wolf.pos, imp.pos);
+        wolf.update_on(1.0 / 60.0, player, flat_ground, wall, &nav);
+        imp.step_ally(1.0 / 60.0, player, None, false, flat_ground, wall, &nav);
+        assert!(!wall(before.0, wolf.pos) && !wall(before.1, imp.pos), "through the wall: {:?} {:?}", wolf.pos, imp.pos);
+    }
+    assert!((wolf.pos - player).length() < MELEE_RANGE + 1.0, "the wolf stopped at {:?}", wolf.pos);
+    assert!((imp.pos - player).length() < 7.0, "the pet stopped at {:?}", imp.pos);
+}
+
+
+
+
+#[test]
+fn a_wolf_on_a_platform_goes_to_its_edge_and_does_not_step_off_it() {
+    // The platform is x = -20 to 0 (WoW), 5 yards high: in render space z = 0 to 20, y = 5. The player stands on the floor below its edge.
+    let nav = crate::navmesh::tests::platform_on_floor();
+    let mut wolf = Mob::new(kind(), Vec3::new(0.0, 5.0, 10.0), 0.0);
+    wolf.state = State::Chase;
+    let player = Vec3::new(0.0, 0.0, -6.0);
+    let ground = |_: f32, z: f32, _: f32| Some(if (0.0..20.0).contains(&z) { 5.0 } else { 0.0 });
+    for _ in 0..(20.0 * 60.0) as usize {
+        wolf.update_on(1.0 / 60.0, player, ground, open, &nav);
+        assert!(wolf.pos.y > 4.0, "left the platform: {:?}", wolf.pos);
+    }
+    // It went to the edge nearest the player.
+    assert!(wolf.pos.z < 2.0, "{:?}", wolf.pos);
+}
+
+#[test]
+fn a_wolf_that_stands_at_a_player_too_close_for_a_while_backs_off_and_one_in_anothers_place_moves_aside() {
+    // The player stands almost on it: after the time the chase waits at its target, it walks back.
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.state = State::Chase;
+    let player = Vec3::new(1.0, 0.0, 0.0);
+    let mut furthest = 0.0f32;
+    for _ in 0..(25.0 * 60.0) as usize {
+        wolf.update(1.0 / 60.0, player, flat_ground, open);
+        furthest = furthest.max(wolf.pos.distance(player));
+    }
+    assert!(furthest > 1.5, "stood at {furthest} yards at most");
+    // Another creature stands within a yard of it, fighting the same target: it goes round the target.
+    let mut wolf = Mob::new(kind(), Vec3::new(2.0, 0.0, 0.0), 0.0);
+    wolf.fan_out(Vec3::ZERO, &[Vec3::new(2.4, 0.0, 0.0)], &NavMesh::default(), &open);
+    assert!(!wolf.course.is_empty() && wolf.chase.mode == Mode::Fanning, "{:?}", wolf.chase.mode);
+    // And one that nobody stands beside stays.
+    let mut alone = Mob::new(kind(), Vec3::new(2.0, 0.0, 0.0), 0.0);
+    alone.fan_out(Vec3::ZERO, &[Vec3::new(9.0, 0.0, 0.0)], &NavMesh::default(), &open);
+    assert!(alone.course.is_empty());
 }

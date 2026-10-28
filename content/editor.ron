@@ -114,29 +114,13 @@
         entries: [],
     ),
     chests: (
-        removed: [],
-        entries: [
-            (
-                id: "abbey_chest",
-                model: "World\\Generic\\ActiveDoodads\\Chest01\\Chest01.m2",
-                at: (-8868.0, -130.0),
-                facing: 270.0,
-                lock: Some(Master),
-                loot: "chest_poor",
-                copper: 0,
-                items: [],
-            ),
-            (
-                id: "chest_1",
-                model: "World\\Generic\\ActiveDoodads\\Chest01\\Chest01.m2",
-                at: (-8917.7, -127.04957),
-                facing: 240.25679,
-                lock: Some(Novice),
-                loot: "chest_poor",
-                copper: 0,
-                items: [],
-            ),
+        removed: [
+            "abbey_chest",
+            "valley_chest",
+            "redhand_hoard",
+            "foreman_stash",
         ],
+        entries: [],
     ),
     pois: (
         removed: [],

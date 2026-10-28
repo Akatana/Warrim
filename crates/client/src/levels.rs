@@ -116,6 +116,28 @@ pub fn kill_xp(player: u32, mob: u32) -> u32 {
     }
 }
 
+/// The base experience of discovering an area of level `n`, at index `n` (CMaNGOS `exploration_basexp`).
+const EXPLORE_BASE: [u16; 61] = [
+    0, 5, 15, 25, 35, 45, 55, 65, 70, 80, 85, 90, 90, 90, 100, 105, 115, 125, 135, 145, 155, //
+    165, 175, 185, 195, 200, 210, 220, 230, 240, 245, 250, 255, 265, 270, 275, 280, 285, 285, 300, //
+    315, 330, 345, 360, 375, 390, 405, 420, 440, 455, 470, 490, 510, 530, 540, 560, 580, 600, 620, 640, 660,
+];
+
+/// Experience for discovering an area of level `area` as a character of level `player` (CMaNGOS `CheckAreaExploreAndOutdoor`): the area's base, but the base of
+/// five levels above the character when the area is more than five above him, and 5% less for each level past five below, down to nothing.
+pub fn explore_xp(player: u32, area: u32) -> u32 {
+    if player >= MAX_LEVEL {
+        return 0;
+    }
+    let base = |l: u32| EXPLORE_BASE[l.min(MAX_LEVEL) as usize] as u32;
+    let diff = player as i32 - area as i32;
+    match diff {
+        ..=-6 => base(player + 5),
+        -5..=5 => base(area),
+        _ => base(area) * (100 - (diff - 5) * 5).max(0) as u32 / 100,
+    }
+}
+
 /// Experience of a quest for a character of level `player`: the full `xp` (the quest's own value) up to five levels above the quest, then 80%, 60%, 40%, 20%
 /// and 10% from the sixth level above it on, rounded up as CMaNGOS's `Quest::XPValue` does. A quest of level 0 gives its xp whole.
 pub fn quest_xp(xp: u32, quest: u32, player: u32) -> u32 {
@@ -280,6 +302,13 @@ mod tests {
         assert_eq!(kill_xp(6, 1), 0, "grey");
         assert_eq!((kill_xp(20, 11), kill_xp(20, 12)), (0, 105 * 3 / 11));
         assert_eq!(kill_xp(20, 18), 135 * 9 / 11);
+    }
+
+    #[test]
+    fn discovering_an_area_is_worth_its_base_less_when_far_below_the_character() {
+        assert_eq!((explore_xp(1, 1), explore_xp(1, 6), explore_xp(1, 12)), (5, 55, 55), "capped at the base of five levels above the character");
+        assert_eq!((explore_xp(10, 10), explore_xp(15, 10), explore_xp(16, 10)), (85, 85, 85 * 95 / 100));
+        assert_eq!((explore_xp(30, 10), explore_xp(40, 10), explore_xp(MAX_LEVEL, 10)), (85 * 25 / 100, 0, 0));
     }
 
     #[test]

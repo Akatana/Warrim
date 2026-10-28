@@ -69,6 +69,10 @@ def entry_text(i, display_rows, spells):
         out.append("unique: true")
     if i["MaxDurability"]:
         out.append("durability: %d" % i["MaxDurability"])
+    if i["ItemLevel"]:
+        out.append("ilvl: %d" % i["ItemLevel"])
+    if i["DisenchantID"]:
+        out.append("disenchant: %d" % i["DisenchantID"])
     if i["armor"]:
         out.append("armor: %d" % i["armor"])
     if i["block"]:

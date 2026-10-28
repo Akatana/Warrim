@@ -246,22 +246,6 @@ impl Mob {
         }
     }
 
-    /// Move by `delta` unless something solid stands in the way (`blocked(from, to)`): then slide along it, one axis at a time, or stay. Returns how
-    /// far it went.
-    pub(super) fn walk(&mut self, delta: Vec3, blocked: &impl Fn(Vec3, Vec3) -> bool) -> f32 {
-        if self.root > 0.0 {
-            return 0.0;
-        }
-        for d in [delta, Vec3::new(delta.x, 0.0, 0.0), Vec3::new(0.0, 0.0, delta.z)] {
-            if d.length() > 1e-6 && !blocked(self.pos, self.pos + d) {
-                self.pos += d;
-                self.moving = true;
-                return d.length();
-            }
-        }
-        0.0
-    }
-
     /// Turn to face `to` (flat, from the creature).
     pub(super) fn turn(&mut self, to: Vec3) {
         if to.length() > 0.01 {

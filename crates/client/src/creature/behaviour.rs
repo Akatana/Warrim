@@ -1,12 +1,19 @@
 //! One step of a creature's life: aggro, chase, melee attack, roam, return, and which animation it plays.
 
 use super::*;
+use crate::navmesh::PATHFIND_NOPATH;
 
 impl Mob {
     /// (Tests) Advance `dt` seconds against a plain player standing at `target`; returns the damage of the swing that landed, if one did.
     #[cfg(test)]
     pub(super) fn update(&mut self, dt: f32, target: Vec3, ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool) -> Option<f32> {
-        self.step(dt, &Watch::at(target), 0, &[], ground, blocked).into_iter().find_map(|a| if let Act::Melee(d) = a { Some(d) } else { None })
+        self.update_on(dt, target, ground, blocked, &NavMesh::default())
+    }
+
+    /// (Tests) The same on a navigation mesh.
+    #[cfg(test)]
+    pub(super) fn update_on(&mut self, dt: f32, target: Vec3, ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool, nav: &NavMesh) -> Option<f32> {
+        self.step(dt, &Watch::at(target), 0, &[], &[], ground, blocked, nav).into_iter().find_map(|a| if let Act::Melee(d) = a { Some(d) } else { None })
     }
 
     /// A summoned creature is put into the world at `pos`, ready to fight, for `ms` milliseconds (0: until it dies or the fight is over).
@@ -23,7 +30,7 @@ impl Mob {
     /// Advance `dt` seconds with the player as `watch` has him, on ground at `ground` where nothing `blocked` is in the way; `me` is its place among the
     /// creatures and `roster` the creatures that are about. Returns what it did.
     #[allow(clippy::too_many_arguments)]
-    pub fn step(&mut self, dt: f32, watch: &Watch, me: usize, roster: &[Friend], ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool) -> Vec<Act> {
+    pub fn step(&mut self, dt: f32, watch: &Watch, me: usize, roster: &[Friend], crowd: &[Vec3], ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool, nav: &NavMesh) -> Vec<Act> {
         let Some(dt) = self.afflicted(dt) else { return Vec::new() };
         let target = watch.feet;
         self.pause = (self.pause - dt).max(0.0);
@@ -63,11 +70,9 @@ impl Mob {
             self.near.push(Friend { index: me, pos: self.pos, faction, dist: 0.0, health: self.health, max: self.def.health, auras: self.aura_ids() });
         }
         match self.state {
-            // In terror it runs from the player, whatever it was doing.
+            // In terror it runs from the player to places round him, whatever it was doing.
             _ if self.fear > 0.0 && !self.is_dead() && self.state != State::Unborn => {
-                let away = if dist > 0.01 { -to / dist } else { Vec3::Z };
-                self.turn(away);
-                let step = self.walk(away * RUN_SPEED * dt, &blocked);
+                let step = self.run_in_terror(target, dt, nav, &blocked);
                 self.stepped(step);
                 if !self.state.fights() {
                     self.state = State::Chase;
@@ -95,9 +100,17 @@ impl Mob {
                                     (self.state, self.rest) = (State::Idle, self.new_rest());
                                 }
                             } else {
-                                self.yaw = left.x.atan2(-left.z);
                                 let pace = if self.run { RUN_SPEED } else { WALK_SPEED };
-                                let step = self.walk(left.normalize() * (pace * dt).min(left.length()), &blocked);
+                                // The way to the place is made when it sets out: a patrol's by a path to the place, a stroll's by a ray over the mesh.
+                                if !self.planned {
+                                    self.planned = true;
+                                    if self.roam.is_none() && !self.route.is_empty() {
+                                        self.patrol_course(goal, nav, &blocked);
+                                    } else if !self.random_course(goal, nav) {
+                                        self.halt();
+                                    }
+                                }
+                                let step = self.follow(dt, pace, &blocked);
                                 if step == 0.0 {
                                     // Something is in the way: it gives up the stroll.
                                     (self.state, self.rest, self.legs) = (State::Idle, self.new_rest(), 0);
@@ -153,10 +166,11 @@ impl Mob {
                         Some((_, d)) if ranged && los => d.max(MELEE_RANGE),
                         _ => MELEE_RANGE * 0.8,
                     };
-                    if dist > stand {
-                        let speed = if self.charge > 0.0 { CHARGE_SPEED } else { RUN_SPEED };
-                        let step = self.walk(to / dist * (speed * dt).min(dist - stand), &blocked);
-                        self.stepped(step);
+                    let speed = if self.charge > 0.0 { CHARGE_SPEED } else { RUN_SPEED };
+                    let step = self.chase_to(target, stand, speed, dt, true, crowd, nav, &blocked);
+                    self.stepped(step);
+                    if step == 0.0 {
+                        self.turn(to);
                     }
                 }
             }
@@ -167,10 +181,10 @@ impl Mob {
                     (self.state, self.health, self.rest) = (State::Idle, self.def.health, self.new_rest());
                     self.mana = self.def.brain.mana;
                 } else {
-                    self.yaw = left.x.atan2(-left.z);
-                    if self.walk(left.normalize() * (RUN_SPEED * dt).min(left.length()), &blocked) == 0.0 {
-                        // Stuck behind something: it does not stay out there wounded forever.
-                        (self.pos.x, self.pos.z) = (self.home.x, self.home.z);
+                    // Home, by the way the path finder made; there it stands at once.
+                    if self.go_home(dt, nav, &blocked) {
+                        self.pos.x = self.home.x;
+                        self.pos.z = self.home.z;
                     }
                     self.health = (self.health + self.def.health * REGEN * dt).min(self.def.health);
                 }
@@ -218,23 +232,33 @@ impl Mob {
                     }
                     self.state = State::Chase;
                 } else {
-                    self.turn(left);
-                    let step = self.walk(left.normalize_or_zero() * (RUN_SPEED * dt).min(left.length()), &blocked);
+                    // (The way to the friend is made when it sets out.)
+                    if t <= dt + 1e-6 {
+                        self.plan(goal, false, true, nav, &blocked);
+                        self.loose = false;
+                    }
+                    let step = self.follow(dt, RUN_SPEED, &blocked);
                     self.stepped(step);
                     self.state = if step == 0.0 { State::Chase } else { State::Flee(t, goal, friend) };
                 }
             }
             State::Kite(t) => {
-                let away = if dist > 0.01 { -to / dist } else { Vec3::Z };
-                self.turn(away);
                 let want = self.rt.as_ref().and_then(|r| r.mode).map_or(10.0, |m| m.1);
-                let step = self.walk(away * RUN_SPEED * dt, &blocked);
-                self.stepped(step);
-                if t + dt >= KITE_TIME || step == 0.0 || dist >= want * 0.75 {
+                // It runs from the target to a place `want` yards from it (`DistanceYourself`), once.
+                if t == 0.0 && !self.distance_yourself(target, want, nav, &blocked) {
                     self.kite = KITE_PAUSE;
                     self.state = State::Chase;
                 } else {
-                    self.state = State::Kite(t + dt);
+                    let step = self.follow(dt, RUN_SPEED, &blocked);
+                    self.stepped(step);
+                    if t + dt >= KITE_TIME || self.course.is_empty() || dist >= want * 0.75 {
+                        self.kite = KITE_PAUSE;
+                        self.state = State::Chase;
+                        self.halt();
+                        self.chase = Chase::new();
+                    } else {
+                        self.state = State::Kite(t + dt);
+                    }
                 }
             }
         }
@@ -264,10 +288,29 @@ impl Mob {
             self.fire(brain::event::SPAWNED);
         }
         self.think(dt, watch);
-        if let Some(y) = ground(self.pos.x, self.pos.z, self.pos.y) {
-            self.pos.y = y;
+        // It stops where it stands, and the next chase begins afresh.
+        if matches!(self.state, State::Idle | State::Unborn | State::Dead(_) | State::Cast(..)) {
+            (self.course, self.planned) = (Vec::new(), false);
+        }
+        if !self.state.fights() {
+            self.chase = Chase::new();
+        }
+        if self.pos.y == 0.0 {
+            if let Some(y) = ground(self.pos.x, self.pos.z, self.pos.y) {
+                self.settle(y);
+            }
+        } else if self.moving {
+            // The mesh lies up to a voxel over the terrain: a walker stands on the ground within a yard of its way (not on the bed of a lake it swims over).
+            if let Some(y) = ground(self.pos.x, self.pos.z, self.pos.y + 1.0).filter(|y| *y > self.pos.y - 1.0) {
+                self.settle(y);
+            }
         }
         std::mem::take(&mut self.out)
+    }
+
+    /// A creature that has not been put anywhere yet (height 0) stands on the ground; after that the ways it walks give its height, corrected to the terrain.
+    pub(super) fn settle(&mut self, y: f32) {
+        self.pos.y = y;
     }
 
     /// Play the script for `dt` seconds.
@@ -323,6 +366,10 @@ impl Mob {
 
     /// The animation the creature plays; `anims` are the ones its spells ask for (the stance held while casting, the cast).
     pub(super) fn animation(&self, anims: &SpellAnims) -> u16 {
+        // In water it swims (a model without the swimming animations goes on as it was).
+        if self.swimming && matches!(self.state, State::Idle | State::Wander(_) | State::Return(_) | State::Chase | State::Flee(..) | State::Kite(_)) {
+            return if self.moving { SWIM } else { SWIM_IDLE };
+        }
         match self.state {
             State::Idle => self.emote.unwrap_or(STAND),
             State::Unborn => STAND,
@@ -330,6 +377,7 @@ impl Mob {
             State::Return(_) => RUN,
             State::Wander(_) if self.run => RUN,
             State::Wander(_) => WALK,
+            State::Chase if self.moving && matches!(self.chase.mode, Mode::Backpedal | Mode::Fanning) => WALK,
             State::Chase if self.moving => RUN,
             State::Chase => STAND,
             State::Flee(..) | State::Kite(_) => RUN,

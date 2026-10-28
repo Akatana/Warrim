@@ -1,11 +1,3 @@
 // Models put into the world by the editor (F1, Places, Props): the file of a model (World\...\*.m2, or a building *.wmo), the place in
 // WoW coordinates (north, west, height), the turn as the map files have it (degrees as (tilt, heading, roll)) and the scale.
-[
-    (
-        model: "World\\Dungeon\\GoldshireInn\\Innbed\\InnBed.m2",
-        sleep: true,
-        at: (-8932.982, -121.63775, 82.10298),
-        rotation: (0.0, 116.0, 0.0),
-        scale: 1.0,
-    ),
-]
+[]

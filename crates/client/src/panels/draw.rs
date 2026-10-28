@@ -276,9 +276,48 @@ impl Panels {
         for l in labels {
             // The name stands one em above the subname, which stands on the point.
             let name_y = if l.sub.is_some() { l.y - l.line } else { l.y };
-            self.tree.draw_text_world(ui, gpu, &mount, screen, "GameFontNormalLarge", &l.text, (l.x, name_y), l.line, l.color);
+            self.tree.draw_text_world(ui, gpu, &mount, screen, "GameFontNormalLarge", &l.text, (l.x, name_y), l.line, l.color, false);
             if let Some(sub) = &l.sub {
-                self.tree.draw_text_world(ui, gpu, &mount, screen, "GameFontNormalLarge", sub, (l.x, l.y), l.line, l.color);
+                self.tree.draw_text_world(ui, gpu, &mount, screen, "GameFontNormalLarge", sub, (l.x, l.y), l.line, l.color, false);
+            }
+        }
+    }
+
+    /// Queue the nameplates (`CGNamePlateFrame`, `FUN_007cb250`): a 0.1 x 0.025 frame (of the screen diagonal, 128 x 32 px at 1024 x 768) with the `Nameplate-Border` over a health bar
+    /// at its bottom left, the name standing on the middle of the frame, and at its right end the level in its difficulty colour or the skull.
+    /// With a target the other plates are half transparent (`FUN_007cb950`).
+    pub fn draw_plates(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32), plates: &[crate::creature::Plate], has_target: bool) {
+        const FONT: &str = "GameFontNormalSmall";
+        let mount = self.mount.clone();
+        // The original's screen fractions (`FUN_0041ad10`: 0.8 of 1024 px at 4:3) are of the screen diagonal.
+        let k = (screen.0 as f32).hypot(screen.1 as f32);
+        let (w, h) = (0.1 * k, 0.025 * k);
+        let player = self.progress.level;
+        let (Some(border), Some(fill)) = (
+            self.tree.texture(ui, gpu, &mount, r"Interface\Tooltips\Nameplate-Border"),
+            self.tree.texture(ui, gpu, &mount, r"Interface\TargetingFrame\UI-TargetingFrame-BarFill"),
+        ) else {
+            return;
+        };
+        for p in plates {
+            let a = if !has_target || p.targeted { 1.0 } else { 127.0 / 255.0 };
+            // The frame stays whole on the screen.
+            let (cx, cy) = (p.x.clamp(w / 2.0, screen.0 as f32 - w / 2.0), p.y.clamp(h / 2.0, screen.1 as f32 - h / 2.0));
+            let (left, bottom) = (cx - w / 2.0, cy + h / 2.0);
+            let color = [p.color[0], p.color[1], p.color[2], a];
+            let (bar_w, bar_h) = (0.0804 * k, 0.007 * k);
+            let bar = [left + 0.0031 * k, bottom - 0.003125 * k - bar_h, bar_w * p.fraction, bar_h];
+            ui.quad(crate::ui::Quad { texture: fill, rect: bar, uv: [0.0, 0.0, p.fraction, 1.0], color, additive: false });
+            ui.quad(crate::ui::Quad { texture: border, rect: [left, cy - h / 2.0, w, h], uv: crate::ui::FULL_UV, color: [1.0, 1.0, 1.0, a], additive: false });
+            self.tree.draw_text_world(ui, gpu, &mount, screen, FONT, &p.name, (cx, cy), 0.01 * k, color, true);
+            let (lx, ly) = (left + w - 0.0092 * k, bottom - 0.0071 * k);
+            if levels::is_skull(player, p.level) {
+                let side = 0.01 * k;
+                self.tree.draw_icon_tinted(ui, gpu, &mount, r"Interface\TargetingFrame\UI-TargetingFrame-Skull", [lx - side / 2.0, ly - side / 2.0, side, side], [1.0, 1.0, 1.0, a]);
+            } else {
+                let [r, g, b, _] = levels::difficulty_color(player, p.level);
+                let line = 0.00898 * k;
+                self.tree.draw_text_world(ui, gpu, &mount, screen, FONT, &p.level.to_string(), (lx, ly + line / 2.0), line, [r, g, b, a], true);
             }
         }
     }

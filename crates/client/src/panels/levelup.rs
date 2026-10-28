@@ -10,6 +10,9 @@ use std::time::Instant;
 /// What a point adds to the maximum of health, mana and stamina.
 pub const GAIN: [f32; 3] = [20.0, 20.0, 10.0];
 const NAMES: [&str; 3] = ["Health", "Mana", "Stamina"];
+/// The attributes a point also adds (strength, agility, stamina, intellect, spirit; "wisdom" is spirit): health gives strength and stamina, mana stamina,
+/// intellect and spirit, stamina stamina and agility.
+const ATTRIBUTES: [[i32; 5]; 3] = [[1, 0, 1, 0, 0], [0, 0, 1, 1, 1], [0, 1, 1, 0, 0]];
 /// The colours of the bars of the same names on the action bar.
 const ACCENTS: [[f32; 4]; 3] = [crate::actionbar::HEALTH_COLOR, crate::actionbar::MANA_COLOR, crate::actionbar::STAMINA_COLOR];
 /// The game's gold (`GameFontNormal`), the colour of the hint and of the panel's own touches.
@@ -118,6 +121,14 @@ fn unspent(level: u32, spent: [u32; 3]) -> u32 {
     (level - 1).saturating_sub(spent.iter().sum())
 }
 
+fn attributes_of(spent: [u32; 3]) -> [i32; 5] {
+    let mut sum = [0; 5];
+    for (n, row) in spent.iter().zip(ATTRIBUTES) {
+        sum.iter_mut().zip(row).for_each(|(s, r)| *s += *n as i32 * r);
+    }
+    sum
+}
+
 /// 1234 as "1,234".
 fn grouped(n: i32) -> String {
     let digits = n.abs().to_string();
@@ -213,6 +224,11 @@ impl Panels {
     /// What the points spent add to the maximum health, mana and stamina.
     pub(super) fn spent_bonus(&self) -> [f32; 3] {
         [0, 1, 2].map(|i| self.spent[i] as f32 * GAIN[i])
+    }
+
+    /// What the points spent add to the five attributes (strength, agility, stamina, intellect, spirit), one point of each listed in `ATTRIBUTES`.
+    pub(super) fn spent_attributes(&self) -> [i32; 5] {
+        attributes_of(self.spent)
     }
 
     /// The points spent on health, mana and stamina (for the save).
@@ -328,6 +344,12 @@ impl Panels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_point_adds_its_attributes() {
+        assert_eq!(attributes_of([1, 0, 0]), [1, 0, 1, 0, 0]);
+        assert_eq!(attributes_of([1, 2, 3]), [1, 3, 6, 2, 2]);
+    }
 
     #[test]
     fn every_level_gained_is_a_point_less_those_spent() {

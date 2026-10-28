@@ -90,6 +90,7 @@ impl Panels {
     }
 
     pub fn tick_cooldowns(&mut self, dt: f32) {
+        self.gcd = (self.gcd - dt).max(0.0);
         self.cooldowns.iter_mut().for_each(|c| *c = (*c - dt).max(0.0));
     }
 }
