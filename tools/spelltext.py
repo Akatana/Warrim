@@ -19,6 +19,9 @@ NAME, DESCRIPTION, AURA_TEXT = 120, 138, 147
 EQUIPPED = {13, 135, 99, 124, 52, 71, 54, 55, 49, 47, 51, 158, 85, 161, 138, 141, 31, 102, 131, 180, 30, 154, 130, 10, 59}
 
 
+UNTRUSTED = object()
+
+
 def seconds_text(ms):
     s = ms / 1000.0
     if s < 60:
@@ -41,6 +44,8 @@ class Spells:
         # A mount spell's aura names the creature (its entry in creature_template) whose first display (CreatureDisplayInfo.dbc) is the steed.
         sql = os.path.join(folder, "db.sql")
         self.steeds = {c["Entry"]: c["ModelId1"] for c in classicdb.rows(sql, "creature_template") if c["ModelId1"]} if os.path.exists(sql) else {}
+        # The values that only the database names ($e, $q, $b, $f, $i, $v).
+        self.extra = {r["Id"]: r for r in classicdb.rows(sql, "spell_template")} if os.path.exists(sql) else {}
 
     def values(self, row, n):
         """(lowest, highest) of the n-th effect (1 to 3): the base points and the dice."""
@@ -115,15 +120,17 @@ class Spells:
             out.append("Hearth")
         return out
 
-    def describe(self, spell_id):
+    def describe(self, spell_id, mark=None):
         row = self.rows.get(spell_id)
         if row is None:
             return ""
         s = self.spell
         text = s.string(row, DESCRIPTION) or s.string(row, AURA_TEXT)
-        return self.fill(row, text).strip()
+        return self.fill(row, text, mark).strip()
 
-    def fill(self, row, text):
+    def fill(self, row, text, mark=None):
+        """The text with its tokens said. `mark(kind, n, named)`, if given, may say a token itself (a string) or give `UNTRUSTED` (the number is written, and the NUL character
+        follows it, for the caller to find); `named` is whether the token names another spell."""
         s = self.spell
         last = [None]
 
@@ -131,42 +138,80 @@ class Spells:
             last[0] = high
             return str(low) if low == high else "%d to %d" % (low, high)
 
-        def value(kind, n, divide=1, multiply=1):
+        def value(r, kind, n, divide=1, multiply=1):
+            """A number of spell row `r` (the text's own, or a spell it names: `$7922d`, `$26364s1`)."""
+            extra = self.extra.get(s.u32(r, 0), {})
             if kind in "sSmM":
-                low, high = self.values(row, n)
+                low, high = self.values(r, n)
                 if kind == "m":
                     high = low
                 if kind == "M":
                     low = high
             elif kind == "o":
-                low, high = self.total(row, n)
+                low, high = self.total(r, n)
             elif kind == "t":
-                low = high = s.u32(row, AMPLITUDE + n - 1) / 1000.0
+                low = high = s.u32(r, AMPLITUDE + n - 1) / 1000.0
             elif kind == "a":
-                low = high = self.radius.get(s.u32(row, RADIUS + n - 1), 0)
+                low = high = self.radius.get(s.u32(r, RADIUS + n - 1), 0)
             elif kind == "x":
-                low = high = s.u32(row, CHAIN + n - 1)
+                low = high = s.u32(r, CHAIN + n - 1)
+            elif kind == "e":
+                low = high = extra.get("EffectMultipleValue%d" % n, 0)
+            elif kind == "q":
+                low = high = extra.get("EffectMiscValue%d" % n, 0)
+            elif kind == "b":
+                low = high = extra.get("EffectPointsPerComboPoint%d" % n, 0)
+            elif kind in "fF":
+                low = high = extra.get("DmgMultiplier%d" % n, 1)
+            elif kind == "i":
+                low = high = extra.get("MaxAffectedTargets", 0)
+            elif kind == "v":
+                low = high = extra.get("MaxTargetLevel", 0)
+            elif kind == "h":
+                low = high = s.u32(r, PROC)
+            elif kind == "n":
+                low = high = s.u32(r, CHARGES)
+            elif kind == "u":
+                low = high = s.u32(r, STACK)
             else:
                 return ""
-            low, high = low * multiply / divide, high * multiply / divide
+            low, high = abs(low) * multiply / divide, abs(high) * multiply / divide
             low, high = (int(low) if low == int(low) else round(low, 1)), (int(high) if high == int(high) else round(high, 1))
             return number(low, high)
+
+        def token(m):
+            sign, factor, ref, kind, n = m.groups()
+            r = self.rows.get(int(ref)) if ref else row
+            if r is None:
+                return ""
+            if mark and not (kind == "b" and not ref and not n):
+                said = mark(kind, int(n or 1), bool(ref))
+                if said is UNTRUSTED:
+                    return plain(sign, factor, ref, kind, n, r) + "\0"
+                if said is not None:
+                    last[0] = None
+                    return said
+            return plain(sign, factor, ref, kind, n, r)
+
+        def plain(sign, factor, ref, kind, n, r):
+            if kind in "dD":
+                dur = self.duration.get(s.u32(r, DURATION), 0)
+                return seconds_text(dur) if dur > 0 or kind == "D" else "until cancelled"
+            if kind == "b" and not ref and not n:
+                return "\n"
+            factor = int(factor) if factor else 1
+            return value(r, kind, int(n or 1), divide=factor if sign == "/" else 1, multiply=factor if sign == "*" else 1)
 
         # Conditionals: take the branch for "no" (nothing is known), or the only branch.
         for _ in range(4):
             text = re.sub(r"\$\?[a-zA-Z]?\d*\[[^\]]*\]\[([^\]]*)\]", r"\1", text)
             text = re.sub(r"\$\?[a-zA-Z]?\d*\[([^\]]*)\]", "", text)
-        text = re.sub(r"\$/(\d+);(\d?)([sSmMotax])(\d)", lambda m: value(m.group(3), int(m.group(4)), divide=int(m.group(1))), text)
-        text = re.sub(r"\$\*(\d+);(\d?)([sSmMotax])(\d)", lambda m: value(m.group(3), int(m.group(4)), multiply=int(m.group(1))), text)
-        text = re.sub(r"\$([sSmMotax])([123])", lambda m: value(m.group(1), int(m.group(2))), text)
-        text = re.sub(r"\$([sSmMotax])(?!\d)", lambda m: value(m.group(1), 1), text)
-        dur = self.duration.get(s.u32(row, DURATION), 0)
-        text = text.replace("$d", seconds_text(dur) if dur > 0 else "until cancelled").replace("$D", seconds_text(dur))
-        text = text.replace("$h", "%d" % s.u32(row, PROC)).replace("$n", "%d" % s.u32(row, CHARGES)).replace("$u", "%d" % s.u32(row, STACK))
+        # (The gender words come first: their letters would read as numbers.)
+        text = re.sub(r"\$g([^:;]*):([^;]*);", r"\1", text)
+        text = re.sub(r"\$(?:([/*])(\d+);)?(\d{3,6})?([sSmMotaxeqvifFbhdDnu])(\d?)", token, text)
         # Plurals ("$lsecond:seconds;") follow the last number written.
         text = re.sub(r"\$l([^:;]*):([^;]*);", lambda m: m.group(1) if last[0] == 1 else m.group(2), text)
-        text = re.sub(r"\$g([^:;]*):([^;]*);", r"\1", text)
-        text = text.replace("$b", "\n").replace("$B", "\n")
+        text = text.replace("$B", "\n")
         # $z is the place the character is bound to, which the game fills in; any other token that is not known is dropped.
         text = re.sub(r"\$(?!z)\w", "", text)
         return text

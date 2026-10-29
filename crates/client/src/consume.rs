@@ -33,9 +33,17 @@ pub enum UseError {
     Cooldown,
     /// Food, drink and bandages cannot be used while fighting or moving.
     NotCalm,
+    /// The character was bandaged less than a minute ago (the original's "Recently Bandaged").
+    Bandaged,
     /// The item does nothing that the game knows.
     NothingToDo,
 }
+
+/// The line of skill that bandages ask for (First Aid), and the seconds that the original's "Recently Bandaged" keeps another bandage from being used.
+pub const FIRST_AID: u32 = 129;
+const BANDAGED_SECONDS: f32 = 60.0;
+/// The spell of the original that is the "Recently Bandaged" debuff.
+pub const RECENTLY_BANDAGED: u32 = 11196;
 
 /// What a use gave at once.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -103,6 +111,8 @@ pub struct Consumed {
     pub shown: Vec<(String, f32)>,
     /// Seconds to go before the hearthstone takes the character home.
     pub hearth: Option<f32>,
+    /// Seconds before another bandage can be used.
+    pub bandaged: f32,
     rng: u32,
 }
 
@@ -253,6 +263,10 @@ impl Consumed {
         if slow && !calm {
             return Err(UseError::NotCalm);
         }
+        let bandage = def.skill.0 == FIRST_AID;
+        if bandage && self.bandaged > 0.0 {
+            return Err(UseError::Bandaged);
+        }
         let mut used = Used::default();
         let mut buff = Buff { item: stack.item, left: 0.0, boosts: [0; 7], regen: (0.0, 0.0), needs_calm: false };
         for effect in spell.effects {
@@ -275,11 +289,14 @@ impl Consumed {
         }
         if buff.left > 0.0 {
             // What was working of the same kind (the same item, or another food while this is food) is replaced.
-            let kind = |b: &Buff| (b.regen.0 > 0.0, b.regen.1 > 0.0);
+            let kind = |b: &Buff| (b.regen.0 > 0.0, b.regen.1 > 0.0, items::get(b.item).skill.0 == FIRST_AID);
             let before = self.buffs.len();
             self.buffs.retain(|b| b.item != buff.item && !(b.needs_calm && buff.needs_calm && kind(b) == kind(&buff)));
             used.stats_changed = buff.boosts.iter().any(|b| *b != 0) || self.buffs.len() != before;
             self.buffs.push(buff);
+        }
+        if bandage {
+            self.bandaged = BANDAGED_SECONDS;
         }
         if used.hearth {
             self.hearth = Some(HEARTH_SECONDS);
@@ -306,6 +323,7 @@ impl Consumed {
     /// `dt` seconds passed. `calm`: the character stood still and did not fight.
     pub fn tick(&mut self, dt: f32, calm: bool) -> Tick {
         let mut tick = Tick::default();
+        self.bandaged = (self.bandaged - dt).max(0.0);
         self.cooldowns.retain(|_, left| {
             *left -= dt;
             *left > 0.0
@@ -372,6 +390,7 @@ impl Consumed {
         }
         self.cooldowns = saved.item_cooldowns.iter().filter_map(|(id, left)| find(id).map(|item| (item, *left))).collect();
         self.hearth = saved.hearth;
+        self.bandaged = saved.bandaged;
     }
 
     /// Forget it all (the character died, or the game began again).
@@ -424,6 +443,24 @@ mod tests {
         c.use_item(&mut inv, 0, 1, true).unwrap();
         assert_eq!(c.tick(1.0, false).heal, 0.0);
         assert!(c.buffs.is_empty());
+    }
+
+    #[test]
+    fn a_bandage_does_not_replace_food_and_cannot_be_used_again_for_a_minute() {
+        let (mut inv, mut c) = (pack(&["i117", "i1251"]), Consumed::default());
+        c.use_item(&mut inv, 0, 1, true).unwrap();
+        c.use_item(&mut inv, 1, 1, true).unwrap();
+        assert_eq!(c.buffs.len(), 2, "the food keeps working while the bandage does");
+        c.tick(7.0, true);
+        assert_eq!(c.use_item(&mut inv, 1, 1, true), Err(UseError::Bandaged));
+        // The lockout is kept by a save.
+        let mut save = crate::save::Save::capture(&inv, crate::levels::Progress::new(), &crate::quests::QuestLog::default(), (0.0, 0.0), 0.0, 0.0, 1.0);
+        save.bandaged = c.bandaged;
+        let mut back = Consumed::default();
+        back.restore(&save);
+        assert_eq!(back.use_item(&mut inv, 1, 1, true), Err(UseError::Bandaged));
+        c.tick(54.0, true);
+        assert!(c.use_item(&mut inv, 1, 1, true).is_ok());
     }
 
     #[test]

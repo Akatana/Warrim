@@ -48,7 +48,14 @@ fn look_of(mount: &Mount, display: u32) -> Result<(String, Vec<(u32, String)>, f
         let folder = model.rsplit_once('\\').map_or("", |(f, _)| f);
         let skins: Vec<(u32, String)> = (0..3).map(|i| (FIRST_SKIN + i as u32, row.string(6 + i))).filter(|(_, n)| !n.is_empty()).map(|(slot, n)| (slot, format!(r"{folder}\{n}.blp"))).collect();
         // The feet: the model's sound data (field 13 of the model) names a footstep set (field 9 of that).
-        let foot_set = dbc("CreatureSoundData")?.find_by_id(data.u32(13)).map_or(0, |r| r.u32(9));
+        let sounds = dbc("CreatureSoundData")?;
+        let set_of = |model: &wowfmt::dbc::Record| sounds.find_by_id(model.u32(13)).map_or(0, |r| r.u32(9));
+        let dir_of = |model: &wowfmt::dbc::Record| model.string(2).rsplit_once('\\').map_or(String::new(), |(f, _)| f.to_ascii_lowercase());
+        // A model whose sound data has no feet (the war kodos) steps like the others of its folder.
+        let foot_set = match set_of(&data) {
+            0 => models.iter().filter(|m| dir_of(m) == dir_of(&data)).map(|m| set_of(&m)).find(|&set| set != 0).unwrap_or(0),
+            set => set,
+        };
         // The size of the display times that of the model.
         Ok((model, skins, row.f32(4).max(0.01) * data.f32(4).max(0.01), foot_set))
 }
@@ -125,7 +132,8 @@ mod tests {
         let mut displays: Vec<u32> = crate::items::all().iter().flat_map(|i| i.spells.iter().flat_map(|s| s.effects.iter())).filter_map(|e| if let crate::items::UseEffect::Mount(d, _) = e { Some(*d) } else { None }).collect();
         displays.sort_unstable();
         displays.dedup();
-        let silent: Vec<u32> = displays.into_iter().filter(|&d| { let set = look_of(&mount, d).unwrap().3; !(0..40).any(|terrain| bank.footstep_in(set, terrain).is_some()) }).collect();
+        // (The drake and the riding turtle have no feet in the original's sound data and no sibling model to borrow them from: they are silent there too.)
+        let silent: Vec<u32> = displays.into_iter().filter(|d| ![15293, 17158].contains(d)).filter(|&d| { let set = look_of(&mount, d).unwrap().3; !(0..40).any(|terrain| bank.footstep_in(set, terrain).is_some()) }).collect();
         assert!(silent.is_empty(), "steeds with no hoofbeats: {silent:?}");
     }
 }

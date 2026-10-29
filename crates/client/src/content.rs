@@ -2009,6 +2009,16 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
 mod tests {
     use super::*;
 
+    /// The numbers a spell's tooltip writes are filled in by the tooltip (`Panels::spell_lines`): no other braces are left in a text.
+    #[test]
+    fn the_texts_of_the_spells_have_only_the_placeholders_the_tooltip_fills() {
+        let known = ["{range}", "{min}", "{max}", "{bleed}", "{bleed_total}"];
+        for spell in &get().spells {
+            let rest = known.iter().fold(spell.description.clone(), |text, k| text.replace(k, ""));
+            assert!(!rest.contains(['{', '}', '$']), "{}: {}", spell.name, spell.description);
+        }
+    }
+
     #[test]
     fn portals_open_where_the_original_has_them_and_ask_for_the_level() {
         let portals = &get().portals;

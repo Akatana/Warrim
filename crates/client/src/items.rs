@@ -440,10 +440,13 @@ impl Inventory {
         Inventory::kit(content::get().start.outfits.iter().find(|o| o.race == race.id() && o.sex == sex.id()))
     }
 
-    /// The kit these tests were written for (the file may hold less): a hearthstone, spare clothes, linen, a hatchet, lockpicks and a mining pick.
+    /// The kit these tests were written for (`start.ron` may hold less): a sword and a shield in the hands, and in the pack a hearthstone, spare clothes, linen, a hatchet,
+    /// lockpicks and a mining pick.
     #[cfg(test)]
     pub fn old_kit() -> Inventory {
         let mut inv = Inventory::new();
+        inv.equipment[MAIN_HAND] = Some(Stack { item: find("longsword"), count: 1, enchant: 0 });
+        inv.equipment[OFF_HAND] = Some(Stack { item: find("round_shield"), count: 1, enchant: 0 });
         for (id, count) in [("hearthstone", 1), ("worn_leather_vest", 1), ("scuffed_boots", 1), ("linen_cloth", 3), ("hatchet", 1), ("lockpick", 5), ("i2901", 1)] {
             assert!(inv.add(Stack { item: find(id), count, enchant: 0 }));
         }
@@ -547,6 +550,23 @@ impl Inventory {
                 self.cursor = (c.count > moved).then_some(Stack { count: c.count - moved, ..c });
             }
             (Some(c), _) => self.cursor = std::mem::replace(&mut self.bag[slot], Some(c)),
+        }
+        self.tidy();
+    }
+
+    /// Drag the stack in backpack slot `from` onto slot `to`: it swaps with what is there or joins a stack of its kind.
+    pub fn drag_bag(&mut self, from: usize, to: usize) {
+        if from == to || self.cursor.is_some() || self.bag[from].is_none() {
+            return;
+        }
+        self.cursor = self.bag[from].take();
+        self.click_bag(to);
+        // What is left in the hand (the swapped item, or the surplus of a full stack) goes where the dragged stack came from.
+        if let Some(rest) = self.cursor.take() {
+            if from >= self.bag.len() {
+                self.bag.resize(from + 1, None);
+            }
+            self.bag[from] = Some(rest);
         }
         self.tidy();
     }
@@ -996,7 +1016,7 @@ mod tests {
 
     #[test]
     fn the_starting_kit_gives_the_stats_the_formulas_say() {
-        let inv = Inventory::new();
+        let inv = Inventory::old_kit();
         let s = Stats::of(&inv.equipment, 1, &[0; 7], &[]);
         // Shield armor 25 plus 2 per point of agility (20).
         // Attack power: 3 + 2 x 22 - 20.
@@ -1112,7 +1132,7 @@ mod tests {
 
     #[test]
     fn what_is_carried_weighs_and_slows_only_beyond_the_capacity() {
-        let mut inv = Inventory::new();
+        let mut inv = Inventory::old_kit();
         let (before, linen) = (inv.weight(), find("linen_cloth"));
         assert!(before > 0.0, "the starting kit weighs something");
         inv.add(Stack { item: linen, count: 20, enchant: 0 });
@@ -1167,7 +1187,7 @@ mod tests {
 
     #[test]
     fn a_one_hand_weapon_can_be_wielded_in_the_off_hand_for_half_a_blow() {
-        let mut inv = Inventory::new();
+        let mut inv = Inventory::old_kit();
         let (sword, dagger) = (find("longsword"), find("thorne_dagger"));
         assert!(Stats::of(&inv.equipment, 1, &[0; 7], &[]).off_damage.is_none());
         inv.equipment[OFF_HAND] = None;
@@ -1214,5 +1234,15 @@ mod tests {
         assert_eq!((inv.bag[11], inv.cursor), (Some(Stack { item: find("linen_cloth"), count: 20, enchant: 0 }), Some(Stack { item: find("linen_cloth"), count: 2, enchant: 0 })));
         inv.put_cursor_away();
         assert!(inv.cursor.is_none());
+        // Dragging a stack onto a free slot moves it; onto another item, swaps.
+        let cloth = Some(Stack { item: find("linen_cloth"), count: 1, enchant: 0 });
+        let sword = Some(Stack { item: find("longsword"), count: 1, enchant: 0 });
+        inv.bag.iter_mut().for_each(|s| *s = None);
+        inv.bag[3] = cloth;
+        inv.drag_bag(3, 12);
+        assert_eq!((inv.bag[3], inv.bag[12], inv.cursor), (None, cloth, None));
+        inv.bag[10] = sword;
+        inv.drag_bag(12, 10);
+        assert_eq!((inv.bag[12], inv.bag[10], inv.cursor), (sword, cloth, None));
     }
 }

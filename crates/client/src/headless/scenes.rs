@@ -338,7 +338,7 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
         }
         // An elixir, a scroll and food at work, for the icons of the buffs.
         if args.panel.iter().any(|p| p == "buffs") {
-            for id in ["i3825", "i954", "i117"] {
+            for id in ["i3825", "i954", "i117", "i1251"] {
                 let item = crate::items::find(id);
                 panels.inv.add(crate::items::Stack { item, count: 1, enchant: 0 });
                 let slot = panels.inv.bag.iter().position(|s| s.is_some_and(|s| s.item == item)).unwrap_or(0);

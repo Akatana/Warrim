@@ -164,6 +164,8 @@ pub(crate) struct Channel {
     fade_ms: f32,
     /// A one-shot animation has reached its last frame.
     done: bool,
+    /// Plays once through whatever its id (a spell's cast animation is one-shot, though the id may be one that loops elsewhere).
+    once: bool,
     /// Plays whatever the body plays instead of its own animation.
     following: bool,
 }
@@ -171,7 +173,7 @@ pub(crate) struct Channel {
 impl Channel {
     pub(crate) fn new(m2: &M2, id: u16, rng: &mut Rng) -> Channel {
         let seq = pick(m2, id, false, rng).unwrap_or(0);
-        Channel { cur: play(m2, id, seq, rng), prev: None, fade: 1.0, fade_ms: 0.0, done: false, following: false }
+        Channel { cur: play(m2, id, seq, rng), prev: None, fade: 1.0, fade_ms: 0.0, done: false, once: false, following: false }
     }
 
     fn begin(&mut self, m2: &M2, next: Playing) {
@@ -181,6 +183,7 @@ impl Channel {
         self.fade_ms = m2.sequences[next.seq].blend_ms as f32;
         self.cur = next;
         self.done = false;
+        self.once = false;
         self.following = false;
     }
 
@@ -224,7 +227,7 @@ impl Channel {
         if self.cur.time < len {
             return;
         }
-        if !looping(self.cur.id) {
+        if self.once || !looping(self.cur.id) {
             self.cur.time = len;
             self.done = true;
             return;
@@ -347,6 +350,7 @@ impl Animator {
         let Some(seq) = pick(m2, id, true, &mut self.rng) else { return };
         let next = play(m2, id, seq, &mut self.rng);
         self.upper.begin(m2, next);
+        self.upper.once = true;
         self.attacking = true;
         self.hold = None;
         self.attack_rate = length(m2, seq) / (seconds * 1000.0).max(1.0);
@@ -545,6 +549,19 @@ mod tests {
         assert_eq!(a.upper.cur.id, 134, "the wait follows it");
         run(&mut a, &m2, 4.0, Motion::default());
         assert_eq!(a.upper.cur.id, 134);
+    }
+
+    /// Battle Shout's cast animation (55) is not on the list of one-shot ids, and still plays once: the hands go back down.
+    #[test]
+    fn a_cast_animation_plays_once_whatever_its_id() {
+        let Some(m2) = human() else { return eprintln!("skipped: no game data") };
+        assert!(looping(55));
+        let mut a = Animator::new(&m2, 1);
+        a.start_upper(&m2, 55, 0.9);
+        run(&mut a, &m2, 0.3, Motion::default());
+        assert!(a.attacking() && a.upper.cur.id == 55);
+        run(&mut a, &m2, 3.0, Motion::default());
+        assert!(!a.attacking() && a.upper.cur.id != 55, "the shout is over");
     }
 
     #[test]

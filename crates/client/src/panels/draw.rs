@@ -2,6 +2,13 @@
 
 use super::*;
 
+/// An icon of the buff frame: its picture (file), the seconds left and the spell of the original that put it there, if the game knows it.
+pub(super) struct PlayerAura {
+    pub(super) icon: String,
+    pub(super) left: f32,
+    pub(super) spell: Option<u32>,
+}
+
 impl Panels {
     // ---- the pictures
 
@@ -215,7 +222,7 @@ impl Panels {
 
     /// Say which spells of creatures have hold of the character (every frame): their icons are shown with the buffs.
     pub fn set_afflictions(&mut self, list: &[crate::foes::Affliction]) {
-        self.afflicted = list.iter().map(|a| (format!(r"Interface\Icons\{}", a.icon), a.left)).collect();
+        self.afflicted = list.iter().map(|a| (format!(r"Interface\Icons\{}", a.icon), a.left, a.spell)).collect();
     }
 
     /// The seconds left as a buff button writes them: `12s`, `5m`, `1h`.
@@ -228,19 +235,32 @@ impl Panels {
         }
     }
 
-    /// Show the buffs as the icons of `BuffFrame`.
+    /// Show the buffs as the icons of `BuffFrame`: the helpful ones in its first 16 buttons, the harmful ones (red borders, by dispel kind) in the last 8.
     pub(super) fn update_buffs(&mut self) {
-        let mut buffs: Vec<(String, f32)> = self.consumed.buffs.iter().map(|b| (crate::items::get(b.item).icon.to_string(), b.left)).collect();
-        buffs.extend(self.consumed.shown.iter().map(|(icon, left)| (format!(r"Interface\Icons\{icon}"), *left)));
-        buffs.extend(self.afflicted.iter().cloned());
-        self.tree.show("BuffFrame", !buffs.is_empty());
+        let aura = |icon: String, left: f32, spell: Option<u32>| PlayerAura { icon, left, spell };
+        let mut helpful: Vec<PlayerAura> = self.consumed.buffs.iter().map(|b| {
+            let item = crate::items::get(b.item);
+            aura(item.icon.to_string(), b.left, item.spells.first().map(|s| s.spell))
+        }).collect();
+        helpful.extend(self.consumed.shown.iter().map(|(icon, left)| aura(format!(r"Interface\Icons\{icon}"), *left, None)));
+        let mut harmful: Vec<PlayerAura> = self.afflicted.iter().map(|(icon, left, spell)| aura(icon.clone(), *left, Some(*spell))).collect();
+        if self.consumed.bandaged > 0.0 {
+            harmful.push(aura(format!(r"Interface\Icons\{}", content::classic_spell(crate::consume::RECENTLY_BANDAGED).map_or("INV_Misc_Bandage_08", |s| s.icon.as_str())), self.consumed.bandaged, Some(crate::consume::RECENTLY_BANDAGED)));
+        }
+        self.tree.show("BuffFrame", !helpful.is_empty() || !harmful.is_empty());
         let durations = self.show_durations();
         for i in 0..24 {
             let button = format!("BuffButton{i}");
-            match buffs.get(i) {
-                Some((icon, left)) => {
+            // `DebuffTypeColor` of BuffFrame.lua: none, magic, curse, disease, poison.
+            const COLORS: [[f32; 4]; 5] = [[0.8, 0.0, 0.0, 1.0], [0.2, 0.6, 1.0, 1.0], [0.6, 0.0, 1.0, 1.0], [0.6, 0.4, 0.0, 1.0], [0.0, 0.6, 0.0, 1.0]];
+            match if i < 16 { helpful.get(i) } else { harmful.get(i - 16) } {
+                Some(PlayerAura { icon, left, spell }) => {
                     self.tree.show(&button, true);
                     self.tree.set_texture(&format!("{button}Icon"), Some(icon));
+                    if i >= 16 {
+                        let dispel = spell.and_then(content::classic_spell).map_or(0, |s| s.dispel as usize);
+                        self.tree.set_region_tint(&format!("{button}Border"), COLORS[dispel.min(4)]);
+                    }
                     self.tree.set_region_hidden(&format!("{button}Duration"), !durations);
                     let text = self.lasts_text(*left);
                     self.tree.set_text(&format!("{button}Duration"), &text);
@@ -252,6 +272,7 @@ impl Panels {
                 }
             }
         }
+        self.player_auras = (helpful, harmful);
     }
 
     pub fn target_shown(&self) -> bool {
@@ -266,6 +287,7 @@ impl Panels {
 
     /// Lay the open panels out for `screen` (what drawing does first), for clicks that come before the first draw.
     pub fn layout(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32)) {
+        self.update_buffs();
         let mount = self.mount.clone();
         self.tree.measure(ui, gpu, &mount, screen);
     }
@@ -325,7 +347,7 @@ impl Panels {
     /// Queue the open panels, the carried item and the tooltip for drawing.
     pub fn draw(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32)) {
         self.update_buffs();
-        if !self.any_open() && !self.target_shown() && !self.cast_bar_visible() && !self.breath_shown && self.consumed.buffs.is_empty() && self.consumed.shown.is_empty() && self.afflicted.is_empty() {
+        if !self.any_open() && !self.target_shown() && !self.cast_bar_visible() && !self.breath_shown && self.player_auras.0.is_empty() && self.player_auras.1.is_empty() {
             return;
         }
         let mount = self.mount.clone();

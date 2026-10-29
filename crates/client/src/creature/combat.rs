@@ -67,6 +67,11 @@ impl Mob {
         dist < self.combined_reach(target, true) + leeway
     }
 
+    /// Whether `target` stands at about the creature's height, so that a blow can land (see `MELEE_HEIGHT`).
+    pub(super) fn level_with(&self, target: Vec3) -> bool {
+        (target.y - self.pos.y).abs() <= MELEE_HEIGHT
+    }
+
     /// Damage dealt either way restarts the pursuit timer and marks where the fight is (`TriggerCombatTimer`).
     pub(super) fn refresh_fight(&mut self) {
         self.combat_timer = self.pursuit;

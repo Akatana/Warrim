@@ -135,6 +135,9 @@ pub struct Save {
     pub item_cooldowns: Vec<(String, f32)>,
     #[serde(default)]
     pub hearth: Option<f32>,
+    /// Seconds before another bandage can be used.
+    #[serde(default)]
+    pub bandaged: f32,
     #[serde(default)]
     pub sneaking: bool,
     /// Who the character is: its race, sex and looks (a save from before the character list is a human man).
@@ -234,6 +237,7 @@ impl Save {
             spell_buffs: Default::default(),
             item_cooldowns: Vec::new(),
             hearth: None,
+            bandaged: 0.0,
             sneaking: false,
             look: Appearance::default(),
             map: None,

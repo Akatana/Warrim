@@ -110,7 +110,6 @@ impl State {
             panels.notice(&text);
             more
         };
-        panels.sound("ChestOpen");
         let roll = random(&mut rng, 10_000) as f32 / 10_000.0;
         panels.skill_up(recipe.skill, (recipe.ranks.1, recipe.ranks.2, recipe.ranks.3), roll);
         panels.refresh();

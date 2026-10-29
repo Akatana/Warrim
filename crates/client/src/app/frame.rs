@@ -921,6 +921,25 @@ impl State {
         if home_now {
             self.go_home();
         }
+        // A bandage is a channel: the character plays the stance and work of the spell of First Aid for as long as it works.
+        let spell = self.panels.as_ref().and_then(|p| p.bandage_spell());
+        match (spell, self.bandage.take()) {
+            (Some(spell), None) => {
+                // First Aid has no precast kit: its stance, hand models and sound are in the kit of the cast.
+                let mut vis = crate::visuals::spell(&self.mount, spell);
+                vis.precast = vis.cast.clone();
+                let feet = self.camera.pos - Vec3::Y * EYE_HEIGHT;
+                self.bandage = self.in_ctx(|ctx| crate::casting::Spellcaster::gather_begin(ctx, &vis, feet));
+            }
+            (Some(_), Some(glows)) => {
+                self.in_ctx(|ctx| crate::casting::Spellcaster::gather_follow(ctx, &glows));
+                self.bandage = Some(glows);
+            }
+            (None, Some(glows)) => {
+                self.in_ctx(|ctx| crate::casting::Spellcaster::gather_end(ctx, &glows));
+            }
+            (None, None) => {}
+        }
         if let (Some(panels), Some(player)) = (&mut self.panels, &mut self.player) {
             if panels.take_equipment_change() {
                 player.set_equipment(&mut self.renderer, &self.gpu, &panels.inv.equipment, &panels.stats);
@@ -966,6 +985,9 @@ impl State {
             panels.draw_level(&mut self.renderer.ui, &self.gpu, size);
             if let Some(bar) = &self.actionbar {
                 bar.draw_drag(&mut self.renderer.ui, size);
+                if let Some((action, owner)) = bar.hovered(size) {
+                    panels.draw_bar_tip(&mut self.renderer.ui, &self.gpu, size, action, owner);
+                }
             }
             if let Some((_, lock)) = &self.lock {
                 panels.draw_lockpick(&mut self.renderer.ui, &self.gpu, size, lock, self.lock_art.as_ref(), self.lock_time);

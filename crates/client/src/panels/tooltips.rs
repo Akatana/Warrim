@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// The line of a buff's tooltip that tells the time it has left.
+fn remaining(left: f32) -> TipLine {
+    let left = left.ceil() as u32;
+    TipLine::new(if left >= 60 { format!("{} min remaining", left.div_ceil(60)) } else { format!("{left} sec remaining") }, WHITE)
+}
+
 impl Panels {
     // ---- tooltips
 
@@ -90,7 +96,8 @@ impl Panels {
             lines.push(TipLine::new(self.tree.string("ITEM_MIN_LEVEL").replacen("%d", &item.level.to_string(), 1), if self.progress.level >= item.level { WHITE } else { RED }));
         }
         if item.skill.0 != 0 {
-            lines.push(TipLine::new(self.tree.string("ITEM_REQ_SKILL").replacen("%s", &format!("{} ({})", skill_name(item.skill.0), item.skill.1), 1), RED));
+            let met = crate::skills::Skill::of_line(item.skill.0).is_some_and(|s| self.skills.knows(s) && self.skills.rank(s) >= item.skill.1);
+            lines.push(TipLine::new(self.tree.string("ITEM_REQ_SKILL").replacen("%s", &format!("{} ({})", skill_name(item.skill.0), item.skill.1), 1), if met { WHITE } else { RED }));
         }
         if let Some(spell) = item.tome {
             let def = content::spell(spell);
@@ -205,9 +212,44 @@ impl Panels {
         if let Some((kind, color)) = [None, Some(("Magic", [0.2, 0.6, 1.0, 1.0])), Some(("Curse", [0.6, 0.0, 1.0, 1.0])), Some(("Disease", [0.6, 0.4, 0.0, 1.0])), Some(("Poison", [0.0, 0.6, 0.0, 1.0]))].get(aura.dispel as usize).copied().flatten() {
             lines.push(TipLine::new(kind, color));
         }
-        let left = aura.left.ceil() as u32;
-        lines.push(TipLine::new(if left >= 60 { format!("{} min remaining", left.div_ceil(60)) } else { format!("{left} sec remaining") }, WHITE));
+        lines.push(remaining(aura.left));
         Some(lines)
+    }
+
+    /// The tooltip of a button of the buff frame (`GameTooltip:SetPlayerBuff`): the name of the spell, the kind of curse it is for a harmful one, the words of the spell and the time left.
+    fn buff_lines(&self, name: &str) -> Option<Vec<TipLine>> {
+        let i = name.strip_prefix("BuffButton")?.parse::<usize>().ok().filter(|&i| i < 24)?;
+        let aura = if i < 16 { self.player_auras.0.get(i) } else { self.player_auras.1.get(i - 16) }?;
+        // What an icon alone was shown for (a spell of the character's) is found by its picture.
+        let file = aura.icon.rsplit('\\').next().unwrap_or_default();
+        let spell = aura.spell.and_then(content::classic_spell).or_else(|| content::get().classic_spells.iter().find(|s| s.icon.eq_ignore_ascii_case(file)));
+        let mut lines = vec![TipLine::new(spell.map_or_else(|| file.to_string(), |s| s.name.clone()), WHITE)];
+        if i >= 16 {
+            if let Some((kind, color)) = [None, Some(("Magic", [0.2, 0.6, 1.0, 1.0])), Some(("Curse", [0.6, 0.0, 1.0, 1.0])), Some(("Disease", [0.6, 0.4, 0.0, 1.0])), Some(("Poison", [0.0, 0.6, 0.0, 1.0]))].get(spell.map_or(0, |s| s.dispel) as usize).copied().flatten() {
+                lines.push(TipLine::new(kind, color));
+            }
+        }
+        if let Some(s) = spell.filter(|s| !s.text.is_empty()) {
+            lines.push(TipLine::new(s.text.clone(), GOLD).wrapped());
+        }
+        lines.push(remaining(aura.left));
+        Some(lines)
+    }
+
+    /// The tooltip of an action-bar button: `owner` is the button's pixel rectangle (x, y from the top, w, h). Not drawn over a window's own tooltip or a carried item.
+    pub fn draw_bar_tip(&mut self, ui: &mut Ui, gpu: &Gpu, screen: (u32, u32), action: crate::actionbar::Action, owner: [f32; 4]) {
+        if self.tree.hover.is_some() || self.inv.cursor.is_some() {
+            return;
+        }
+        let lines = self.action_lines(action);
+        if lines.is_empty() {
+            return;
+        }
+        let mount = self.mount.clone();
+        self.tree.measure(ui, gpu, &mount, screen);
+        let s = screen.1 as f32 / ui_height();
+        let owner = crate::uixml::Rect { x: owner[0] / s, y: (screen.1 as f32 - owner[1] - owner[3]) / s, w: owner[2] / s, h: owner[3] / s };
+        self.tree.draw_tooltip(ui, gpu, &mount, screen, owner, &lines);
     }
 
     /// The tooltip for the frame under the mouse, if it has one.
@@ -223,7 +265,7 @@ impl Panels {
         if let Some(lines) = self.talent_lines(name).or_else(|| self.trade_lines(name)).or_else(|| self.trainer_lines(name)) {
             return Some(lines);
         }
-        if let Some(lines) = self.target_aura_lines(name) {
+        if let Some(lines) = self.target_aura_lines(name).or_else(|| self.buff_lines(name)) {
             return Some(lines);
         }
         if let Some(slot) = SLOT_BUTTONS.iter().position(|b| *b == name) {

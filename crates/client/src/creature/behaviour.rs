@@ -172,7 +172,7 @@ impl Mob {
                 // The fight is left (`EnterEvadeMode`): the player is led too far once the pursuit time has run out, or the target cannot be got at for too long.
                 if self.leash_broken(dt, target) | self.target_unreachable(dt) {
                     self.state = State::Return(0.0);
-                } else if melee && !no_melee && self.can_reach(dist, PLAYER_REACH, watch.moving) && self.pause == 0.0 {
+                } else if melee && !no_melee && self.can_reach(dist, PLAYER_REACH, watch.moving) && self.level_with(target) && self.pause == 0.0 {
                     self.state = State::Melee(0.0, false);
                     self.sounds.push(Cry::Attack);
                 } else if moves {
@@ -203,7 +203,7 @@ impl Mob {
                 self.turn(to);
                 let t = t + dt;
                 let landed = hit || t >= MELEE_HIT;
-                if landed && !hit && self.can_reach(dist, PLAYER_REACH, watch.moving) {
+                if landed && !hit && self.can_reach(dist, PLAYER_REACH, watch.moving) && self.level_with(target) {
                     let damage = self.def.melee_damage * self.boost() * (1.0 + self.def.melee_spread * (2.0 * self.random() - 1.0));
                     if damage > 0.0 {
                         self.out.push(Act::Melee(damage));

@@ -1,6 +1,6 @@
 //! The key bindings window (the menu's Key Bindings): the original's `KeyBindingFrame` (the `Blizzard_BindingUI` addon) with the commands of this game
 //! in its list. As there: click a key button, press the new key (the command shows what it waits for), Unbind Key clears it, Reset To Default, Cancel and
-//! Okay. Left out: the character-specific bindings, modifier chords and mouse buttons.
+//! Okay. Left out: the character-specific bindings, modifier chords and the main mouse buttons (the side buttons, Mouse4 and Mouse5, bind like keys).
 
 use super::menu::Group;
 use super::*;

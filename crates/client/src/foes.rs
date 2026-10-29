@@ -22,6 +22,7 @@ const CHEST: f32 = 1.2;
 const HEIGHT: f32 = 1.8;
 /// The keys of the sounds of missiles in flight start here, apart from those of places and lifts.
 const MISSILE_KEYS: u64 = 1 << 62;
+const CAST_KEYS: u64 = 1 << 61;
 /// Seconds between the ticks of a damage over time that does not say.
 const PERIOD: f32 = 3.0;
 /// The effect of the original that triggers another spell, and how deep such triggers are followed.
@@ -202,6 +203,8 @@ pub struct Foes {
     keys: u64,
     /// The glows of the casts that are going on, by the creature that casts, with the attachment of the creature each follows (0 for none).
     glows: HashMap<usize, Vec<(usize, u32)>>,
+    /// The sound of each cast that is going on (the precast sound, where the creature stands): it lasts until the cast ends, like the glows.
+    casts: HashMap<usize, (u32, Vec3)>,
     pub afflictions: Afflictions,
     sounds: Vec<(Sfx, Vec3)>,
     rng: u32,
@@ -209,7 +212,7 @@ pub struct Foes {
 
 impl Foes {
     pub fn new(visuals: HashMap<u32, Visual>) -> Foes {
-        Foes { visuals, missiles: Vec::new(), shots: Vec::new(), keys: 0, glows: HashMap::new(), afflictions: Afflictions::default(), sounds: Vec::new(), rng: 0x2545_F491 }
+        Foes { visuals, missiles: Vec::new(), shots: Vec::new(), keys: 0, glows: HashMap::new(), casts: HashMap::new(), afflictions: Afflictions::default(), sounds: Vec::new(), rng: 0x2545_F491 }
     }
 
     /// The animations that the spells ask for: the stance of the cast and the cast.
@@ -221,7 +224,8 @@ impl Foes {
     pub fn flying_sounds(&self) -> Vec<(u64, u32, Vec3)> {
         let missiles = self.missiles.iter().map(|m| (m.key, m.vis.missile_sound, m.at));
         let shots = self.shots.iter().map(|s| (s.key, s.vis.missile_sound, s.at));
-        missiles.chain(shots).filter_map(|(key, sound, at)| Some((key, sound?, at))).collect()
+        let casts = self.casts.iter().map(|(&who, &(sound, at))| (CAST_KEYS | who as u64, Some(sound), at));
+        missiles.chain(shots).chain(casts).filter_map(|(key, sound, at)| Some((key, sound?, at))).collect()
     }
 
     /// How fast the missile of each spell that has one flies, yards a second.
@@ -255,6 +259,7 @@ impl Foes {
     }
 
     fn stop_glows(&mut self, who: usize, fx: &mut Effects) {
+        self.casts.remove(&who);
         for (id, _) in self.glows.remove(&who).unwrap_or_default() {
             fx.stop(id);
         }
@@ -270,6 +275,7 @@ impl Foes {
         }
         let who: Vec<usize> = self.glows.keys().copied().collect();
         who.into_iter().for_each(|w| self.stop_glows(w, fx));
+        self.casts.clear();
         self.afflictions.clear();
     }
 
@@ -282,7 +288,7 @@ impl Foes {
                 if let Some(vis) = self.visuals.get(&spell) {
                     let glows = Self::show(fx, renderer, gpu, &vis.precast, at, yaw, height, true, &|id| wolves.hand(who, id));
                     self.glows.insert(who, glows);
-                    self.sounds.extend(vis.precast.sound.map(|s| (Sfx::Entry(s), at)));
+                    self.casts.extend(vis.precast.sound.map(|s| (who, (s, at))));
                 }
                 vec![]
             }

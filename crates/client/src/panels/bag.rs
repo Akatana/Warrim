@@ -80,6 +80,12 @@ impl Panels {
         BACKPACK_SIZE - j + self.bag_scroll
     }
 
+    /// The backpack slot that the frame `hit` shows, if it is one of the pack's buttons.
+    pub(super) fn bag_button(&self, hit: usize) -> Option<usize> {
+        let j = self.tree.name(hit).strip_prefix(&format!("{BACKPACK}Item"))?.parse::<usize>().ok().filter(|j| (1..=BACKPACK_SIZE).contains(j))?;
+        Some(self.bag_index(j))
+    }
+
     /// What the character carries and what it can carry before slowing down.
     pub fn load(&self) -> (f32, f32) {
         (self.inv.weight(), crate::items::carry_capacity(self.stats.attributes[0]))
@@ -241,10 +247,11 @@ impl Panels {
             if !fits {
                 return self.error(&self.string("SPELL_FAILED_EQUIPPED_ITEM"));
             }
-            if let Some(skill) = crate::skills::Skill::of_line(item.skill.0) {
-                if !self.skills.knows(skill) || self.skills.rank(skill) < item.skill.1 {
-                    return self.error(&self.string("ITEM_REQ_SKILL").replacen("%s", &format!("{} ({})", skill.name(), item.skill.1), 1));
-                }
+        }
+        // What asks for a rank of a skill (a lure, a bandage) is refused without it.
+        if let Some(skill) = crate::skills::Skill::of_line(item.skill.0) {
+            if !self.skills.knows(skill) || self.skills.rank(skill) < item.skill.1 {
+                return self.error(&self.string("ITEM_REQ_SKILL").replacen("%s", &format!("{} ({})", skill.name(), item.skill.1), 1));
             }
         }
         // It is put on in a cast of its own (the game starts it, and uses the item again when it is over).
@@ -276,6 +283,11 @@ impl Panels {
                         self.cast_start(name, MOUNT_SECONDS);
                     }
                 }
+                // A bandage is the original's spell of First Aid: six seconds of channeling, the bar running down.
+                let channel = self.consumed.buffs.iter().find(|b| b.item == stack.item && item.skill.0 == crate::consume::FIRST_AID).map(|b| b.left);
+                if let Some(seconds) = channel {
+                    self.cast_channel(name, seconds);
+                }
                 self.events.push(Sfx::PutDown(crate::items::get(stack.item).handling));
                 if used.stats_changed {
                     self.equipment_changed = true;
@@ -284,6 +296,7 @@ impl Panels {
             }
             Err(UseError::Level(level)) => self.error(&self.string("ERR_CANT_EQUIP_LEVEL_I").replacen("%d", &level.to_string(), 1)),
             Err(UseError::Cooldown) => self.error(&self.string("ERR_ITEM_COOLDOWN")),
+            Err(UseError::Bandaged) => self.error(&self.string("SPELL_FAILED_TARGET_AURASTATE")),
             Err(UseError::NotCalm) => self.error(&self.string("ERR_NOT_IN_COMBAT")),
             Err(UseError::NothingToDo) => {}
         }
@@ -327,6 +340,16 @@ impl Panels {
         self.mount_cast.is_some()
     }
 
+    /// The spell (of the original) of the bandage that is working on the character, if any.
+    pub fn bandage_spell(&self) -> Option<u32> {
+        let item = self.consumed.buffs.iter().map(|b| crate::items::get(b.item)).find(|i| i.skill.0 == crate::consume::FIRST_AID)?;
+        item.spells.first().map(|s| s.spell)
+    }
+
+    fn bandaging(&self) -> bool {
+        self.bandage_spell().is_some()
+    }
+
     /// Stop the cast of a mount, saying why on the cast bar.
     pub fn cancel_mount(&mut self, why: &str) {
         if self.mount_cast.take().is_some() {
@@ -336,7 +359,12 @@ impl Panels {
 
     /// `dt` seconds of what using items began: regeneration, boosts running out, cooldowns, the way home. Returns when the way home ended.
     pub fn tick_items(&mut self, dt: f32) -> Option<crate::consume::WayHome> {
+        let bandaging = self.bandaging();
         let tick = self.consumed.tick(dt, self.calm);
+        // The channel of a bandage ends with the six seconds, or is broken by moving or a fight.
+        if bandaging && !self.bandaging() {
+            if self.calm { self.cast_stop() } else { self.cast_failed("Interrupted") }
+        }
         // The mount being cast: moving or a fight breaks it, and at the end the steed is asked for.
         if let Some((left, mount)) = self.mount_cast {
             if !self.calm {

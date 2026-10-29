@@ -28,6 +28,8 @@ pub struct CastBar {
     start: f32,
     end: f32,
     casting: bool,
+    /// A channel: green, and the bar runs down instead of filling.
+    channeling: bool,
     flash: bool,
     fade_out: bool,
     hold_until: f32,
@@ -208,7 +210,7 @@ impl Panels {
     /// `SPELLCAST_START`: the bar begins to fill, in orange, with the name of the spell.
     pub fn cast_start(&mut self, name: &str, seconds: f32) {
         let b = &mut self.cast_bar;
-        (b.start, b.end, b.casting, b.fade_out, b.flash, b.hold_until, b.alpha, b.shown) = (b.clock, b.clock + seconds, true, false, false, 0.0, 1.0, true);
+        (b.start, b.end, b.casting, b.channeling, b.fade_out, b.flash, b.hold_until, b.alpha, b.shown) = (b.clock, b.clock + seconds, true, false, false, false, 0.0, 1.0, true);
         self.tree.set_bar("CastingBarFrame", 0.0, Some([1.0, 0.7, 0.0, 1.0]));
         self.tree.set_text("CastingBarText", name);
         self.tree.set_text_color("CastingBarText", WHITE);
@@ -218,13 +220,24 @@ impl Panels {
         self.tree.show("CastingBarFrame", true);
     }
 
-    /// `SPELLCAST_STOP`: full and green, with a flash, then it fades.
+    /// `SPELLCAST_CHANNEL_START`: the bar is full, in green, and runs down over `seconds`.
+    pub fn cast_channel(&mut self, name: &str, seconds: f32) {
+        self.cast_start(name, seconds);
+        self.cast_bar.channeling = true;
+        self.tree.set_bar("CastingBarFrame", 1.0, Some([0.0, 1.0, 0.0, 1.0]));
+    }
+
+    /// `SPELLCAST_STOP`: full and green, with a flash, then it fades (a channel that ran out just fades).
     pub fn cast_stop(&mut self) {
         if !self.cast_bar.shown {
             return;
         }
         let b = &mut self.cast_bar;
-        (b.casting, b.flash, b.fade_out, b.flash_alpha) = (false, true, true, 0.0);
+        (b.casting, b.flash, b.fade_out, b.flash_alpha) = (false, !b.channeling, true, 0.0);
+        if b.channeling {
+            self.tree.set_region_hidden("CastingBarSpark", true);
+            return;
+        }
         self.tree.set_bar("CastingBarFrame", 1.0, Some([0.0, 1.0, 0.0, 1.0]));
         self.tree.set_region_hidden("CastingBarSpark", true);
         self.tree.set_region_hidden("CastingBarFlash", false);
@@ -257,7 +270,8 @@ impl Panels {
         // The original steps by frames (60 to the second).
         let steps = dt * 60.0;
         if b.casting {
-            let frac = ((b.clock - b.start) / (b.end - b.start).max(0.001)).clamp(0.0, 1.0);
+            let done = ((b.clock - b.start) / (b.end - b.start).max(0.001)).clamp(0.0, 1.0);
+            let frac = if b.channeling { 1.0 - done } else { done };
             self.tree.set_bar("CastingBarFrame", frac, None);
             self.tree.set_region_hidden("CastingBarFlash", true);
             self.tree.set_region_point("CastingBarSpark", Point::Center, Some("CastingBarFrame"), Some(Point::Left), frac * 195.0, 2.0);
@@ -519,15 +533,27 @@ impl Panels {
             Effect::Classic { range } if range > 0.0 => (format!("{range:.0} yd range"), String::new()),
             Effect::Classic { .. } => ("Self".to_string(), String::new()),
         };
+        // The numbers of the text are the ones the spell does at this skill (the same as the lines above): the generated texts leave them as {range} {min} {max}
+        // {bleed} {bleed_total}.
+        let (low, high) = match def.effect {
+            Effect::Damage { min, max, .. } | Effect::Area { min, max, .. } | Effect::Heal { min, max } => (min * power + bonus, max * power + bonus),
+            _ => (0.0, 0.0),
+        };
+        let (bleed, ticks) = def.then.iter().find_map(|r| if let Rider::Bleed { amount, seconds } = *r { Some((amount * power, (seconds / 3.0).floor())) } else { None }).unwrap_or((0.0, 0.0));
+        let amount = if low.round() == high.round() { format!("{low:.0}") } else { format!("{low:.0} to {high:.0}") };
+        let text = def.description.replace("{range}", &amount).replace("{min}", &format!("{low:.0}")).replace("{max}", &format!("{high:.0}")).replace("{bleed_total}", &format!("{:.0}", bleed * ticks)).replace("{bleed}", &format!("{bleed:.0}"));
+        // The original's text says what the spell does and what follows it; the game's own line of damage or healing only stands in when it has none or leaves the numbers out, and the riders only when it has none.
         let mut lines = vec![
             TipLine::new(def.name.clone(), WHITE),
             TipLine::double(cost, range, WHITE, WHITE),
             TipLine::double("Instant cast", format!("{:.0} sec cooldown", self.spell_cooldown(spell)), WHITE, WHITE),
         ];
-        if !effect.is_empty() {
+        // (A text that leaves out the damage or healing of the spell, such as a stun's, still gets the line that says it.)
+        let silent = high >= 0.5 && !["{range}", "{min}", "{max}"].iter().any(|p| def.description.contains(p));
+        if !effect.is_empty() && (text.is_empty() || silent) {
             lines.push(TipLine::new(effect, GOLD));
         }
-        for rider in &def.then {
+        for rider in def.then.iter().filter(|_| text.is_empty()) {
             lines.push(TipLine::new(
                 match *rider {
                     Rider::Bleed { amount, seconds } => format!("Causes a wound that bleeds for {:.0} every 3 seconds, for {seconds:.0} seconds.", amount * power),
@@ -547,6 +573,7 @@ impl Panels {
                     Rider::Conjure { item, count } => format!("Makes {count} {}.", crate::items::all().iter().find(|it| it.id == format!("i{item}")).map_or("item", |it| it.name)),
                     Rider::Gain { aura, amount, seconds, .. } => match aura {
                         0..=4 => format!("Raises your {} by {:.0} for {seconds:.0} seconds.", ["strength", "agility", "stamina", "intellect", "spirit"][aura as usize], amount),
+                        99 => format!("Raises your attack power by {amount:.0} for {seconds:.0} seconds."),
                         52 => format!("Raises your chance to land a critical blow by {amount:.0}% for {seconds:.0} seconds."),
                         71 => format!("Raises your chance to land a critical spell by {amount:.0}% for {seconds:.0} seconds."),
                         _ => format!("Lasts {seconds:.0} seconds."),
@@ -555,7 +582,9 @@ impl Panels {
                 GOLD,
             ));
         }
-        lines.push(TipLine::new(def.description.clone(), GOLD).wrapped());
+        if !text.is_empty() {
+            lines.push(TipLine::new(text, GOLD).wrapped());
+        }
         lines.push(TipLine::new(format!("{} skill: {}", def.class.name(), self.skills.rank(def.class)), GREY));
         lines
     }

@@ -251,6 +251,8 @@ struct State {
     /// The veins and herbs of the map, and the one being gathered (its place and the seconds left of the cast).
     nodes: Option<crate::nodes::Nodes>,
     gather: Option<Gather>,
+    /// The models of the spell of a bandage while it is channeled (the stance and the work are the player's).
+    bandage: Option<Vec<(usize, u32)>>,
     /// The bobber of the line that is out.
     bobber: Option<Bobber>,
     /// What waits for the hand to reach the weapons.

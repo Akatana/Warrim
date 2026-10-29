@@ -70,6 +70,8 @@ const PLAYER_REACH: f32 = 1.5;
 const MELEE_OFFSET: f32 = 1.33;
 const ATTACK_DISTANCE: f32 = 5.0;
 const MELEE_LEEWAY: f32 = 8.0 / 3.0;
+/// The most a target may be above or below a creature for its blow to reach: the original looks at the ground distance alone, so a mob in a mine hit a player on the hill over it.
+const MELEE_HEIGHT: f32 = 4.0;
 /// The share of the combined reach a creature stands off its target at (`CHASE_DEFAULT_RANGE_FACTOR`).
 const CHASE_STAND: f32 = 0.5;
 /// Seconds into the 1.5 s melee attack animation at which the teeth land, and when it is over.

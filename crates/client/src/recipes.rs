@@ -245,7 +245,7 @@ mod tests {
         let c = content::get();
         let of = |mask: u32, class: i32| c.recipes.iter().find(|r| r.skill == Skill::Enchanting && r.worn.2 == mask && r.worn.0 == class).unwrap_or_else(|| panic!("no enchantment for {mask}"));
         let (bracer, shield, weapon) = (of(512, 4), of(16384, 4), c.recipes.iter().find(|r| r.skill == Skill::Enchanting && r.worn.0 == 2 && r.worn.1 != 0).unwrap());
-        let mut inv = Inventory::new();
+        let mut inv = Inventory::old_kit();
         // The starting kit wears a sword: a weapon has what to be put on, a bracer and a shield not.
         assert_eq!((target(&inv, bracer), target(&inv, shield), target(&inv, weapon)), (None, None, Some(items::MAIN_HAND)));
         let buckler = items::all().iter().position(|i| i.wear == items::Wear::Shield && i.class == 4 && i.subclass == 6).expect("a shield");

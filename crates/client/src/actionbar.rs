@@ -325,6 +325,17 @@ impl ActionBar {
         (0..SLOTS).find(|&i| (Self::button_left(i)..Self::button_left(i) + BUTTON).contains(&x) && (BUTTON_BOTTOM..BUTTON_BOTTOM + BUTTON).contains(&y))
     }
 
+    /// The action on the button under the pointer (none while one is carried) and the button's pixel rectangle (x, y, w, h).
+    pub fn hovered(&self, size: (u32, u32)) -> Option<(Action, [f32; 4])> {
+        if self.dragging.is_some() {
+            return None;
+        }
+        let slot = Self::slot_at(self.cursor?, size)?;
+        let s = size.1 as f32 / crate::uixml::ui_height();
+        let (x, y) = (size.0 as f32 / 2.0 + Self::button_left(slot) * s, size.1 as f32 - (BUTTON_BOTTOM + BUTTON) * s);
+        Some((self.slots[self.page][slot]?, [x, y, BUTTON * s, BUTTON * s]))
+    }
+
     /// Queue the bar for drawing on a `size` screen. `player` says which actions are active.
     /// `texts`: show the values on the bars (they also show while the mouse is over a bar), as the original does
     /// while the character sheet is open.

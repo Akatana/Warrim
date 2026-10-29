@@ -62,6 +62,17 @@ impl Panels {
         self.slider_release();
         self.sleep_dragging = false;
         let down = std::mem::take(&mut self.tree.pressed);
+        // A pack item dragged onto another pack slot moves there.
+        let up = self.tree.hit_test(pos, screen);
+        if let (true, Some(d), Some(u), None) = (left && !self.disenchant.0, down, up, self.inv.cursor) {
+            if let (Some(from), Some(to)) = (self.bag_button(d), self.bag_button(u)) {
+                if let (true, Some(moved)) = (from != to, self.inv.bag[from]) {
+                    self.inv.drag_bag(from, to);
+                    self.events.push(Sfx::PutDown(crate::items::get(moved.item).handling));
+                    return self.refresh();
+                }
+            }
+        }
         let Some(hit) = self.tree.hit_test(pos, screen).filter(|h| Some(*h) == down) else { return };
         let name = self.tree.name(hit).to_string();
         // A click anywhere but on the pack forgets that Disenchant waits for an item.

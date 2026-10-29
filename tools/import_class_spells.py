@@ -131,6 +131,7 @@ def simple(t, s):
     seconds = t.seconds(s)
     hit = area = heal = dot = None  # (min, max) of a blow or heal, (min, max, radius) of an area, (per tick, tick ms) of a dot
     then, buffs, enemy_dot, weapon = [], [], False, False
+    roles, secs = {}, []  # what the game makes of each effect of the original's text, and the seconds it runs for
     for n in (1, 2, 3):
         kind, aura = s["Effect%d" % n], s["EffectApplyAuraName%d" % n]
         a = s["EffectImplicitTargetA%d" % n]
@@ -143,27 +144,38 @@ def simple(t, s):
                 low, high = (8, 12) if kind == 31 else (max(low, 5), max(low, 5) + 5)
             if a in ENEMY and area is None:
                 hit = (low, high)
+                roles[n] = "weapon" if kind in WEAPON else "range"  # (a blow with the weapon is not "in addition to" it: the game has its own numbers)
             elif a in AREA and hit is None:
                 area = (low, high, radius_yd)
+                roles[n] = "weapon" if kind in WEAPON else "range"  # (a blow with the weapon is not "in addition to" it: the game has its own numbers)
         elif kind == 10 and a not in (5, 6):
             heal = (low, high)
+            roles[n] = "range"
         elif kind == 27 and aura == 3 and a in AREA | {18, 28}:
             ticks = int(seconds * 1000 // amp) if amp else 1
             area = (low * max(ticks, 1), high * max(ticks, 1), radius_yd)
+            roles[n] = "total"
         elif kind == 77 and s["SpellFamilyName"] == 10 and a in (1, 21) and low >= 10:
             heal = (low, high)  # Flash of Light: the paladin's heals are scripts in the tables
+            roles[n] = "range"
         elif kind == 6 and aura in (3, 53) and (a in ENEMY or a in AREA) and amp:
             dot = (low, amp)
             enemy_dot = True
+            roles[n] = "bleed"
             if a in AREA:
                 area = area or (1, 1, radius_yd)
         elif kind == 6 and aura == 8 and a in (1, 21, 20) and amp and seconds:
             ticks = max(seconds * 1000 // amp, 1)
             heal = (low * ticks, high * ticks)
+            roles[n] = "total"
         elif kind == 6 and aura == 12 and (a in ENEMY or a in AREA) and seconds and s["Mechanic"] in (0, 12, 13):
             then.append("Stun(%s)" % f(min(seconds, MAX_STUN)))
+            roles[n] = "stun"
+            secs.append(min(seconds, MAX_STUN))
         elif kind == 6 and aura == 33 and (a in ENEMY or a in AREA) and seconds and low < 0:
             then.append("Slow(share: %s, seconds: %s)" % (f(round(max(0.1, 1.0 + low / 100.0), 2)), f(min(seconds, 30.0))))
+            roles[n] = "slow"
+            secs.append(min(seconds, 30.0))
         elif kind == 6 and a in (1, 21, 20, 37, 57) and seconds:
             gain = None
             if aura == 29 and 0 <= s["EffectMiscValue%d" % n] <= 4:
@@ -172,9 +184,12 @@ def simple(t, s):
                 gain = (99, 0, float(low))
             if gain:
                 buffs.append("Gain(aura: %d, misc: %d, amount: %s, seconds: %s)" % (gain[0], gain[1], f(gain[2]), f(min(seconds, MAX_BUFF))))
+                roles[n] = "buff"
+                secs.append(min(seconds, MAX_BUFF))
     if enemy_dot and dot:
         tick = round(dot[0] * 3000.0 / dot[1], 1)
         then.insert(0, "Bleed(amount: %s, seconds: %s)" % (f(max(tick, 1.0)), f(min(seconds, 60.0))))
+        secs.insert(0, min(seconds, 60.0))
     cd = t.cooldown(s)
     reach = t.ranges.get(s["RangeIndex"], 0)
     down = lambda v: f(max(round(v, 1), 0.0 if v == 0 else 0.5))
@@ -200,17 +215,63 @@ def simple(t, s):
     then = then + buffs
     clauses = {"Bl": "leaves a wound that bleeds", "St": "stuns it", "Sl": "slows it", "Ga": "strengthens you for a while"}
     clauses = [clauses[r[:2]] for r in then if r[:2] != "Ga" or effect != "Buff"]
-    return {"cost": t.cost(s), "cooldown": cd, "effect": effect, "then": then, "description": what + (", and " + " and ".join(clauses) if clauses else "") + "."}
+    radius = float(round(area[2])) if area else None
+    return {"marks": (roles, secs, radius), "cost": t.cost(s), "cooldown": cd, "effect": effect, "then": then, "description": what + (", and " + " and ".join(clauses) if clauses else "") + "."}
 
 
 def tidy(text):
-    """The text of the original's spell for a tooltip: its first paragraph, with the values of other spells that the text could not name (`0614s2`, `0170d`, `$/10;29131o1`) said as
-    "some" and "a while"."""
-    text = text.split(chr(10))[0]
-    text = re.sub(r"\$[^ ,;:)]*[a-z0-9]", "some", text)
-    text = re.sub(r"\b\d{3,5}d\b", "a while", text)
-    text = re.sub(r"\b\d{3,5}[a-z]\d*\b", "some", text)
+    """The text of the original's spell for a tooltip, on one line (the tooltip wraps it itself)."""
     return re.sub(r"\s+", " ", text).strip()
+
+
+def tooltip(t, s, sp, m):
+    """What the tooltip says of a spell: the original's text. The game's own spells (those with `marks`) say the game's numbers instead: those that grow with the skill are
+    placeholders the tooltip fills in (`{range}` `{min}` `{max}` `{bleed}` `{bleed_total}`), the others the numbers the game uses; a sentence with a number that the
+    game has no use for is left out, and so is one that asks for what the game does not have (a spell may end with no text: the lines above are what it does)."""
+    if "marks" not in m:
+        if not m.get("runs"):
+            return tidy(t.text.describe(sp) or s["SpellName"])
+        # The original's spell: a sentence with a number of an effect that the game does not run is left out.
+        every = re.split(r"(?<=[.!?]) ", tidy(t.text.describe(sp, lambda kind, n, named: spelltext.UNTRUSTED if not named and kind in "sSmMotxeqf" and n not in m["runs"] else None)))
+        return " ".join(x for x in every if chr(0) not in x)
+    roles, secs, radius = m["marks"]
+
+    def mark(kind, n, named):
+        role = roles.get(n)
+        if named:
+            return spelltext.UNTRUSTED
+        if kind in "dD":
+            return spelltext.seconds_text(secs[0] * 1000) if secs else spelltext.UNTRUSTED
+        if kind == "a":
+            return f(radius).rstrip("0").rstrip(".") if radius and role in ("range", "bleed") else spelltext.UNTRUSTED
+        if kind == "t":
+            return "3" if role == "bleed" else spelltext.UNTRUSTED
+        if kind in "sSmMo":
+            if role == "range" or (role == "total" and kind == "o"):
+                return {"m": "{min}", "M": "{max}"}.get(kind, "{range}")
+            if role == "bleed" and kind in "so":
+                return "{bleed}" if kind == "s" else "{bleed_total}"
+            if role in ("buff", "slow", "stun") and kind in "sSmM":
+                return None
+        return spelltext.UNTRUSTED
+
+    text = t.text.describe(sp, mark)
+    every = re.split(r"(?<=[.!?]) ", tidy(text))
+    # What the game does not have: a position or a stealth or a weapon to ask for, combo points, a channel, a root, a jump to more targets, a share with the party, a
+    # threat, and so on; a number of another kind ("{range}%" of the attack power). Stuns and slows are said only by a spell that makes them.
+    absent = re.compile(r"^(Must|Requires|Target must|Awards|Druid must|Cannot be|\w+ cannot be)|combo point|\}%|(\{range\}.*){2}|(?i:only|must|require|chance|soul shard|jump|transfer|caster|"
+                        r"party|cannot|revive|interrupt|consum|attack power|outdoors|undead|demon|finishing|points?\b|targets\b|nearby|summon|after|slowly|builds|root|freez|frozen|"
+                        r"immobiliz|disorient|wander|blind|fear|sleep|polymorph|disease|threat|dodge|parry|block|stealth|prowl|behind|facing|directions|cone|incapacit|silence|dispel|"
+                        r"remov|resist|armor|haste|faster|restor|regenerat|health|revive|drain|friendly|ally|allies|enemies caught|slow casting)")
+    gated = (("stun", re.compile(r"(?i)stun")), ("slow", re.compile(r"(?i)slow|movement|daze")), ("buff", re.compile(r"(?i)increas|raising|infuse")))
+    healing = m["effect"].startswith(("Heal", "Buff", "Mana"))  # (it is for the caster alone, whoever the original's text says: the lines above say what it does)
+    sentences, kept = [], False
+    for x in every:
+        # (A "Lasts" that follows a sentence that is left out has nothing to say it of.)
+        kept = not healing and chr(0) not in x and not absent.search(x) and all(r in roles.values() or not g.search(x) for r, g in gated) and (kept or not x.startswith("Lasts "))
+        if kept:
+            sentences.append(x)
+    return " ".join(sentences)
 
 
 def classic(t, s):
@@ -220,11 +281,14 @@ def classic(t, s):
         return None
     then = []
     foe, any_unit, known = False, False, False
+    runs = set()  # the effects (1 to 3) that the game does something with
     for n in (1, 2, 3):
         kind, aura = s["Effect%d" % n], s["EffectApplyAuraName%d" % n]
         a, misc = s["EffectImplicitTargetA%d" % n], s["EffectMiscValue%d" % n]
         if not kind:
             continue
+        if kind in KINDS or (kind in (6, 35) and aura in AURAS) or kind in (3, 36, 50, 56, 64, 87, 88, 89, 90, 104, 109, 112):
+            runs.add(n)
         foe |= a == 6
         any_unit |= a == 25
         if kind in KINDS or (kind in (6, 35) and aura in AURAS):
@@ -290,7 +354,9 @@ def classic(t, s):
     near = 4.0 if reach <= 5 else min(float(round(reach)), 45.0)
     rng = near if foe else (-(30.0 if reach <= 5 else near) if any_unit else 0.0)
     cost = t.cost(s) if power(s) != -2 else "Stamina(0.0)"
-    return {"cost": cost, "cooldown": t.cooldown(s), "effect": "Classic(range: %s)" % f(rng), "then": then, "description": tidy(t.text.describe(s["Id"]) or s["SpellName"])}
+    # (What `procs.rs` knows by the name of the spell, it knows whole.)
+    named = s["SpellName"] in ("Life Tap", "Execute", "Judgement", "Holy Shock", "Dismiss Pet", "Mend Pet", "Tame Beast") or "Blessing of Light" in s["SpellName"] or s["SpellName"].startswith("Seal of")
+    return {"runs": None if named else runs, "cost": cost, "cooldown": t.cooldown(s), "effect": "Classic(range: %s)" % f(rng), "then": then, "description": tidy(t.text.describe(s["Id"]) or s["SpellName"])}
 
 
 def main():
@@ -371,7 +437,10 @@ def main():
             m, kind = simple(t, s), "own"
             if not m:
                 m, kind = classic(t, s), "classic"
-            if not m:
+            if m:
+                # The tooltip says what the original says, whatever the game does with the spell.
+                m["description"] = tooltip(t, s, sp, m)
+            else:
                 sig = " ".join("%d/%d/%d" % (s["Effect%d" % n], s["EffectApplyAuraName%d" % n], s["EffectImplicitTargetA%d" % n]) for n in (1, 2, 3) if s["Effect%d" % n])
                 note = "%s [%s]" % (base, sig) if os.environ.get("VERBOSE") else base
                 if note not in skipped[class_name]:

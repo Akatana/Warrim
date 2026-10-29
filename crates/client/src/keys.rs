@@ -95,6 +95,8 @@ const KEYS: &[(K, &str)] = names![
     ShiftLeft "LShift", ShiftRight "RShift", ControlLeft "LCtrl", ControlRight "RCtrl", AltLeft "LAlt", AltRight "RAlt",
     Minus "-", Equal "=", BracketLeft "[", BracketRight "]", Semicolon ";", Quote "'", Comma ",", Period ".", Slash "/", Backslash "\\", Backquote "`",
     Numpad0 "Num0", Numpad1 "Num1", Numpad2 "Num2", Numpad3 "Num3", Numpad4 "Num4", Numpad5 "Num5", Numpad6 "Num6", Numpad7 "Num7", Numpad8 "Num8", Numpad9 "Num9",
+    // The side buttons of a mouse; the window passes them on as these keys.
+    BrowserBack "Mouse4", BrowserForward "Mouse5",
     NumpadAdd "Num+", NumpadSubtract "Num-", NumpadMultiply "Num*", NumpadDivide "Num/",
 ];
 

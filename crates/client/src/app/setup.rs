@@ -200,6 +200,7 @@ impl State {
             pickups_stale: false,
             nodes,
             gather: None,
+            bandage: None,
             bobber: None,
             later: None,
             beds: bed_spots(&content::get().props, &map),

@@ -32,6 +32,10 @@ impl State {
             WindowEvent::KeyboardInput { event, .. } => self.keyboard(event_loop, event),
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => self.left_press(),
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => self.left_release(),
+            WindowEvent::MouseInput { state, button: button @ (MouseButton::Back | MouseButton::Forward), .. } => {
+                let code = if button == MouseButton::Back { KeyCode::BrowserBack } else { KeyCode::BrowserForward };
+                self.key(code, state == ElementState::Pressed, event_loop);
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 if let (true, Some(old), Some(editor)) = (self.rotating, self.cursor, &mut self.editor) {
                     editor.turn_by(position.x as f32 - old.0);
