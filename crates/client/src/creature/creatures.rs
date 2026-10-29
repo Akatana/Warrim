@@ -113,6 +113,9 @@ pub struct Creatures {
     tomes: Vec<usize>,
     /// Whether the creatures that die fall as ragdolls (the interface options).
     pub ragdolls: bool,
+    /// Whether the player is striking or casting now, and the seconds that a pet on the defensive stance still counts him as in a fight of his own making.
+    pub striking: bool,
+    engaged: f32,
     /// The animations the creatures' spells ask for.
     anims: SpellAnims,
     /// How fast the missiles of spells fly (yards a second), for the spells that have one: the time a pet's bolt takes to arrive.
@@ -164,7 +167,7 @@ impl Creatures {
         }
         let _ = renderer;
         let _ = gpu;
-        Ok(Creatures { rigs, creatures: Vec::new(), sites, grid, by_kind, free: Vec::new(), pending: HashMap::new(), mount: mount.clone(), cache: ModelCache::default(), budget: MAKE_PER_FRAME, scan: SCAN, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, orders: Default::default(), source: (String::new(), String::new(), 0), ticks: Vec::new(), wanted: Vec::new(), tomes: Vec::new(), ragdolls: true, anims: SpellAnims::new(), speeds: HashMap::new(), bolts: Vec::new(), shows: Vec::new() })
+        Ok(Creatures { rigs, creatures: Vec::new(), sites, grid, by_kind, free: Vec::new(), pending: HashMap::new(), mount: mount.clone(), cache: ModelCache::default(), budget: MAKE_PER_FRAME, scan: SCAN, markers, viewer: Vec3::ZERO, rng, clock_ms: 0.0, vertices: Vec::new(), deaths: Vec::new(), target: None, orders: Default::default(), source: (String::new(), String::new(), 0), ticks: Vec::new(), wanted: Vec::new(), tomes: Vec::new(), ragdolls: true, striking: false, engaged: 0.0, anims: SpellAnims::new(), speeds: HashMap::new(), bolts: Vec::new(), shows: Vec::new() })
     }
 
     /// The creatures at their places that have a model: (kind id, north and west of the place, where it is now in render space).
@@ -475,7 +478,10 @@ impl Creatures {
             self.orders.attack = None;
         }
         let orders = self.orders;
-        let pet_focus: Option<(usize, Vec3)> = orders.attack.or_else(|| orders.pick().and_then(|(reach, fighting)| nearest_foe(self, reach, fighting))).map(|i| (i, self.creatures[i].mob.pos));
+        // On the defensive stance it joins only a fight the player has started: it goes for his foe, and rests when he has stopped for a few seconds.
+        self.engaged = if self.striking { ally::ENGAGED_FOR } else { (self.engaged - dt).max(0.0) };
+        let pet_pick = orders.pick_foe(self.engaged, focus.map(|f| f.0), |reach, fighting| nearest_foe(self, reach, fighting));
+        let pet_focus: Option<(usize, Vec3)> = orders.attack.or(pet_pick).map(|i| (i, self.creatures[i].mob.pos));
         let helpers: Vec<(usize, Vec3)> = (0..self.creatures.len()).filter(|&i| self.creatures[i].mob.is_pet() && !self.creatures[i].mob.is_dead() && !self.creatures[i].mob.is_phased()).map(|i| (i, self.creatures[i].mob.pos)).collect();
         let (mut strikes, mut spells, mut soaked, mut gone) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (i, c) in self.creatures.iter_mut().enumerate() {
@@ -531,17 +537,32 @@ impl Creatures {
                 c.mob.swimming = liquid(c.mob.pos.x, c.mob.pos.z, c.mob.pos.y).is_some_and(|level| c.mob.pos.y < level - 0.4);
             }
             let height = Self::height_of(c);
+            let mut victim: Option<usize> = None;
             let aim = if c.mob.is_pet() { pet_focus } else { focus };
             let acts = {
                 let _p = crate::profile::sum(&mut step_time);
                 if c.mob.is_ally() {
-                    let acts = c.mob.step_ally(dt, player, aim.map(|f| f.1), c.mob.is_pet() && orders.stay, &ground, &blocked, nav);
-                    if let Some(y) = ground(c.mob.pos.x, c.mob.pos.z, c.mob.pos.y) {
-                        c.mob.settle(y);
-                    }
-                    acts
+                    c.mob.step_ally(dt, player, aim.map(|f| f.1), c.mob.is_pet() && orders.stay, &ground, &blocked, |a, b| !(watch.sight)(a, b), nav)
                 } else {
-                    c.mob.step(dt, watch, i, &roster, &crowd, &ground, &blocked, nav)
+                    // Whom it fights: the one it hates most, the player or one of his pets (`SelectHostileTarget`); it goes after the pet where the pet stands.
+                    if c.mob.state.fights() {
+                        if c.mob.threat.is_empty() {
+                            c.mob.threat.add(None, 0.0);
+                        }
+                        c.mob.threat.keep(|n| helpers.iter().any(|h| h.0 == n));
+                        let (pos, moving, combined, running) = (c.mob.pos, watch.moving, c.mob.combined_reach(PLAYER_REACH, true), !c.mob.course.is_empty());
+                        let in_reach = |who: Option<usize>| match who {
+                            Some(j) => helpers.iter().find(|h| h.0 == j).is_some_and(|h| flat(h.1 - pos).length() < combined),
+                            None => flat(player - pos).length() < combined + if moving && running { MELEE_LEEWAY } else { 0.0 },
+                        };
+                        victim = c.mob.threat.select(in_reach);
+                    } else {
+                        c.mob.threat.clear();
+                    }
+                    match victim.and_then(|j| helpers.iter().find(|h| h.0 == j)) {
+                        Some(pet) => c.mob.step(dt, &watch.with_feet(pet.1), i, &roster, &crowd, &ground, &blocked, nav),
+                        None => c.mob.step(dt, watch, i, &roster, &crowd, &ground, &blocked, nav),
+                    }
                 }
             };
             self.ticks.extend(c.mob.ticked.drain(..).map(|damage| (c.mob.pos + Vec3::Y * 0.9, damage)));
@@ -553,14 +574,13 @@ impl Creatures {
             for act in acts {
                 match act {
                     Act::Melee(damage) => {
-                        // A pet next to the one that strikes takes some of the blows.
-                        let near = helpers.iter().filter(|h| flat(h.1 - c.mob.pos).length() < ally::SOAK_REACH).map(|h| h.0).next();
-                        match near {
-                            Some(j) if self.rng.next() % 100 < ally::SOAK_PERCENT => soaked.push((j, damage)),
-                            _ => foes.push(Foe::Melee(damage, c.mob.def.level)),
+                        // The blow lands on the one it fights: a pet, or the player.
+                        match victim {
+                            Some(j) => soaked.push((j, damage)),
+                            None => foes.push(Foe::Melee(damage, c.mob.def.level)),
                         }
                     }
-                    Act::Strike(damage) => strikes.push((aim.map(|f| f.0), damage)),
+                    Act::Strike(damage) => strikes.push((i, aim.map(|f| f.0), damage)),
                     Act::Spell(spell) => spells.push((i, spell, aim.map(|f| f.0))),
                     Act::Begin(spell) => foes.push(Foe::Begin { who: i, spell, at: c.mob.pos, yaw: c.mob.yaw, height }),
                     Act::Stop => foes.push(Foe::Stop { who: i }),
@@ -693,9 +713,9 @@ impl Creatures {
                 c.mob.hurt(damage);
             }
         }
-        for (target, damage) in strikes {
+        for (by, target, damage) in strikes {
             if let Some(t) = target {
-                self.ally_hit(t, damage);
+                self.ally_hit(t, damage, by);
             }
         }
         // The spells of pets in the air land when their missiles arrive.
@@ -907,9 +927,9 @@ impl Creatures {
     }
 
     /// An ally's blow lands on creature `i` (a kill is the player's, for the quests and the loot).
-    fn ally_hit(&mut self, i: usize, damage: f32) {
+    fn ally_hit(&mut self, i: usize, damage: f32, by: usize) {
         let Some(c) = self.creatures.get_mut(i).filter(|c| c.mob.attackable() && !c.mob.is_dead()) else { return };
-        c.mob.hurt(damage);
+        c.mob.hurt_from(Some(by), damage);
         // What a pet deals is the player's: it floats up as a number.
         self.ticks.push((c.mob.pos + Vec3::Y * 0.9, damage));
         if c.mob.is_dead() {
@@ -932,7 +952,7 @@ impl Creatures {
         });
         for o in outcomes {
             match o {
-                crate::procs::Outcome::Hurt { amount, .. } => self.ally_hit(target, amount),
+                crate::procs::Outcome::Hurt { amount, .. } => self.ally_hit(target, amount, who),
                 crate::procs::Outcome::Put(status) => self.afflict(target, status),
                 _ => {}
             }

@@ -897,6 +897,9 @@ pub struct Content {
     pub classic_index: std::collections::HashMap<u32, usize>,
     /// What the original gives a pet by the level of its master (`classic_pet_stats.ron`, by the id of its creature): health, mana, intellect, spirit.
     pub pet_stats: std::collections::HashMap<String, Vec<(u32, u32, u32, u32)>>,
+    /// How the original's creatures move and reach (`classic_creature_motion.ron`, by the id of the creature): walk and run rate (of 2.5 and 7 yards a second), the combat
+    /// reach of the model in yards, the leash in yards (0: the world's) and the pursuit in milliseconds.
+    pub motion: std::collections::HashMap<String, (f32, f32, f32, f32, u32)>,
     pub pois: Vec<Poi>,
     /// The doors to other maps (not editable).
     pub portals: Vec<Portal>,
@@ -1007,6 +1010,12 @@ pub fn classic_spell(id: u32) -> Option<&'static ClassicSpell> {
 }
 
 /// What the original gives the pet of the creature `id` when its master is at `level`: health, mana, intellect and spirit; none for a creature that is no pet of its tables.
+/// How a creature of the original moves and reaches: (walk speed, run speed, combat reach, leash, pursuit seconds), speeds in yards a second. A creature the original does not
+/// know (one of the editor's) walks and runs at the base speeds and reaches 1.5 yards.
+pub fn motion(id: &str) -> (f32, f32, f32, f32, f32) {
+    get().motion.get(id).map_or((2.5, 7.0, 1.5, 0.0, 15.0), |&(walk, run, reach, leash, pursuit)| (walk * 2.5, run * 7.0, reach, leash, if pursuit == 0 { 15.0 } else { pursuit as f32 / 1000.0 }))
+}
+
 pub fn pet_stats(id: &str, level: u32) -> Option<(u32, u32, u32, u32)> {
     let rows = get().pet_stats.get(id)?;
     rows.get((level.max(1) as usize - 1).min(rows.len().checked_sub(1)?)).copied()
@@ -1786,6 +1795,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
     let mut seen = HashSet::new();
     ensure!(classic_spells.iter().all(|s| seen.insert(s.spell)), "classic_spells.ron: a spell is used twice");
     let pet_stats = ron::from_str(&source("classic_pet_stats.ron", include_str!("../../../content/classic_pet_stats.ron"))).context("classic_pet_stats.ron")?;
+    let motion = ron::from_str(&source("classic_creature_motion.ron", include_str!("../../../content/classic_creature_motion.ron"))).context("classic_creature_motion.ron")?;
     let classic_index: std::collections::HashMap<u32, usize> = classic_spells.iter().enumerate().map(|(i, s)| (s.spell, i)).collect();
     for c in &raw_creatures {
         for e in &c.brain.events {
@@ -1992,7 +2002,7 @@ pub fn build(raws: Raws, mount: Option<&Mount>) -> Result<Content> {
         }
         taking.entry(q.turn_in).or_default().push(i);
     }
-    Ok(Content { spells, classic_spells, classic_index, pet_stats, items, pois, portals, pages, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, disenchant, start: Start { spells: known, money: raw_start.money, equipment, bag, outfits } })
+    Ok(Content { spells, classic_spells, classic_index, pet_stats, motion, items, pois, portals, pages, chests, quests, giving, taking, item_quests, loot, creatures, creature_numbers, spawns, props, node_kinds, node_numbers, nodes, recipes, recipe_numbers, lessons, skins, fishing, enchants, disenchant, start: Start { spells: known, money: raw_start.money, equipment, bag, outfits } })
 }
 
 #[cfg(test)]

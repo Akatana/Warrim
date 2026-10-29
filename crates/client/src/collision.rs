@@ -104,6 +104,24 @@ impl CollisionMesh {
         best
     }
 
+    /// Highest surface under `(x, z)` not above `max_y`, of any slope short of a wall (the original's `getHeight` is a ray down to whatever it hits): where a creature stands, which
+    /// may be a ramp too steep for the player to walk.
+    pub fn surface(&self, x: f32, z: f32, max_y: f32) -> Option<f32> {
+        const STEEPEST: f32 = 0.2;
+        let mut best: Option<f32> = None;
+        for &i in self.grid.get(&(cell_of(x), cell_of(z)))? {
+            let t = &self.tris[i as usize];
+            if t.n.y.abs() < STEEPEST || !inside_xz(t, x, z) {
+                continue;
+            }
+            let y = t.a.y - (t.n.x * (x - t.a.x) + t.n.z * (z - t.a.z)) / t.n.y;
+            if y <= max_y && best.is_none_or(|b| y > b) {
+                best = Some(y);
+            }
+        }
+        best
+    }
+
     /// Where the segment `from -> to` first hits a triangle (either side), as a fraction of the segment.
     pub fn raycast(&self, from: Vec3, to: Vec3) -> Option<f32> {
         let dir = to - from;

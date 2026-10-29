@@ -41,6 +41,10 @@ impl Mob {
             a.1 > 0.0
         });
         self.moving = false;
+        self.regenerate(dt);
+        if self.fear <= 0.0 {
+            self.panic = false;
+        }
         (self.me, self.player) = (me, target);
         if !self.todo.is_empty() && !self.is_dead() {
             let mut due = Vec::new();
@@ -60,7 +64,8 @@ impl Mob {
         // The way to the player: what a spell needs to be cast at him.
         let hunting = self.state.fights();
         let eye = Vec3::Y * EYE;
-        self.seen = (dist, !hunting || !blocked(self.pos + eye, target + eye));
+        // (`blocked` is a walker's check and lets a hill pass: the sight line is the terrain's too.)
+        self.seen = (dist, !hunting || (!blocked(self.pos + eye, target + eye) && (watch.sight)(self.pos + eye, target + eye)));
         let los = self.seen.1;
         self.near.clear();
         if self.social && hunting {
@@ -72,7 +77,8 @@ impl Mob {
         match self.state {
             // In terror it runs from the player to places round him, whatever it was doing.
             _ if self.fear > 0.0 && !self.is_dead() && self.state != State::Unborn => {
-                let step = self.run_in_terror(target, dt, nav, &blocked);
+                let from = if self.panic { self.pos } else { target };
+                let step = self.run_in_terror(from, dt, nav, &blocked);
                 self.stepped(step);
                 if !self.state.fights() {
                     self.state = State::Chase;
@@ -83,7 +89,7 @@ impl Mob {
             State::Flinch(t) => self.state = if t + dt >= FLINCH_TIME { State::Chase } else { State::Flinch(t + dt) },
             State::Idle | State::Wander(_) => {
                 let noticed = aggro_range(self.def.level, watch.level) * if self.hidden { SNEAK_AGGRO * self.notice } else { 1.0 };
-                if self.def.is_hostile() && !self.def.brain.calm && (target - self.pos).length() < noticed {
+                if self.def.is_hostile() && !self.def.brain.calm && (target - self.pos).length() < noticed && (watch.sight)(self.pos + eye, target + eye) {
                     self.state = State::Chase;
                     self.sounds.push(Cry::Aggro);
                 } else if self.attackable() || !self.route.is_empty() {
@@ -100,7 +106,7 @@ impl Mob {
                                     (self.state, self.rest) = (State::Idle, self.new_rest());
                                 }
                             } else {
-                                let pace = if self.run { RUN_SPEED } else { WALK_SPEED };
+                                let pace = if self.run { self.run_speed } else { self.walk_speed };
                                 // The way to the place is made when it sets out: a patrol's by a path to the place, a stroll's by a ray over the mesh.
                                 if !self.planned {
                                     self.planned = true;
@@ -149,24 +155,33 @@ impl Mob {
             }
             State::Chase => {
                 self.turn(to);
+                // `UnitAI::UpdateAI`: a caster that keeps close or at a distance leaves ranged mode when the player is within a blow's reach (it fights him close), and is in it
+                // again once he is three yards further than that.
+                let mode_now = self.rt.as_ref().and_then(|r| r.mode);
+                if mode_now.is_some_and(|m| matches!(m.0, brain::PROXIMITY | brain::DISTANCER)) {
+                    let on = self.rt.as_ref().is_some_and(|r| r.ranged_on);
+                    if on && self.can_reach(dist, PLAYER_REACH, watch.moving) {
+                        self.rt.as_mut().expect("checked").ranged_on = false;
+                    } else if !on && !self.can_reach(dist - 3.0, PLAYER_REACH, watch.moving) && self.ranged_ok() {
+                        self.rt.as_mut().expect("checked").ranged_on = true;
+                    }
+                }
                 let rt = self.rt.as_ref().expect("the script is only out of the creature while it plays");
                 let (melee, moves, ranged, mode) = (rt.melee, rt.combat_move, rt.ranged_on, rt.mode);
                 let no_melee = ranged && mode.is_some_and(|m| m.0 == brain::NO_MELEE);
-                if dist > LEASH_RANGE || flat(self.home - self.pos).length() > LEASH_RANGE {
+                // The fight is left (`EnterEvadeMode`): the player is led too far once the pursuit time has run out, or the target cannot be got at for too long.
+                if self.leash_broken(dt, target) | self.target_unreachable(dt) {
                     self.state = State::Return(0.0);
-                } else if melee && !no_melee && dist <= MELEE_RANGE && self.pause == 0.0 {
+                } else if melee && !no_melee && self.can_reach(dist, PLAYER_REACH, watch.moving) && self.pause == 0.0 {
                     self.state = State::Melee(0.0, false);
                     self.sounds.push(Cry::Attack);
-                } else if ranged && self.kite == 0.0 && dist < KITE_RANGE && mode.is_some_and(|m| matches!(m.0, brain::PROXIMITY | brain::DISTANCER)) && self.ranged_ok() {
-                    // A caster backs away from a player who comes close.
-                    self.state = State::Kite(0.0);
                 } else if moves {
-                    // A caster in ranged mode stands at its distance as long as it sees the player; any other runs to him.
+                    // A caster in ranged mode stands at its distance as long as it sees the player; any other goes up to its target and stands at half the reach of a blow from it.
                     let stand = match mode {
-                        Some((_, d)) if ranged && los => d.max(MELEE_RANGE),
-                        _ => MELEE_RANGE * 0.8,
+                        Some((_, d)) if ranged && los => d.max(self.combined_reach(PLAYER_REACH, true)),
+                        _ => self.combined_reach(PLAYER_REACH, true) * CHASE_STAND,
                     };
-                    let speed = if self.charge > 0.0 { CHARGE_SPEED } else { RUN_SPEED };
+                    let speed = if self.charge > 0.0 { CHARGE_SPEED } else { self.run_speed };
                     let step = self.chase_to(target, stand, speed, dt, true, crowd, nav, &blocked);
                     self.stepped(step);
                     if step == 0.0 {
@@ -174,29 +189,25 @@ impl Mob {
                     }
                 }
             }
-            State::Return(t) if t < RETURN_WAIT => self.state = State::Return(t + dt),
+            // It goes home at once, at a run (`EnterEvadeMode`, `HomeMovementGenerator`), and heals on the way as it does out of combat.
             State::Return(_) => {
                 let left = flat(self.home - self.pos);
                 if left.length() < 0.3 {
-                    (self.state, self.health, self.rest) = (State::Idle, self.def.health, self.new_rest());
-                    self.mana = self.def.brain.mana;
-                } else {
-                    // Home, by the way the path finder made; there it stands at once.
-                    if self.go_home(dt, nav, &blocked) {
-                        self.pos.x = self.home.x;
-                        self.pos.z = self.home.z;
-                    }
-                    self.health = (self.health + self.def.health * REGEN * dt).min(self.def.health);
+                    (self.state, self.rest) = (State::Idle, self.new_rest());
+                } else if self.go_home(dt, nav, &blocked) {
+                    self.pos.x = self.home.x;
+                    self.pos.z = self.home.z;
                 }
             }
             State::Melee(t, hit) => {
                 self.turn(to);
                 let t = t + dt;
                 let landed = hit || t >= MELEE_HIT;
-                if landed && !hit && dist <= MELEE_REACH {
+                if landed && !hit && self.can_reach(dist, PLAYER_REACH, watch.moving) {
                     let damage = self.def.melee_damage * self.boost() * (1.0 + self.def.melee_spread * (2.0 * self.random() - 1.0));
                     if damage > 0.0 {
                         self.out.push(Act::Melee(damage));
+                        self.refresh_fight();
                     }
                     self.sounds.push(Cry::CustomAttack);
                     self.proc_on_hit();
@@ -237,7 +248,7 @@ impl Mob {
                         self.plan(goal, false, true, nav, &blocked);
                         self.loose = false;
                     }
-                    let step = self.follow(dt, RUN_SPEED, &blocked);
+                    let step = self.follow(dt, self.run_speed, &blocked);
                     self.stepped(step);
                     self.state = if step == 0.0 { State::Chase } else { State::Flee(t, goal, friend) };
                 }
@@ -249,7 +260,7 @@ impl Mob {
                     self.kite = KITE_PAUSE;
                     self.state = State::Chase;
                 } else {
-                    let step = self.follow(dt, RUN_SPEED, &blocked);
+                    let step = self.follow(dt, self.run_speed, &blocked);
                     self.stepped(step);
                     if t + dt >= KITE_TIME || self.course.is_empty() || dist >= want * 0.75 {
                         self.kite = KITE_PAUSE;
@@ -299,18 +310,46 @@ impl Mob {
             if let Some(y) = ground(self.pos.x, self.pos.z, self.pos.y) {
                 self.settle(y);
             }
-        } else if self.moving {
-            // The mesh lies up to a voxel over the terrain: a walker stands on the ground within a yard of its way (not on the bed of a lake it swims over).
-            if let Some(y) = ground(self.pos.x, self.pos.z, self.pos.y + 1.0).filter(|y| *y > self.pos.y - 1.0) {
-                self.settle(y);
-            }
+        } else if self.moving || !self.placed {
+            // (Also once more the step after it stops: the mesh the course was drawn on lies up to a yard under a steep ramp, and it must not stay buried where it stopped.)
+            self.placed = !self.moving;
+            // The mesh lies up to a voxel over the terrain: a walker stands on the floor under it (`UpdateAllowedPositionZ`), not on the bed of a lake it swims over.
+            self.stand(&ground);
         }
         std::mem::take(&mut self.out)
     }
 
+    /// It stands on the floor it was on: where two floors lie over each other (a mine's tunnel and the planks over it) the course, which the mesh made, and the floors under it
+    /// may name different ones, and the creature must not jump from one to the other through what is between. So it stays on the floor within a yard above (the step the player's own
+    /// controller makes) or 0.8 yd below the one it stood on (a ramp climbs and falls by less in a step); only where there is none (the course left it in the rock over a mine, it was put somewhere
+    /// else) it stands on the highest floor within a yard above its feet, however far below that is. A swimmer keeps its height, or it would sink to the bed.
+    pub(super) fn stand(&mut self, ground: &impl Fn(f32, f32, f32) -> Option<f32>) {
+        if (self.layer - self.pos.y).abs() > 3.0 {
+            self.layer = self.pos.y;
+        }
+        // The floor level with the one it stood on first (within half a yard over it: a ramp near the terrain over it is not ported up to the terrain); a step up of a yard only where
+        // there is none (a plank, a ledge).
+        let level = ground(self.pos.x, self.pos.z, self.layer - 0.5).filter(|f| *f > self.layer - 0.8);
+        let kept = level.or_else(|| ground(self.pos.x, self.pos.z, self.layer).filter(|f| *f > self.layer - 0.8));
+        let y = kept.or_else(|| ground(self.pos.x, self.pos.z, self.pos.y + 1.0).filter(|y| !self.swimming || *y > self.pos.y - 1.0));
+        if let Some(y) = y {
+            self.settle(y);
+        }
+    }
+
+    /// The places still to walk through, the next last (for the probes).
+    pub fn course_points(&self) -> Vec<Vec3> {
+        self.course.clone()
+    }
+
+    /// The heights of the places still to walk through (for the probes).
+    pub fn course_heights(&self) -> Vec<f32> {
+        self.course.iter().map(|p| (p.y * 100.0).round() / 100.0).collect()
+    }
+
     /// A creature that has not been put anywhere yet (height 0) stands on the ground; after that the ways it walks give its height, corrected to the terrain.
     pub(super) fn settle(&mut self, y: f32) {
-        self.pos.y = y;
+        (self.pos.y, self.layer) = (y, y);
     }
 
     /// Play the script for `dt` seconds.
@@ -373,7 +412,6 @@ impl Mob {
         match self.state {
             State::Idle => self.emote.unwrap_or(STAND),
             State::Unborn => STAND,
-            State::Return(t) if t < RETURN_WAIT => STAND,
             State::Return(_) => RUN,
             State::Wander(_) if self.run => RUN,
             State::Wander(_) => WALK,

@@ -9,9 +9,6 @@ const STAY_NEAR: f32 = 3.5;
 const COME_BACK: f32 = 45.0;
 /// How far an ally goes for what fights the player, yards from him; and how far a spell of an ally reaches.
 pub const GO_FOR: f32 = 30.0;
-/// A pet within this many yards of a creature that strikes the player takes this share of its blows (in percent).
-pub const SOAK_REACH: f32 = 6.0;
-pub const SOAK_PERCENT: u32 = 40;
 const SPELL_REACH: f32 = 20.0;
 /// Seconds before a pet may begin another spell when the last one had no cast time (the global cooldown).
 const GLOBAL_COOLDOWN: f32 = 1.5;
@@ -27,6 +24,8 @@ pub const CORPSE_TIME: f32 = 4.0;
 
 /// How far from the player a pet on the aggressive stance goes for a foe that has not touched him, yards.
 const AGGRESSIVE_REACH: f32 = 15.0;
+/// Seconds a pet on the defensive stance keeps fighting after the player last struck or cast.
+pub const ENGAGED_FOR: f32 = 5.0;
 
 /// What a pet does with foes it is not told to attack: nothing, the ones that fight the player, or any about.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -57,12 +56,14 @@ pub enum PetCommand {
 }
 
 impl PetOrders {
-    /// How far from the player a foe of the stance's own choosing may be, and whether it must be fighting him: `None` for a stance that picks none.
-    pub fn pick(&self) -> Option<(f32, bool)> {
+    /// The foe the stance picks when the pet is sent at none. `engaged` is the seconds the player has been in a fight of his own making (striking or casting, a few
+    /// seconds ago at most), `players_foe` the foe he has gone for, and `nearest(reach, fighting)` the nearest foe about. Passive: none. Defensive: the player's foe, and
+    /// only while he fights, never one that merely stands about or fights something else. Aggressive: any foe near.
+    pub fn pick_foe(&self, engaged: f32, players_foe: Option<usize>, nearest: impl FnOnce(f32, bool) -> Option<usize>) -> Option<usize> {
         match self.stance {
             Stance::Passive => None,
-            Stance::Defensive => Some((GO_FOR, true)),
-            Stance::Aggressive => Some((AGGRESSIVE_REACH, false)),
+            Stance::Defensive => players_foe.filter(|_| engaged > 0.0),
+            Stance::Aggressive => nearest(AGGRESSIVE_REACH, false),
         }
     }
 }
@@ -121,7 +122,7 @@ impl Mob {
 
     /// One step of an ally's life, with the player at `player` and what it is to fight (the creature's place) if there is something: it goes for it and strikes, or follows.
     /// A pet that is told to `stay` keeps its place: it strikes what comes within its reach, and does not follow.
-    pub(super) fn step_ally(&mut self, dt: f32, player: Vec3, focus: Option<Vec3>, stay: bool, _ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool, nav: &NavMesh) -> Vec<Act> {
+    pub fn step_ally(&mut self, dt: f32, player: Vec3, focus: Option<Vec3>, stay: bool, ground: impl Fn(f32, f32, f32) -> Option<f32>, blocked: impl Fn(Vec3, Vec3) -> bool, hidden: impl Fn(Vec3, Vec3) -> bool, nav: &NavMesh) -> Vec<Act> {
         let Some(mut ally) = self.ally.take() else { return Vec::new() };
         // A cast broken off (the pet was hurt, or died, in the making) ends its glow.
         let mut acts: Vec<Act> = self.out.drain(..).filter(|a| matches!(a, Act::Stop)).collect();
@@ -187,6 +188,16 @@ impl Mob {
                 }
                 let t = t + dt;
                 if !fired && t >= total {
+                    // As the original, the cast looks again whether the foe is in sight as it ends (`Spell::cast` checks `CheckCast` once more): a foe that went behind a hill or
+                    // a wall while it was in the making is not struck, and the mana comes back.
+                    if focus.is_some_and(|at| blocked(self.pos + Vec3::Y * EYE, at + Vec3::Y * EYE) || hidden(self.pos + Vec3::Y * EYE, at + Vec3::Y * EYE)) {
+                        acts.push(Act::Stop);
+                        ally.mana = (ally.mana + cost).min(ally.mana_max);
+                        ally.cool = GLOBAL_COOLDOWN;
+                        self.state = State::Chase;
+                        self.ally = Some(ally);
+                        return acts;
+                    }
                     acts.push(Act::Spell(spell));
                     ally.cool = if total > 0.0 { 0.0 } else { GLOBAL_COOLDOWN };
                 }
@@ -209,11 +220,14 @@ impl Mob {
             }
             (_, Some(at)) => {
                 let to = flat(at - self.pos);
-                let dist = to.length();
+                // (A pet is player-controlled: its reach is measured with the height, as the original's.)
+                let dist = (at - self.pos).length();
                 self.turn(to);
                 let ranged = ally.spell != 0 && ally.mana >= cost;
                 // Nothing is cast or struck through a wall: it works round to where it sees its foe.
-                let seen = !blocked(self.pos + Vec3::Y * EYE, at + Vec3::Y * EYE);
+                // (`blocked` is a walker's check and lets a hill pass: `hidden` is the sight line, terrain too.)
+                let (from, to_eye) = (self.pos + Vec3::Y * EYE, at + Vec3::Y * EYE);
+                let seen = !blocked(from, to_eye) && !hidden(from, to_eye);
                 if ranged && ally.cool == 0.0 && dist <= reach && seen {
                     // A spell is begun where it stands (one without a cast time goes off at once).
                     let seconds = content::classic_spell(ally.spell).map_or(0.0, |s| s.cast as f32 / 1000.0);
@@ -222,14 +236,14 @@ impl Mob {
                     ally.phased = false;
                     acts.push(Act::Begin(ally.spell));
                     self.sounds.push(Cry::Attack);
-                } else if !ranged && dist <= MELEE_RANGE && self.pause == 0.0 && seen {
+                } else if !ranged && dist < self.combined_reach(PLAYER_REACH, true) && self.pause == 0.0 && seen {
                     self.state = State::Melee(0.0, false);
                     self.sounds.push(Cry::Attack);
                 } else {
                     // A fighter goes up to striking range, a caster stands off (but closes in while a wall hides its foe).
-                    let stand = if ranged && seen { reach * 0.7 } else { MELEE_RANGE * 0.8 };
+                    let stand = if ranged && seen { reach * 0.7 } else { self.combined_reach(PLAYER_REACH, true) * CHASE_STAND };
                     if dist > stand && !stay {
-                        let step = self.chase_to(at, stand, RUN_SPEED, dt, false, &[], nav, &blocked);
+                        let step = self.chase_to(at, stand, self.run_speed, dt, false, &[], nav, &blocked);
                         self.stepped(step);
                     }
                     self.state = if stay { State::Idle } else { State::Chase };
@@ -239,7 +253,7 @@ impl Mob {
                 let dist = to_player.length();
                 if !stay && dist > STAY_NEAR * 1.6 {
                     self.turn(to_player);
-                    let step = self.chase_to(player, STAY_NEAR, RUN_SPEED, dt, false, &[], nav, &blocked);
+                    let step = self.chase_to(player, STAY_NEAR, self.run_speed, dt, false, &[], nav, &blocked);
                     self.stepped(step);
                     self.state = State::Chase;
                 } else {
@@ -248,6 +262,7 @@ impl Mob {
             }
         }
         self.ally = Some(ally);
+        self.stand(&ground);
         acts
     }
 

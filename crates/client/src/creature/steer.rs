@@ -9,6 +9,8 @@ use super::*;
 use crate::coords::{render_to_wow, wow_to_render};
 use crate::navmesh::{NavMesh, PathFinder, PATHFIND_NOPATH, PATHFIND_SHORTCUT, PATHFIND_NOT_USING_PATH};
 
+/// The steepest slope a creature walks, rise over run (about 60 degrees).
+const STEEPEST_WALK: f32 = 1.75;
 /// Seconds between two looks at whether the target has gone from where the way leads.
 const RECHECK: f32 = 0.25;
 /// Seconds a creature stands at its target before it looks whether it stands too close or in another's place (`CHASE_CLOSENESS_TIMER`).
@@ -43,7 +45,7 @@ pub(super) enum Mode {
 pub(super) struct Chase {
     pub mode: Mode,
     /// It has come to where it was going (and the target has not gone since).
-    reached: bool,
+    pub reached: bool,
     /// The target can be got at: the last way ended within reach of it.
     pub reachable: bool,
     last_target: Vec3,
@@ -115,7 +117,10 @@ impl Mob {
             if length > 1e-3 {
                 self.yaw = to.x.atan2(-to.z);
             }
-            self.pos = target;
+            // It climbs or falls no faster than a steep slope allows: a point of the course on another layer (the terrain over a tunnel) does not lift it there at once; the floor under
+            // it (`stand`) says where it stands.
+            let rise = (target.y - self.pos.y).clamp(-step * STEEPEST_WALK - 0.05, step * STEEPEST_WALK + 0.05);
+            self.pos = Vec3::new(target.x, self.pos.y + rise, target.z);
             if length <= left {
                 self.course.pop();
             }
@@ -158,7 +163,7 @@ impl Mob {
             self.recheck = RECHECK;
             self.recheck_chase(target, stand, vs_player, crowd, nav, blocked);
         }
-        let pace = if matches!(self.chase.mode, Mode::Backpedal | Mode::Fanning) { WALK_SPEED } else { speed };
+        let pace = if matches!(self.chase.mode, Mode::Backpedal | Mode::Fanning) { self.walk_speed } else { speed };
         let walked = self.follow(dt, pace, blocked);
         if self.course.is_empty() && !self.chase.reached {
             // The way is walked (`HandleFinalizedMovement`): it faces the target and stands there for a while before it looks whether it stands too close.
@@ -170,7 +175,7 @@ impl Mob {
 
     /// `HandleTargetedMovement`, every 250 ms.
     fn recheck_chase(&mut self, target: Vec3, stand: f32, vs_player: bool, crowd: &[Vec3], nav: &NavMesh, blocked: &impl Fn(Vec3, Vec3) -> bool) {
-        let reach = stand.max(MELEE_RANGE) + 0.1;
+        let reach = stand.max(self.combined_reach(PLAYER_REACH, true));
         let dest = self.dest.unwrap_or(self.pos);
         if self.chase.mode != Mode::Distancing {
             if flat(target - dest).length() > reach {
@@ -211,7 +216,7 @@ impl Mob {
         self.chase.expired = false;
         // Just in case no way is found.
         self.chase.timer = CLOSENESS;
-        let reach = MELEE_RANGE.min(BACKPEDAL_REACH);
+        let reach = self.combined_reach(PLAYER_REACH, false).min(BACKPEDAL_REACH);
         if flat(target - self.pos).length().powi(2) < reach * reach * 0.33 {
             // Too close: away from the target, to three quarters of the reach.
             let to = self.place_near(target, reach * 0.75, 0.0);
@@ -231,7 +236,7 @@ impl Mob {
         let side = if self.random() < 0.5 { -1.0 } else { 1.0 };
         for direction in [side, -side] {
             let angle = FAN_ANGLE.0 + (FAN_ANGLE.1 - FAN_ANGLE.0) * self.random();
-            let to = self.place_near(target, MELEE_RANGE * 0.8, angle * direction);
+            let to = self.place_near(target, self.combined_reach(PLAYER_REACH, false), angle * direction);
             if self.dispatch(to, nav, blocked) {
                 self.chase = Chase { mode: Mode::Fanning, reached: false, timer: 0.0, ..self.chase };
                 return;
@@ -264,7 +269,7 @@ impl Mob {
             // (What is put back in a straight line is not stopped by what stands between.)
             self.loose = false;
         }
-        self.follow(dt, if self.fast { TELEPORT_SPEED } else { RUN_SPEED }, blocked);
+        self.follow(dt, if self.fast { TELEPORT_SPEED } else { self.run_speed }, blocked);
         self.course.is_empty()
     }
 
@@ -298,7 +303,7 @@ impl Mob {
                 self.fear_wait = if found { FEAR_WAIT.0 + (FEAR_WAIT.1 - FEAR_WAIT.0) * self.random() } else { 0.5 };
             }
         }
-        self.follow(dt, RUN_SPEED, blocked)
+        self.follow(dt, self.run_speed, blocked)
     }
 
     /// The way to the next place of a patrol (`BuildIntPath`): a path that ends there. The content gives the place no height: it is that of the mesh nearest to the creature's.

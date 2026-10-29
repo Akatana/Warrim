@@ -93,7 +93,7 @@ impl Person {
         let speed = match state {
             State::Chase if moving => RUN_SPEED,
             State::Flee(..) | State::Kite(_) => RUN_SPEED,
-            State::Return(t) if t >= RETURN_WAIT => RUN_SPEED,
+            State::Return(_) => RUN_SPEED,
             State::Wander(_) if self.run => RUN_SPEED,
             State::Wander(_) => WALK_SPEED,
             _ => 0.0,

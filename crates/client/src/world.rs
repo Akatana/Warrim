@@ -353,9 +353,19 @@ impl World {
         tile.heights.height_at((x as f64 - ox) as f32, (z as f64 - oz) as f32)
     }
 
-    /// Where a creature that walks to `(x, z)` with its feet at height `y` stands: the floor within a yard above them, else the terrain.
+    /// Where a creature that walks to `(x, z)` with its feet at height `y` stands: the highest surface of any slope within a yard above them; none for one under the terrain with nothing below it (it has no height yet, 0: the terrain).
     pub fn walker_floor(&self, x: f32, z: f32, y: f32) -> Option<f32> {
-        Collider::floor(self, x, z, y + 1.0).or_else(|| self.height_at(x, z))
+        let max_y = y + 1.0;
+        let mut best = self.height_at(x, z).filter(|&h| h <= max_y);
+        for (mesh, ox, oz) in self.nearby_meshes(x, z) {
+            if let Some(s) = mesh.surface(x - ox, z - oz, max_y) {
+                if best.is_none_or(|b| s > b) {
+                    best = Some(s);
+                }
+            }
+        }
+        // A creature that has no height yet (0) is put on the terrain; one that has stays where it is when nothing lies under it, and is not ported up to the terrain over it.
+        best.or_else(|| self.height_at(x, z).filter(|_| y == 0.0))
     }
 
     /// Footstep surface (`TerrainType.dbc` id) of the terrain under `(x, z)`.

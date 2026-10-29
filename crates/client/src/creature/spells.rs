@@ -54,12 +54,6 @@ impl Mob {
         if flags & cast::AURA_NOT_PRESENT != 0 && aim == Aim::Itself && self.has_aura(spell) {
             return Outcome::Done;
         }
-        // A caster that keeps its distance does not cast its main spell at a player who stands next to it: it backs away first.
-        let close = self.stance.is_some_and(|m| matches!(m.0, brain::PROXIMITY | brain::DISTANCER)) && self.seen.0 < KITE_RANGE && self.kite == 0.0 && self.ranged_ok();
-        if !dead && !triggered && flags & cast::MAIN != 0 && aim == Aim::Victim && close && matches!(self.state, State::Chase) {
-            self.state = State::Kite(0.0);
-            return Outcome::Busy;
-        }
         if !dead && !triggered {
             let (dist, los) = self.seen;
             match aim {
@@ -124,20 +118,18 @@ impl Mob {
         }
     }
 
-    /// Run to the nearest friend to call it to help (or run away, if there is none): `Flee for assist`.
-    pub(super) fn flee(&mut self, near: &[Friend]) -> Outcome {
-        if !self.state.fights() || matches!(self.state, State::Flee(..)) {
+    /// `Flee for assist` (`UnitAI::DoFlee`): it panics, and runs in fear from where it is to random places for ten seconds (`CreatureFamilyFleeDelay`); then it goes back to the
+    /// fight. (The run to a friend is another action of the original, `DoRetreat`, which the scripts of the content do not use.)
+    pub(super) fn flee(&mut self, _near: &[Friend]) -> Outcome {
+        if !self.state.fights() || self.fear > 0.0 {
             return Outcome::Done;
         }
         if matches!(self.state, State::Cast(_, _, _, false)) {
             self.out.push(Act::Stop);
             self.pending = None;
         }
-        let friend = near.iter().filter(|f| f.index != self.me && f.dist <= FLEE_RADIUS && f.dist > 1.0).min_by(|a, b| a.dist.total_cmp(&b.dist));
-        self.state = match friend {
-            Some(f) => State::Flee(0.0, f.pos, true),
-            None => State::Flee(0.0, self.pos + flat(self.pos - self.player).normalize_or_zero() * FLEE_RADIUS, false),
-        };
+        (self.fear, self.panic) = (FLEE_TIME, true);
+        self.state = State::Chase;
         Outcome::Done
     }
 

@@ -23,8 +23,17 @@ impl Mob {
 
     /// The player's sword hits for `damage`: it flinches, turns on whoever hit it, or dies. A spell being cast is only held up by it.
     pub fn hurt(&mut self, damage: f32) {
+        self.hurt_from(None, damage);
+    }
+
+    /// `who` (the player, or a pet) deals `damage`: the threat of the creature rises by as much (`ThreatManager::addThreat`).
+    pub fn hurt_from(&mut self, who: threat::Who, damage: f32) {
         if self.is_dead() || self.banish > 0.0 {
             return;
+        }
+        self.refresh_fight();
+        if !self.is_ally() {
+            self.threat.add(who, damage);
         }
         // A blow wakes what sleeps and turns a sheep back; a weakened creature takes more of it.
         if self.asleep {
@@ -43,6 +52,64 @@ impl Mob {
             State::Cast(spell, t, total, fired) => State::Cast(spell, if fired { t } else { (t - PUSHBACK).max(0.0) }, total, fired),
             _ => State::Flinch(0.0),
         };
+    }
+
+    /// `GetCombinedCombatReach`: the reaches of both, and for a blow 1.33 more and never less than 5 yards.
+    pub(super) fn combined_reach(&self, target: f32, blow: bool) -> f32 {
+        let reach = self.reach + target;
+        if blow { (reach + MELEE_OFFSET).max(ATTACK_DISTANCE) } else { reach }
+    }
+
+    /// `CanReachWithMeleeAttack` of a creature: the ground distance `dist` (the original looks at no height for one) within the combined reach, and two that run at each
+    /// other get a leeway. (`moving`: the target runs; it runs when it has a way to walk.)
+    pub(super) fn can_reach(&self, dist: f32, target: f32, moving: bool) -> bool {
+        let leeway = if moving && !self.course.is_empty() { MELEE_LEEWAY } else { 0.0 };
+        dist < self.combined_reach(target, true) + leeway
+    }
+
+    /// Damage dealt either way restarts the pursuit timer and marks where the fight is (`TriggerCombatTimer`).
+    pub(super) fn refresh_fight(&mut self) {
+        self.combat_timer = self.pursuit;
+        self.refresh = self.pos;
+    }
+
+    /// `CombatManager::Update`: the pursuit timer runs down; every 1.2 s, with it run out, a player further than the leash radius from where the fight was last refreshed
+    /// ends the fight; so does a creature led further than its own leash (where the template has one) from where it began.
+    pub(super) fn leash_broken(&mut self, dt: f32, target: Vec3) -> bool {
+        self.combat_timer = (self.combat_timer - dt).max(0.0);
+        self.leash_tick += dt;
+        if self.leash_tick < LEASH_TICK {
+            return false;
+        }
+        self.leash_tick -= LEASH_TICK;
+        (self.combat_timer == 0.0 && flat(target - self.refresh).length() > LEASH_RADIUS) || (self.leash > 0.0 && flat(self.pos - self.home).length() > self.leash)
+    }
+
+    /// `Unit::SelectHostileTarget`: once it has stopped (`IsReachable` is `!targetReached || reachable`) and the way to the target ended out of its reach, the evade timer runs;
+    /// at ten seconds it leaves the fight. It starts afresh whenever the target can be got at again.
+    pub(super) fn target_unreachable(&mut self, dt: f32) -> bool {
+        if !(self.chase.reached && !self.chase.reachable) {
+            self.unreachable = 0.0;
+            return false;
+        }
+        self.unreachable += dt;
+        if self.unreachable < UNREACHABLE_TIME {
+            return false;
+        }
+        self.unreachable = 0.0;
+        true
+    }
+
+    /// `RegenerateAll`: every two seconds out of combat (or on the way home) a third of its health and mana come back.
+    pub(super) fn regenerate(&mut self, dt: f32) {
+        self.regen += dt;
+        while self.regen >= REGEN_EVERY {
+            self.regen -= REGEN_EVERY;
+            if !self.is_dead() && !self.state.fights() && self.state != State::Unborn {
+                self.health = (self.health + self.def.health * REGEN_SHARE).min(self.def.health);
+                self.mana = (self.mana + self.def.brain.mana * REGEN_SHARE).min(self.def.brain.mana);
+            }
+        }
     }
 
     /// Something is put on it (see `Status`).
@@ -232,7 +299,7 @@ impl Mob {
     pub(super) fn in_swing(&self, from: Vec3, yaw: f32, reach: f32) -> bool {
         let to = flat(self.pos - from);
         let ahead = to.length() < 0.5 || to.normalize().dot(Vec3::new(yaw.sin(), 0.0, -yaw.cos())) > 0.5;
-        self.attackable() && !self.is_dead() && to.length() <= reach && ahead
+        self.attackable() && !self.is_dead() && (self.pos - from).length() <= reach && ahead
     }
 
     /// How close this creature is to noticing a sneaking player at `target` (feet): 0 beyond its normal range, 1 once it has noticed

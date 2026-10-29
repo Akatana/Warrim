@@ -192,7 +192,7 @@ pub(super) fn view(args: &Args, player_mount: &Arc<Mount>, renderer: &mut Render
             if let Some(panels) = &panels {
                 wolves.set_markers(render_camera.pos, |kind| panels.marker(kind));
             }
-            let watch = crate::creature::Watch { feet, yaw, level: 1, health: player.vitals.health.fraction(), mana: 1.0, casting: false, auras: &foes.afflictions.spells(), sneaking: args.sneak.then_some(1.0) };
+            let watch = crate::creature::Watch { feet, yaw, level: 1, health: player.vitals.health.fraction(), mana: 1.0, casting: false, moving: false, auras: &foes.afflictions.spells(), sneaking: args.sneak.then_some(1.0), sight: &|a, b| world.ray_hit(a, b).is_none() && world.ray_hit(b, a).is_none() };
             let (acts, _) = wolves.update(1.0 / 60.0, &watch, |x, z, y| world.walker_floor(x, z, y), |from, to| world.blocked(from, to), |x, z, y| world.liquid_at(x, z, y), &world.nav, None, renderer, gpu);
             let mut effect_list: Vec<crate::foes::Effect> = acts.into_iter().flat_map(|act| foes.handle(act, feet, wolves, &mut effects, renderer, gpu)).collect();
             effect_list.extend(foes.update(1.0 / 60.0, feet, wolves, &mut effects, renderer, gpu));

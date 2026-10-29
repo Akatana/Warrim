@@ -96,6 +96,7 @@ USAGE: rsworld [options]
   --headless <png>   render one frame to a PNG and exit (no window)
   --alt <yards>      headless: camera height above the ground (default 3)
   --floor-map        headless: print an ASCII map of floors above the terrain around the camera
+  --probe-creatures  headless: run the spawns within 90 yd of --pos on the real collision (wandering, then chasing a moving player) and report any that drop through a floor
   --probe-walk       headless: walk from a grid of starts/headings around --pos; report runs that end on raised floors
   --find-ramps       headless: list clusters of 35-50 degree collision surfaces within 40 yd of --pos
   --floor-profile    headless: print floor height along a line from --pos heading --yaw for 20 yd
@@ -213,6 +214,7 @@ pub struct Args {
     pub effect: Option<(String, f32)>,
     pub check_spawns: bool,
     pub navmesh_probe: bool,
+    pub probe_creatures: bool,
     pub discover: usize,
     pub reticle: bool,
     pub alert: Option<f32>,
@@ -292,6 +294,7 @@ fn parse_args() -> Result<Args> {
         effect: None,
         check_spawns: false,
         navmesh_probe: false,
+        probe_creatures: false,
         discover: 0,
         reticle: false,
         alert: None,
@@ -402,6 +405,7 @@ fn parse_args() -> Result<Args> {
             }
             "--check-spawns" => a.check_spawns = true,
             "--navmesh-probe" => a.navmesh_probe = true,
+            "--probe-creatures" => a.probe_creatures = true,
             "--creature" => a.creatures = value("--creature")?.split(',').map(String::from).collect(),
             "--creature-at" => a.creature_at = value("--creature-at")?.parse()?,
             "--discover" => a.discover = value("--discover")?.parse()?,

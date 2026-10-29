@@ -329,6 +329,7 @@ pub(super) fn run(args: &Args, world: &World, camera: &Camera, z_given: bool) {
     if args.stress_walk { stress_walk(world, camera); }
     if args.check_spawns { check_spawns(world); }
     if args.navmesh_probe { navmesh_probe(args, world, camera); }
+    if args.probe_creatures { probe_creatures(args, world, camera); }
     if args.dump_tris { dump_tris(world, camera); }
     if args.find_ramps { find_ramps(world, camera); }
     if args.floor_profile { floor_profile(args, world, camera, z_given); }
@@ -367,4 +368,276 @@ pub(super) fn walk(args: &Args, camera: &mut Camera, world: &World) {
     if let Some(a) = world.area_at(camera.pos) {
         log::info!("now in: {}", world.areas.display(a));
     }
+}
+
+/// How far a creature at `at` is from the surface it should stand on: the highest floor (terrain, building, mine) within a yard above its feet. None: there is none.
+fn off_floor(world: &World, at: glam::Vec3) -> Option<f32> {
+    world.walker_floor(at.x, at.z, at.y + 0.8).map(|f| at.y - f)
+}
+
+/// Tracks how long a creature has been off its floor; reports the first time it has been for half a second.
+struct Watchdog {
+    since: Option<(f32, glam::Vec3)>,
+    reported: bool,
+}
+
+impl Watchdog {
+    fn new() -> Watchdog {
+        Watchdog { since: None, reported: false }
+    }
+
+    /// Returns the place and the time it began, once.
+    fn look(&mut self, world: &World, at: glam::Vec3, t: f32) -> Option<(f32, glam::Vec3)> {
+        let off = off_floor(world, at).is_none_or(|d| d.abs() > 0.5);
+        match (off, self.since) {
+            (true, None) => self.since = Some((t, at)),
+            (false, _) => self.since = None,
+            (true, Some((began, from))) if t - began >= 0.5 && !self.reported => {
+                self.reported = true;
+                return Some((began, from));
+            }
+            _ => {}
+        }
+        None
+    }
+}
+
+/// The spawns near the camera, run on the real collision and navmesh: first wandering for a minute, then chasing a player who circles them, and a pet that follows him.
+/// A creature that is off any floor for half a second (below the one it stood on, or in the rock) has lost it.
+fn probe_creatures(args: &Args, world: &World, camera: &Camera) {
+    use crate::creature::{Mob, Watch};
+    use crate::navmesh::{NavMesh, HALF_WORLD, TILE};
+    let [north, west, _] = render_to_wow(camera.pos);
+    let (ny, nx) = (((north as f64 + HALF_WORLD) / TILE).floor() as i32, ((west as f64 + HALF_WORLD) / TILE).floor() as i32);
+    let mut nav = NavMesh::default();
+    let span = (100.0 / TILE).ceil() as i32;
+    for dy in -span..=span {
+        for dx in -span..=span {
+            if let Some(tile) = crate::navmesh::build(world, ny + dy, nx + dx) {
+                nav.add(&tile);
+            }
+        }
+    }
+    // The ground round the camera, 2 yards to a letter, north up: H a hole in the terrain, m a floor under the terrain (a tunnel), t terrain only; the centre is the camera.
+    for row in (-20..=20).rev() {
+        let line: String = (-30..=30)
+            .map(|col| {
+                let wow = [north + row as f32 * 2.0, west + col as f32 * 2.0, 0.0];
+                let p = crate::coords::wow_to_render(wow);
+                match world.height_at(p.x, p.z) {
+                    None => 'H',
+                    Some(top) if (row, col) == (0, 0) => { let _ = top; '@' }
+                    Some(top) => match world.walker_floor(p.x, p.z, top - 3.0) {
+                        Some(f) if f < top - 2.0 => 'm',
+                        _ => 't',
+                    },
+                }
+            })
+            .collect();
+        log::info!("map {line}");
+    }
+    let spawns: Vec<_> = crate::content::get().spawns.iter().filter(|s| (s.at.0 - north).hypot(s.at.1 - west) < 90.0 && s.map.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(&args.map))).collect();
+    let ground = |x: f32, z: f32, y: f32| world.walker_floor(x, z, y);
+    let blocked = |a: glam::Vec3, b: glam::Vec3| world.blocked(a, b);
+    let sight = |a, b| world.ray_hit(a, b).is_none() && world.ray_hit(b, a).is_none();
+    let (mut lost, mut runs) = (std::collections::BTreeMap::<&str, usize>::new(), 0);
+    let kinds = std::cell::RefCell::new([0usize; 3]);
+    let mut casts = std::collections::BTreeMap::<&str, (usize, usize)>::new();
+    let mut crossings = 0;
+    let mut skin = std::collections::BTreeMap::<&str, (usize, f32)>::new();
+    let mut tunnel = std::collections::BTreeMap::<&str, usize>::new();
+    let mut tunnel_shown = 0;
+    let mut walls = 0;
+    let report = |what: &str, scenario: &'static str, name: &str, t: f32, began: f32, from: glam::Vec3, now: glam::Vec3| {
+        let [fx, fy, fz] = render_to_wow(from);
+        let [x, y, z] = render_to_wow(now);
+        let gap = off_floor(world, now).map_or("no floor within a yard above".to_string(), |d| format!("{d:+.1} yd from the floor"));
+        log::info!("  {what} {name} {scenario}: off its floor from {began:.1} s at ({fx:.1}, {fy:.1}, {fz:.1}); at {t:.1} s ({x:.1}, {y:.1}, {z:.1}), {gap}");
+        detail(world, now);
+        kinds.borrow_mut()[match off_floor(world, now) { Some(d) if d > 0.6 => 0, Some(_) => 1, None => 2 }] += 1;
+    };
+    for s in &spawns {
+        let kind = crate::content::creature_index(&s.creature);
+        let mut start = crate::coords::wow_to_render([s.at.0, s.at.1, s.height.unwrap_or(0.0)]);
+        if s.height.is_none() {
+            start.y = world.height_at(start.x, start.z).unwrap_or(0.0);
+        }
+        let circle = |t: f32| {
+            let a = t * 0.6;
+            let at = start + glam::Vec3::new(a.cos() * 12.0, 0.0, a.sin() * 12.0);
+            glam::Vec3::new(at.x, world.walker_floor(at.x, at.z, start.y).unwrap_or(start.y), at.z)
+        };
+        let mut mob = Mob::new(kind, start, s.facing);
+        // A long run: the player stands 45 yards off on the terrain, in the direction of this spawn's number, and the creature, after him from the start, runs all the way
+        // (up the ramp of a mine, over a hill).
+        let outside = {
+            let a = (runs as f32) * 0.785;
+            let at = start + glam::Vec3::new(a.cos() * 45.0, 0.0, a.sin() * 45.0);
+            glam::Vec3::new(at.x, world.height_at(at.x, at.z).unwrap_or(start.y), at.z)
+        };
+        for (scenario, far) in [("wanders", true), ("chases", false), ("runs out", false), ("comes to the camera", false)] {
+            let mut dog = Watchdog::new();
+            for tick in 0..60 * if scenario == "runs out" { 20 } else { 60 } {
+                let t = tick as f32 / 60.0;
+                if scenario == "runs out" && tick == 0 {
+                    mob.state = crate::creature::State::Chase;
+                }
+                let at_camera = glam::Vec3::new(camera.pos.x, world.walker_floor(camera.pos.x, camera.pos.z, camera.pos.y - 2.0).unwrap_or(camera.pos.y), camera.pos.z);
+                if scenario == "comes to the camera" && tick == 0 {
+                    mob.state = crate::creature::State::Chase;
+                }
+                let player = if far { start + glam::Vec3::new(300.0, 0.0, 0.0) } else if scenario == "runs out" { outside } else if scenario == "comes to the camera" { at_camera } else { circle(t) };
+                // Under the skin of the slope: the feet below the terrain by more than a step, within a few yards of where he stands, and not deep in a tunnel.
+                if scenario == "comes to the camera" {
+                    if let Some(top) = world.height_at(mob.pos.x, mob.pos.z) {
+                        let under = top - mob.pos.y;
+                        if under > 0.3 && under < 8.0 && flat_of(mob.pos - at_camera) < 40.0 {
+                            *skin.entry(s.creature.as_str()).or_insert((0, 0.0)) = (skin.get(s.creature.as_str()).map_or(0, |e| e.0) + 1, under);
+                        }
+                    }
+                }
+                let watch = Watch { feet: player, yaw: 0.0, level: 60, health: 1.0, mana: 1.0, casting: false, moving: false, auras: &[], sneaking: None, sight: &sight };
+                let before = mob.pos;
+                let popped_before = mob.pos.y;
+                mob.step(1.0 / 60.0, &watch, 0, &[], &[], ground, blocked, &nav);
+                if std::env::var_os("PROBE_TUNNEL").is_some() && mob.pos.distance(before) > 1e-4 && mob.pos.distance(before) < 3.0 {
+                    let mid = (before + mob.pos) / 2.0;
+                    // Through a wall or a floor of a building or mine: the step crosses a collision triangle (a hand's breadth up from the feet, so a floor it walks on is not one).
+                    let up = glam::Vec3::Y * 0.6;
+                    let wall = segment_hits_triangle(before + up, mob.pos + up, &world.triangles_near(mid.x, mid.z, 2.0));
+                    // Into the ground: the terrain at the new place is higher than the feet by more than a step, though the feet were on it before.
+                    let into = match (world.height_at(before.x, before.z), world.height_at(mob.pos.x, mob.pos.z)) {
+                        (Some(a), Some(b)) => before.y > a - 0.3 && mob.pos.y < b - 0.5,
+                        _ => false,
+                    };
+                    // A step onto or off a ledge (up to the yard the player's own controller steps) is no tunnelling; a jump of more than that is, and so is a crossing at the same height.
+                    let dy = (mob.pos.y - before.y).abs();
+                    let wall = wall && (dy > 1.0 || dy < 0.3);
+                    if wall || into {
+                        *tunnel.entry(if wall && dy > 1.0 { "jumped over a yard through a surface" } else if wall { "crossed a surface at one height" } else { "into the terrain" }).or_default() += 1;
+                        if tunnel_shown < 8 {
+                            tunnel_shown += 1;
+                            let [x, y, z] = render_to_wow(mob.pos);
+                            let [bx, by, bz] = render_to_wow(before);
+                            let layers: Vec<String> = (0..12).filter_map(|n| world.floor(mob.pos.x, mob.pos.z, before.y.max(mob.pos.y) + 4.0 - n as f32 * 0.5)).fold(Vec::<f32>::new(), |mut v, f| { if v.last().is_none_or(|l| (l - f).abs() > 0.05) { v.push(f) } v }).iter().map(|f| format!("{f:.2}")).collect();
+                            log::info!("      floors under it, from above: {}; course points {:?}", layers.join(", "), mob.course_heights());
+                            log::info!("    {} {scenario} {}: ({bx:.1}, {by:.1}, {bz:.1}) -> ({x:.1}, {y:.1}, {z:.1}) at {t:.1} s, terrain there {:?}", s.creature, if wall { "through a surface" } else { "into the terrain" }, world.height_at(mob.pos.x, mob.pos.z));
+                        }
+                    }
+                }
+                if mob.pos.y - popped_before > 1.5 {
+                    *tunnel.entry("popped up more than 1.5 yd").or_default() += 1;
+                    if tunnel_shown < 8 {
+                        tunnel_shown += 1;
+                        let [x, y, z] = render_to_wow(mob.pos);
+                        log::info!("    {} {scenario} popped up from {popped_before:.1} to {y:.1} at ({x:.1}, {z:.1}) at {t:.1} s, terrain {:?}", s.creature, world.height_at(mob.pos.x, mob.pos.z));
+                    }
+                }
+                if let Some((began, from)) = dog.look(world, mob.pos, t) {
+                    if scenario == "runs out" && kinds.borrow().iter().sum::<usize>() < 2 {
+                        let along: Vec<String> = mob.course_points().iter().rev().take(6).map(|p| format!("({:.1},{:.1},{:.2} | floor {:?})", render_to_wow(*p)[0], render_to_wow(*p)[1], p.y, world.floor(p.x, p.z, p.y + 1.0).map(|f| (f * 100.0).round() / 100.0))).collect();
+                        log::info!("      its course from here: {}", along.join(" -> "));
+                    }
+                    *lost.entry(scenario).or_default() += 1;
+                    report("creature", scenario, &s.creature, t, began, from, mob.pos);
+                }
+            }
+        }
+        // The player's pet: it follows him round the circle for half a minute, then goes for the spawn's place.
+        let mut pet = Mob::new(crate::content::creature_index("c416"), start, 0.0);
+        pet.make_ally(20, 0.0, 0, true, false);
+        let mut dog = Watchdog::new();
+        for tick in 0..60 * 60 {
+            let t = tick as f32 / 60.0;
+            pet.step_ally(1.0 / 60.0, circle(t), (tick >= 30 * 60).then_some(start), false, ground, blocked, |a, b| !sight(a, b), &nav);
+            if let Some((began, from)) = dog.look(world, pet.pos, t) {
+                *lost.entry("pet").or_default() += 1;
+                report("pet near", "follows", &s.creature, t, began, from, pet.pos);
+            }
+        }
+        runs += 1;
+        // An imp with its firebolt at the spawn, once as the walker's check alone sees (as it was) and once with the sight line; every bolt begun or gone off is looked at
+        // with a terrain march ten times as fine as the game's, between the places that stand above the ground.
+        for (what, with_sight) in [("walker check only", false), ("with sight line", true)] {
+            let mut imp = Mob::new(crate::content::creature_index("c416"), start, 0.0);
+            imp.make_ally(60, 0.0, 3110, true, false);
+            for tick in 0..60 * 60 {
+                let t = tick as f32 / 60.0;
+                let acts = imp.step_ally(1.0 / 60.0, circle(t), Some(start), false, ground, blocked, |a, b| with_sight && !sight(a, b), &nav);
+                for act in acts {
+                    if matches!(act, crate::creature::Act::Begin(_) | crate::creature::Act::Spell(_)) {
+                        let (a, b) = (imp.pos + glam::Vec3::Y * 1.2, start + glam::Vec3::Y * 1.2);
+                        let (len, under) = (a.distance(b), |p: glam::Vec3| world.height_at(p.x, p.z).is_none_or(|g| p.y < g));
+                        if under(a) != under(b) {
+                            // One end in a mine (or cave) and the other outside: the terrain lies between unless a mine mouth does.
+                            let key = if with_sight { "crossing, with sight line" } else { "crossing, walker check only" };
+                            casts.entry(key).or_insert((0, 0)).0 += 1;
+                            if crossings < 6 && with_sight {
+                                crossings += 1;
+                                let [ax, ay, az] = render_to_wow(a);
+                                let [bx, by, bz] = render_to_wow(b);
+                                log::info!("    bolt across the terrain surface: imp ({ax:.1}, {ay:.1}, {az:.1}) -> foe ({bx:.1}, {by:.1}, {bz:.1}); terrain at imp {:?}, at foe {:?}", world.height_at(a.x, a.z), world.height_at(b.x, b.z));
+                            }
+                        }
+                        // Every cast, in a mine or out: the collision triangles between, tested one by one.
+                        {
+                            let key = if with_sight { "all, with sight line" } else { "all, walker check only" };
+                            let mid = (a + b) / 2.0;
+                            let entry = casts.entry(key).or_insert((0, 0));
+                            entry.0 += 1;
+                            if segment_hits_triangle(a, b, &world.triangles_near(mid.x, mid.z, len / 2.0 + 1.0)) {
+                                entry.1 += 1;
+                                if walls < 6 && with_sight {
+                                    walls += 1;
+                                    let [ax, ay, az] = render_to_wow(a);
+                                    let [bx, by, bz] = render_to_wow(b);
+                                    log::info!("    bolt through a wall: imp ({ax:.1}, {ay:.1}, {az:.1}) -> foe ({bx:.1}, {by:.1}, {bz:.1}); terrain at imp {:?}", world.height_at(a.x, a.z));
+                                }
+                            }
+                        }
+                        if !under(a) && !under(b) {
+                            casts.entry(what).or_insert((0, 0)).0 += 1;
+                            if (1..len as usize * 20).any(|i| under(a.lerp(b, i as f32 / (len * 20.0)))) {
+                                casts.get_mut(what).unwrap().1 += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    log::info!("imp bolts begun or gone off above ground, and how many of them went through the terrain by a fine march: {casts:?}");
+    log::info!("creature ticks spent 0.3 to 8 yd under the surface within 40 yd of the camera, by kind (ticks, last depth): {skin:?}");
+    log::info!("creature steps that went through a surface or into the terrain: {tunnel:?}");
+    let k = kinds.borrow();
+    log::info!("creatures: {runs} spawns run; lost their floor: {lost:?} ({} hovering over it, {} below it, {} with none within a yard above)", k[0], k[1], k[2]);
+}
+
+/// What the world says is under a creature that is off its floor: the terrain, and the floors at several heights from its feet.
+fn detail(world: &World, at: glam::Vec3) {
+    let floors: Vec<String> = [-1.0, 0.0, 1.0, 3.0, 10.0].iter().map(|up| format!("{up:+}: {:?}", world.floor(at.x, at.z, at.y + up).map(|f| (f * 100.0).round() / 100.0))).collect();
+    log::info!("      terrain {:?}; floor at feet {}", world.height_at(at.x, at.z), floors.join(", "));
+}
+
+/// Whether the segment from `a` to `b` goes through any of the triangles (Moller-Trumbore, both faces), a hand's breadth from either end left out.
+fn segment_hits_triangle(a: glam::Vec3, b: glam::Vec3, triangles: &[[glam::Vec3; 3]]) -> bool {
+    let (dir, len) = (b - a, a.distance(b));
+    triangles.iter().any(|t| {
+        let (e1, e2) = (t[1] - t[0], t[2] - t[0]);
+        let p = dir.cross(e2);
+        let det = e1.dot(p);
+        if det.abs() < 1e-9 {
+            return false;
+        }
+        let (s, inv) = (a - t[0], 1.0 / det);
+        let u = s.dot(p) * inv;
+        let q = s.cross(e1);
+        let v = dir.dot(q) * inv;
+        let at = e2.dot(q) * inv;
+        u >= 0.0 && v >= 0.0 && u + v <= 1.0 && at > 0.15 / len && at < 1.0 - 0.15 / len
+    })
+}
+
+fn flat_of(v: glam::Vec3) -> f32 {
+    glam::Vec2::new(v.x, v.z).length()
 }

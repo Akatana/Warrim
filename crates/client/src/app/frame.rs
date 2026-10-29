@@ -467,17 +467,22 @@ impl State {
             }
             // A creature that starts at no height (a new game) finds no floor within a yard of it: it takes the terrain.
             let auras = self.foes.afflictions.spells();
+            // Rays both ways: the terrain is only marched from a point above ground, so one way misses a hill over a mine.
+            let sight = |a, b| world.ray_hit(a, b).is_none() && world.ray_hit(b, a).is_none();
             let watch = crate::creature::Watch {
+                sight: &sight,
                 feet,
                 yaw: self.camera.yaw,
                 level: self.panels.as_ref().map_or(1, |p| p.progress.level),
                 health: player.vitals.health.fraction(),
                 mana: player.vitals.mana.fraction(),
                 casting: self.caster.casting(),
+                moving: self.moving,
                 auras: &auras,
                 sneaking: player.is_sneaking().then(|| self.panels.as_ref().map_or(1.0, |p| p.skills.notice_factor())),
             };
             wolves.ragdolls = self.ragdolls;
+            wolves.striking = player.is_striking() || self.caster.casting();
             let timing = Instant::now();
             let t = crate::profile::scope("creatures.update");
             let (acts, mut cries) = wolves.update(dt, &watch, |x, z, y| world.walker_floor(x, z, y), |from, to| world.blocked(from, to), |x, z, y| world.liquid_at(x, z, y), &world.nav, self.bodies.as_mut(), &mut self.renderer, &self.gpu);

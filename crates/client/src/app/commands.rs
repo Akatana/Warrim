@@ -15,15 +15,19 @@ impl State {
         }
     }
 
-    /// Fly (F, `tcl`): nothing stops the character, and back on foot it lands on the terrain.
+    /// Fly (F, `tcl`): nothing stops the character, and back on foot it lands on the floor under it.
     pub(super) fn toggle_fly(&mut self) {
         self.controller.toggle_mode();
         if let Some(p) = &mut self.player {
             p.set_sneaking(false);
         }
         if self.controller.mode == Mode::Walk {
-            if let Some(g) = self.world.height_at(self.camera.pos.x, self.camera.pos.z) {
-                self.camera.pos.y = self.camera.pos.y.max(g + EYE_HEIGHT);
+            // It lands on whatever floor is under it (a mine under the hill, a building); only with none below at all (outside the world) it is put on the terrain.
+            let feet = self.camera.pos.y - EYE_HEIGHT;
+            if crate::collision::Collider::floor(&self.world, self.camera.pos.x, self.camera.pos.z, feet + 1.0).is_none() {
+                if let Some(g) = self.world.height_at(self.camera.pos.x, self.camera.pos.z) {
+                    self.camera.pos.y = self.camera.pos.y.max(g + EYE_HEIGHT);
+                }
             }
         }
     }

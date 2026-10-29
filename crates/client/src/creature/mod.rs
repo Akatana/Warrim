@@ -53,16 +53,25 @@ const AGGRO_LEAST: f32 = 5.0;
 const AGGRO_LEVELS: i32 = 25;
 /// A creature notices a sneaking player from this share of that distance.
 const SNEAK_AGGRO: f32 = 0.35;
-/// A chase is given up when the player is this far from the creature, or the creature this far from home, yards.
-const LEASH_RANGE: f32 = 40.0;
-/// After giving up, seconds it stands unbothered before it runs home; it heals this share of its health per second on the way.
-const RETURN_WAIT: f32 = 5.0;
+/// How far the player may be led from where the fight was last refreshed once the creature's pursuit time has run out before it gives up (`LeashRadius` of the world), yards;
+/// and the seconds between two looks at it (`COMBAT_MANAGER_TICK`).
+const LEASH_RADIUS: f32 = 30.0;
+const LEASH_TICK: f32 = 1.2;
+/// A creature that cannot reach its target (no way to it) is let go of after this many seconds (`StartEvadeTimer`).
+const UNREACHABLE_TIME: f32 = 10.0;
+/// Seconds between two regenerations of a creature out of combat, and the share of its health and mana each gives (`REGEN_TIME_FULL_UNIT`, a third).
+const REGEN_EVERY: f32 = 2.0;
+const REGEN_SHARE: f32 = 1.0 / 3.0;
 /// The most a creature steps down (yards): it does not walk off a ledge or into a gap of a floor.
 const STEP_DOWN: f32 = 1.0;
-const REGEN: f32 = 0.25;
-/// A melee attack starts within this distance and lands if the player is still within `MELEE_REACH`, yards.
-const MELEE_RANGE: f32 = 2.4;
-const MELEE_REACH: f32 = 3.2;
+/// The combat reach of a player (`DEFAULT_COMBAT_REACH`), what a blow's reach is made of with the creature's own (`GetCombinedCombatReach`): the sum, 1.33 over for a
+/// blow, and never less than 5 yards (`ATTACK_DISTANCE`); two that run at each other get a leeway of 8/3 yards.
+const PLAYER_REACH: f32 = 1.5;
+const MELEE_OFFSET: f32 = 1.33;
+const ATTACK_DISTANCE: f32 = 5.0;
+const MELEE_LEEWAY: f32 = 8.0 / 3.0;
+/// The share of the combined reach a creature stands off its target at (`CHASE_DEFAULT_RANGE_FACTOR`).
+const CHASE_STAND: f32 = 0.5;
 /// Seconds into the 1.5 s melee attack animation at which the teeth land, and when it is over.
 const MELEE_HIT: f32 = 0.55;
 const MELEE_TIME: f32 = 1.5;
@@ -72,8 +81,8 @@ const FLINCH_TIME: f32 = 0.45;
 const CAST_AFTER: f32 = 0.5;
 /// Seconds that being hit delays a spell being cast (the original's pushback).
 const PUSHBACK: f32 = 0.5;
-/// A creature that runs for help runs this many seconds if nobody is near to run to (the original's flee delay), and looks for a friend within this many yards.
-const FLEE_TIME: f32 = 7.0;
+/// A creature that flees in panic (`ACTION_T_FLEE_FOR_ASSIST`) runs this many seconds (`CreatureFamilyFleeDelay`), and one that retreats to a friend looks for it within this many yards.
+const FLEE_TIME: f32 = 10.0;
 const FLEE_RADIUS: f32 = 30.0;
 /// A caster that backs away from a player who comes within this many yards, for at most `KITE_TIME` seconds, and not again within `KITE_PAUSE`.
 const KITE_RANGE: f32 = 5.0;
@@ -86,8 +95,8 @@ const CHARGE_TIME: f32 = 0.6;
 const FRIENDS_RADIUS: f32 = 40.0;
 /// How high above the feet the eyes are, for the line of sight of a spell.
 const EYE: f32 = 1.2;
-/// Chase speed in yards per second: the run animation's own speed.
-const RUN_SPEED: f32 = 6.94;
+/// The base speeds of the original, yards per second: a creature's rates (`classic_creature_motion.ron`) are of these.
+const RUN_SPEED: f32 = 7.0;
 /// Creatures that have not noticed anyone stroll as CMaNGOS has them: to places within `wander` yards of home (the spawn's own number;
 /// this is the database's default), at walking speed (yards a second), one to three walks in a row, and then they stand still for a few
 /// seconds (between these two numbers).
@@ -198,9 +207,17 @@ pub struct Watch<'a> {
     pub health: f32,
     pub mana: f32,
     pub casting: bool,
+    /// He is running (not standing, not walking): two that run at each other reach further.
+    pub moving: bool,
     pub auras: &'a [u32],
     /// Sneaking, and what the skill makes of the distance he is noticed from.
     pub sneaking: Option<f32>,
+    /// Whether the first point sees the second (no terrain or object between): a creature does not notice him through a hill.
+    pub sight: &'a dyn Fn(Vec3, Vec3) -> bool,
+}
+
+fn all_clear(_: Vec3, _: Vec3) -> bool {
+    true
 }
 
 /// The distance a creature of `creature` level notices a player of `player` level from, yards.
@@ -208,11 +225,18 @@ pub fn aggro_range(creature: u32, player: u32) -> f32 {
     (AGGRO_RANGE - (player as i32 - creature as i32).max(-AGGRO_LEVELS) as f32).max(AGGRO_LEAST)
 }
 
+impl<'a> Watch<'a> {
+    /// The same player, seen from a creature that fights one of his pets: the one it goes after stands at `feet`.
+    pub fn with_feet(&self, feet: Vec3) -> Watch<'a> {
+        Watch { feet, yaw: self.yaw, level: self.level, health: self.health, mana: self.mana, casting: self.casting, moving: self.moving, auras: self.auras, sneaking: self.sneaking, sight: self.sight }
+    }
+}
+
 #[cfg(test)]
 impl Watch<'static> {
     /// A player of the first level standing at `feet`, well and doing nothing.
     pub fn at(feet: Vec3) -> Watch<'static> {
-        Watch { feet, yaw: 0.0, level: 1, health: 1.0, mana: 1.0, casting: false, auras: &[], sneaking: None }
+        Watch { feet, yaw: 0.0, level: 1, health: 1.0, mana: 1.0, casting: false, moving: false, auras: &[], sneaking: None, sight: &all_clear }
     }
 }
 
@@ -300,6 +324,25 @@ pub struct Mob {
     /// What the sneaking player's skill makes of the distance he is noticed from (1 for none).
     pub notice: f32,
     pause: f32,
+    /// Its own speeds (yards per second, the original's rates of the base ones), the combat reach of its model, and the seconds of its pursuit.
+    walk_speed: f32,
+    run_speed: f32,
+    reach: f32,
+    pursuit: f32,
+    leash: f32,
+    /// Seconds before it may leave a fight with a player who does nothing (the pursuit timer, restarted when either deals damage), the seconds to the next look at the leash, where
+    /// the fight was last refreshed, and the seconds it has been unable to reach its target.
+    combat_timer: f32,
+    leash_tick: f32,
+    refresh: Vec3,
+    unreachable: f32,
+    /// The height of the floor it stood on at the last step, and whether it has been put on its floor (a spawn's own height may be a yard or two off ours).
+    layer: f32,
+    placed: bool,
+    /// Seconds to the next regeneration.
+    regen: f32,
+    /// Who it hates and whom it fights (the player or one of his pets).
+    pub(super) threat: threat::Threat,
     /// Seconds left of standing still before the next stroll.
     rest: f32,
     /// How far from home it strolls (yards; 0 stands still), and the walks left in the stroll it is on.
@@ -346,6 +389,8 @@ pub struct Mob {
     /// Seconds it cannot move, seconds it runs in fear, seconds it cannot be hurt, and what weakens it (dealt, taken, seconds left).
     root: f32,
     fear: f32,
+    /// The fear is its own panic: it runs from where it is, not from the player.
+    panic: bool,
     banish: f32,
     weak: (f32, f32, f32),
     /// The stun is a sleep: a blow ends it (and turns a sheep back).
@@ -486,6 +531,7 @@ impl Mob {
 
     pub fn new(kind: usize, pos: Vec3, yaw: f32) -> Mob {
         let def = &content::get().creatures[kind];
+        let motion = content::motion(&def.id);
         let seed = pos.x.to_bits() ^ pos.z.to_bits() ^ 0x9E37_79B9;
         let main = def.brain.events.iter().flat_map(|e| &e.acts).find(|a| a.0 == brain::act::CAST && (a.3 as u32) & cast::MAIN != 0);
         let main_cost = main.and_then(|a| content::classic_spell(a.1 as u32)).map_or(0.0, |s| s.mana_cost(def.brain.mana));
@@ -511,6 +557,19 @@ impl Mob {
             hidden: false,
             notice: 1.0,
             pause: 0.0,
+            walk_speed: motion.0,
+            run_speed: motion.1,
+            reach: motion.2,
+            leash: motion.3,
+            pursuit: motion.4,
+            combat_timer: motion.4,
+            leash_tick: 0.0,
+            refresh: pos,
+            unreachable: 0.0,
+            regen: 0.0,
+            layer: pos.y,
+            placed: false,
+            threat: threat::Threat::default(),
             rest: 0.0,
             wander: WANDER_DEFAULT,
             legs: 0,
@@ -538,6 +597,7 @@ impl Mob {
             tempo: (1.0, 0.0),
             root: 0.0,
             fear: 0.0,
+            panic: false,
             banish: 0.0,
             weak: (1.0, 1.0, 0.0),
             asleep: false,
@@ -664,6 +724,7 @@ mod behaviour;
 mod combat;
 mod creatures;
 mod steer;
+mod threat;
 use steer::{Chase, Mode};
 mod person;
 mod spells;

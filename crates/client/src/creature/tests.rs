@@ -1,5 +1,8 @@
 use super::*;
 
+/// The reach of a blow the original gives most creatures: 5 yards.
+const MELEE_RANGE: f32 = ATTACK_DISTANCE;
+
 fn kind() -> usize {
     content::creature_index("wolf")
 }
@@ -66,9 +69,14 @@ fn a_blow_misses_when_the_player_has_stepped_away_and_a_wolf_gives_up_far_away()
     wolf.state = State::Melee(0.0, false);
     // Moves 5 yards off while the teeth are coming: no damage.
     assert!(run(&mut wolf, 1.6, Vec3::new(5.0, 0.0, 0.0)).is_empty());
+    // Led far, it holds on for its pursuit time (15 s) and then lets go.
     wolf.state = State::Chase;
-    run(&mut wolf, 0.1, Vec3::new(50.0, 0.0, 0.0));
-    assert!(matches!(wolf.state, State::Return(_)));
+    wolf.refresh_fight();
+    let far = Vec3::new(500.0, 0.0, 0.0);
+    run(&mut wolf, 14.0, far);
+    assert!(wolf.state.fights(), "{:?}", wolf.state);
+    run(&mut wolf, 3.0, far);
+    assert!(matches!(wolf.state, State::Return(_)), "{:?}", wolf.state);
 }
 
 /// A wound that bleeds, a stun that holds it, a slow that makes its time run slower.
@@ -76,6 +84,7 @@ fn a_blow_misses_when_the_player_has_stepped_away_and_a_wolf_gives_up_far_away()
 fn what_is_put_on_a_creature_hurts_holds_or_slows_it() {
     let far = Vec3::new(100.0, 0.0, 0.0);
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.regen = -1.0e9; // (the health that comes back out of combat is not what is counted here)
     let full = wolf.health;
     wolf.afflict(Status::Over { amount: 3.0, period: 1.0, seconds: 5.0 });
     run(&mut wolf, 5.5, far);
@@ -104,26 +113,126 @@ fn what_is_put_on_a_creature_hurts_holds_or_slows_it() {
 }
 
 #[test]
-fn a_wolf_that_gave_up_waits_then_runs_home_and_heals_unless_hit_again() {
+fn a_wolf_led_too_far_after_its_pursuit_time_goes_home_at_once_and_heals_by_thirds() {
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
     wolf.pos = Vec3::new(30.0, 0.0, 0.0);
     wolf.health = 10.0;
     wolf.state = State::Chase;
+    wolf.refresh = wolf.pos;
     let far = Vec3::new(100.0, 0.0, 0.0);
-    run(&mut wolf, 0.1, far);
-    assert!(matches!(wolf.state, State::Return(_)));
-    // It stands still for a while, hurt...
-    run(&mut wolf, RETURN_WAIT - 0.5, far);
-    assert_eq!((wolf.pos.x, wolf.health), (30.0, 10.0));
-    // ...a hit in that time turns it back on the attacker...
+    // The pursuit time (15 s) is not over: it stays in the fight, though the player is far.
+    let nothing_blocks = |_: Vec3, _: Vec3| true;
+    for _ in 0..(14.0 * 60.0) as usize {
+        wolf.update(1.0 / 60.0, far, flat_ground, nothing_blocks);
+    }
+    assert!(wolf.state.fights() || wolf.state == State::Idle, "{:?}", wolf.state);
+    // ...a hit in that time turns it on the attacker and restarts the time...
     let mut hit = Mob::new(kind(), Vec3::ZERO, 0.0);
-    hit.state = State::Return(1.0);
+    hit.state = State::Return(0.0);
     hit.hurt(1.0);
     assert!(matches!(hit.state, State::Flinch(_)));
-    // ...otherwise it runs home and is whole again.
+    // ...otherwise it runs home at once, and heals a third of its health every two seconds on the way and at home.
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.pos = Vec3::new(30.0, 0.0, 0.0);
+    wolf.health = 10.0;
+    wolf.state = State::Return(0.0);
+    run(&mut wolf, 1.0, far);
+    assert!(wolf.pos.x < 30.0 && wolf.health == 10.0, "it runs home at once: {:?} {}", wolf.pos, wolf.health);
+    run(&mut wolf, 1.2, far);
+    assert!((wolf.health - (10.0 + def().health / 3.0)).abs() < 1e-3, "a third came back: {}", wolf.health);
     run(&mut wolf, 8.0, far);
-    assert_eq!((wolf.state, wolf.health), (State::Idle, def().health));
-    assert!(wolf.pos.x < 0.3, "{:?}", wolf.pos);
+    assert!(wolf.pos.x < 0.3 && wolf.state == State::Idle && wolf.health == def().health, "{:?} {:?} {}", wolf.pos, wolf.state, wolf.health);
+}
+
+/// `CombatManager`: the pursuit timer runs for the creature's pursuit time and restarts when damage is dealt; with it run out, the player further than 30 yards from where the
+/// fight was last refreshed ends the fight, every 1.2 s.
+#[test]
+fn the_leash_holds_a_creature_to_its_fight_for_the_pursuit_time_and_thirty_yards() {
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    let far = Vec3::new(40.0, 0.0, 0.0);
+    let near = Vec3::new(25.0, 0.0, 0.0);
+    let broken = |wolf: &mut Mob, seconds: f32, at: Vec3| (0..(seconds * 10.0) as usize).any(|_| wolf.leash_broken(0.1, at));
+    assert!(!broken(&mut wolf, 14.0, far), "the pursuit time of 15 s has not run out");
+    // A blow either way restarts it.
+    wolf.refresh_fight();
+    assert!(!broken(&mut wolf, 14.0, far));
+    // Run out, and a player 25 yards from where the fight was refreshed is still held; one 40 yards away is let go.
+    assert!(!broken(&mut wolf, 3.0, near));
+    assert!(broken(&mut wolf, 1.3, far));
+    // The template's own leash counts from home.
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.leash = 10.0;
+    wolf.pos = Vec3::new(11.0, 0.0, 0.0);
+    assert!(broken(&mut wolf, 1.3, near));
+}
+
+/// `StartEvadeTimer`: a creature that has stopped out of reach of its target, with no way on, lets go after ten seconds, not before; the time starts afresh when the
+/// target can be got at again.
+#[test]
+fn a_creature_that_cannot_reach_its_target_lets_go_after_ten_seconds() {
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    let ticks = |wolf: &mut Mob, seconds: f32| (0..(seconds * 10.0) as usize).any(|_| wolf.target_unreachable(0.1));
+    // Still on its way (or the target within reach): nothing runs.
+    assert!(!ticks(&mut wolf, 30.0));
+    wolf.chase.reached = true;
+    wolf.chase.reachable = false;
+    assert!(!ticks(&mut wolf, 9.8), "not before ten seconds");
+    assert!(ticks(&mut wolf, 0.5), "at ten");
+    // Reachable again in the meantime: the time starts afresh.
+    assert!(!ticks(&mut wolf, 9.0));
+    wolf.chase.reachable = true;
+    assert!(!ticks(&mut wolf, 1.0));
+    wolf.chase.reachable = false;
+    assert!(!ticks(&mut wolf, 9.0), "it counts from the new stop");
+}
+
+/// A creature reaches by the ground distance (the original's `CanReachWithMeleeAttack` of a creature has no height), with a leeway when both run; the blow's reach is
+/// 5 yards or the two combat reaches and 1.33, whichever is more.
+#[test]
+fn a_creatures_reach_is_the_original_combined_reach() {
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    assert_eq!(wolf.combined_reach(PLAYER_REACH, true), ATTACK_DISTANCE, "most creatures reach 5 yards");
+    wolf.reach = 4.05;
+    assert!((wolf.combined_reach(PLAYER_REACH, true) - (4.05 + 1.5 + 1.33)).abs() < 1e-4, "a big one reaches further");
+    assert!((wolf.combined_reach(PLAYER_REACH, false) - 5.55).abs() < 1e-4);
+    wolf.reach = 1.0;
+    assert!(wolf.can_reach(4.9, PLAYER_REACH, false) && !wolf.can_reach(5.1, PLAYER_REACH, false));
+    // Both running: 8/3 yards more (the creature runs while it has a way to walk).
+    wolf.course = vec![Vec3::new(1.0, 0.0, 0.0)];
+    assert!(wolf.can_reach(7.5, PLAYER_REACH, true) && !wolf.can_reach(7.8, PLAYER_REACH, true) && !wolf.can_reach(7.5, PLAYER_REACH, false));
+}
+
+/// A creature that hates a pet more than the player goes after the pet where it stands (the game gives it the pet's place as the target it chases), and its blow lands on the pet.
+#[test]
+fn a_creature_goes_after_the_pet_it_hates_most_where_the_pet_stands() {
+    let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.state = State::Chase;
+    let player = Watch::at(Vec3::new(-40.0, 0.0, 0.0));
+    let pet = player.with_feet(Vec3::new(0.0, 0.0, 30.0));
+    for _ in 0..120 {
+        wolf.step(1.0 / 60.0, &pet, 0, &[], &[], flat_ground, open, &NavMesh::default());
+    }
+    assert!(wolf.pos.z > 5.0 && wolf.pos.x.abs() < 3.0, "it went for the player, not the pet: {:?}", wolf.pos);
+    // Close to the pet it strikes (the game then takes the blow to the pet).
+    let mut wolf = Mob::new(kind(), Vec3::new(0.0, 0.0, 28.0), 0.0);
+    wolf.state = State::Chase;
+    let acts: Vec<Act> = (0..180).flat_map(|_| wolf.step(1.0 / 60.0, &pet, 0, &[], &[], flat_ground, open, &NavMesh::default())).collect();
+    assert!(acts.iter().any(|a| matches!(a, Act::Melee(_))));
+}
+
+/// The original's creatures have their own speeds, the rate of their template or model times the base 2.5 and 7 yards a second.
+#[test]
+fn creatures_run_and_walk_at_the_speeds_of_the_original() {
+    let wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    let (walk, run, reach, _, pursuit) = content::motion(&def().id);
+    assert_eq!((wolf.walk_speed, wolf.run_speed, wolf.reach, wolf.pursuit), (walk, run, reach, pursuit));
+    // A creature of the original: the rate of its template (most run at 1.14286 times 7, not at 6.94) times the base.
+    let mage = Mob::new(content::creature_index("c474"), Vec3::ZERO, 0.0);
+    let (walk, run, reach, _, pursuit) = content::motion("c474");
+    assert_eq!((mage.walk_speed, mage.run_speed, mage.reach, mage.pursuit), (walk, run, reach, pursuit));
+    assert!(mage.run_speed != 6.94 && mage.reach > 0.5 && mage.pursuit == 15.0, "{} {} {}", mage.run_speed, mage.pursuit, mage.reach);
+    // A creature the original does not know walks and runs at the base speeds.
+    assert_eq!(content::motion("not-a-creature"), (2.5, 7.0, 1.5, 0.0, 15.0));
 }
 
 #[test]
@@ -452,27 +561,69 @@ fn a_caster_stands_back_buffs_itself_and_casts_its_bolt_with_the_time_and_mana_i
     assert_eq!(all.iter().filter(|c| c.0 == 12544).count(), 1);
 }
 
+/// The player's sword reaches what stands on his level, not what stands under the floor he is on; and a pet does not strike a foe a level below it either.
 #[test]
-fn a_proximity_caster_backs_away_from_a_player_who_comes_close_and_a_wounded_one_runs_for_help() {
+fn swings_and_pets_do_not_reach_a_level_away() {
+    let wolf = Mob::new(kind(), Vec3::new(0.0, 0.0, 2.0), 0.0);
+    // (Facing south, +z is straight ahead for yaw pi.)
+    let yaw = std::f32::consts::PI;
+    assert!(wolf.in_swing(Vec3::new(0.0, 0.5, 0.0), yaw, 3.0), "a swing on the same level");
+    assert!(!wolf.in_swing(Vec3::new(0.0, 10.0, 0.0), yaw, 3.0), "a swing through the floor");
+    let player = Vec3::new(20.0, 0.0, 0.0);
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
+    imp.make_ally(10, 0.0, 0, true, false);
+    let foe_below = Vec3::new(20.0, -10.0, 4.0);
+    let acts: Vec<Act> = (0..60 * 10).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe_below), false, |_, _, _| None, open, open, &NavMesh::default())).collect();
+    assert!(!acts.iter().any(|a| matches!(a, Act::Strike(_))), "struck through the floor");
+    let acts: Vec<Act> = (0..60 * 10).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(Vec3::new(20.0, 0.0, 4.0)), false, flat_ground, open, open, &NavMesh::default())).collect();
+    assert!(acts.iter().any(|a| matches!(a, Act::Strike(_))), "and strikes on its own level");
+}
+
+/// A creature casts at the player only with the terrain's sight line clear, not on the walker's check alone: behind a hill it comes round first.
+#[test]
+fn a_caster_does_not_cast_at_a_player_a_hill_hides() {
+    // The hill across x = 6, the player 12 yards east of the wizard.
+    let sight = |a: Vec3, b: Vec3| (a.x < 6.0) == (b.x < 6.0);
+    let watch = Watch { sight: &sight, ..Watch::at(Vec3::new(12.0, 0.0, 0.0)) };
+    let mut mage = Mob::new(content::creature_index("c474"), Vec3::ZERO, 0.0);
+    let mut from = Vec::new();
+    // (It is after the player already: one that does not see him does not notice him, as the original's.)
+    mage.state = State::Chase;
+    for _ in 0..60 * 20 {
+        for act in mage.step(1.0 / 60.0, &watch, 0, &[], &[], flat_ground, open, &NavMesh::default()) {
+            if matches!(act, Act::Begin(13322)) || matches!(&act, Act::Cast(c) if c.spell == 13322 && c.aim == Aim::Victim) {
+                from.push(mage.pos.x);
+            }
+        }
+    }
+    assert!(!from.is_empty(), "it never came round to a place that sees the player, at {:?}", mage.pos);
+    assert!(from.iter().all(|&x| x >= 6.0), "cast over the hill, from x {from:?}");
+}
+
+#[test]
+fn a_proximity_caster_fights_close_when_the_player_comes_close_and_a_wounded_one_panics() {
     let mut mage = Mob::new(content::creature_index("c474"), Vec3::new(20.0, 0.0, 0.0), 0.0);
     let near = Watch::at(Vec3::new(18.0, 0.0, 0.0));
-    // Two yards from him, the mage steps back (ranged mode 2) before it casts its bolt.
-    acts_of(&mut mage, 0.2, &near);
-    assert!(matches!(mage.state, State::Kite(_)), "{:?} at {:?}", mage.state, mage.pos);
-    acts_of(&mut mage, 1.0, &near);
-    assert!(mage.pos.x > 21.0, "it backed away to {:?}", mage.pos);
-    // Hurt to a tenth of its health, it runs (Flee at 15%) instead of fighting on.
+    // Two yards from him, the mage does not step back (the original's caster goes to melee when the player is within a blow's reach).
+    let mut kited = false;
+    for _ in 0..90 {
+        mage.step(1.0 / 60.0, &near, 0, &[], &[], flat_ground, open, &NavMesh::default());
+        kited |= matches!(mage.state, State::Kite(_));
+    }
+    assert!(!kited && mage.pos.x < 21.0, "{:?} at {:?}", mage.state, mage.pos);
+    // Hurt to a tenth of its health, it panics (Flee at 15%): ten seconds of running in fear from where it is, instead of fighting on.
     let mut seer = Mob::new(content::creature_index("c1397"), Vec3::ZERO, 0.0);
     let player = Watch::at(Vec3::new(10.0, 0.0, 0.0));
     acts_of(&mut seer, 0.5, &player);
     seer.health = seer.def.health * 0.1;
     acts_of(&mut seer, 0.2, &player);
-    assert!(matches!(seer.state, State::Flee(..)), "{:?}", seer.state);
-    // It runs away from the player, and after seven seconds it turns back on him.
-    acts_of(&mut seer, 2.0, &player);
-    assert!(seer.pos.x < -5.0, "ran to {:?}", seer.pos);
+    assert!(seer.fear > 9.0 && seer.panic, "{} {}", seer.fear, seer.panic);
+    let from = seer.pos;
+    acts_of(&mut seer, 4.0, &player);
+    assert!((seer.pos - from).length() > 3.0, "it ran from {from:?} to {:?}", seer.pos);
+    // The ten seconds over, it is back in the fight.
     acts_of(&mut seer, FLEE_TIME, &player);
-    assert!(!matches!(seer.state, State::Flee(..)), "{:?}", seer.state);
+    assert!(seer.fear == 0.0 && !seer.panic && seer.state.fights(), "{:?}", seer.state);
 }
 
 #[test]
@@ -564,6 +715,17 @@ fn how_far_a_creature_notices_the_player_grows_a_yard_for_each_level_it_is_above
     assert_eq!(high.state, State::Chase);
 }
 
+/// A creature in a mine does not notice the player who walks over the hill: nothing sees through it.
+#[test]
+fn a_creature_does_not_notice_a_player_it_cannot_see() {
+    let mut wolf = Mob::new(content::creature_index("black_wolf"), Vec3::ZERO, 0.0);
+    let hill = |_: Vec3, _: Vec3| false;
+    wolf.step(0.1, &Watch { sight: &hill, ..Watch::at(Vec3::new(3.0, 0.0, 0.0)) }, 0, &[], &[], flat_ground, open, &NavMesh::default());
+    assert_eq!(wolf.state, State::Idle);
+    wolf.step(0.1, &Watch::at(Vec3::new(3.0, 0.0, 0.0)), 0, &[], &[], flat_ground, open, &NavMesh::default());
+    assert_eq!(wolf.state, State::Chase);
+}
+
 /// Fear sends it running from the player, a root holds its feet but not its teeth, a sleep ends with the first blow, a weakened creature takes more and deals less.
 #[test]
 fn fear_roots_sleep_and_weakness_change_what_a_creature_does() {
@@ -578,6 +740,7 @@ fn fear_roots_sleep_and_weakness_change_what_a_creature_does() {
     // Rooted: it stays where it stands.
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
     wolf.afflict(Status::Root(2.0));
+    let player = Vec3::new(12.0, 0.0, 0.0);
     run(&mut wolf, 1.0, player);
     assert_eq!(wolf.pos, Vec3::ZERO);
     run(&mut wolf, 2.0, player);
@@ -618,7 +781,7 @@ fn an_ally_follows_the_player_strikes_what_he_fights_and_goes_when_its_time_is_u
     let mut pet = Mob::new(kind(), Vec3::ZERO, 0.0);
     pet.make_ally(30, 10.0, 0, true, false);
     assert!(pet.is_ally() && pet.is_pet() && !pet.attackable());
-    let step = |pet: &mut Mob, seconds: f32, focus: Option<Vec3>| -> Vec<Act> { (0..(seconds * 60.0) as usize).flat_map(|_| pet.step_ally(1.0 / 60.0, player, focus, false, flat_ground, open, &NavMesh::default())).collect() };
+    let step = |pet: &mut Mob, seconds: f32, focus: Option<Vec3>| -> Vec<Act> { (0..(seconds * 60.0) as usize).flat_map(|_| pet.step_ally(1.0 / 60.0, player, focus, false, flat_ground, open, open, &NavMesh::default())).collect() };
     // Nothing to fight: it runs to the player and stays close.
     step(&mut pet, 4.0, None);
     assert!((pet.pos - player).length() < 6.0, "{:?}", pet.pos);
@@ -648,12 +811,176 @@ fn a_pet_that_stays_keeps_its_place_and_the_stances_pick_their_foes() {
     let player = Vec3::new(20.0, 0.0, 0.0);
     let mut pet = Mob::new(kind(), Vec3::ZERO, 0.0);
     pet.make_ally(30, 0.0, 0, true, false);
-    (0..600).for_each(|_| drop(pet.step_ally(1.0 / 60.0, player, Some(Vec3::new(0.0, 0.0, 15.0)), true, flat_ground, open, &NavMesh::default())));
+    (0..600).for_each(|_| drop(pet.step_ally(1.0 / 60.0, player, Some(Vec3::new(0.0, 0.0, 15.0)), true, flat_ground, open, open, &NavMesh::default())));
     assert!(pet.pos.length() < 0.01, "{:?}", pet.pos);
-    let pick = |stance| PetOrders { stance, ..Default::default() }.pick();
-    assert_eq!(pick(Stance::Passive), None);
-    assert_eq!(pick(Stance::Defensive).map(|p| p.1), Some(true));
-    assert_eq!(pick(Stance::Aggressive).map(|p| p.1), Some(false));
+}
+
+/// What the stances pick: the defensive pet joins the player's fight and no other, rests when he has stopped, the aggressive one picks its own, the passive none.
+#[test]
+fn a_defensive_pet_joins_only_the_fight_the_player_makes() {
+    let pick = |stance, engaged, players: Option<usize>| PetOrders { stance, ..Default::default() }.pick_foe(engaged, players, |reach, fighting| {
+        assert!(reach > 0.0 && !fighting, "an aggressive pet picks any foe about");
+        Some(9)
+    });
+    // He strikes (or casts) at foe 3: the defensive pet goes for it.
+    assert_eq!(pick(Stance::Defensive, 4.0, Some(3)), Some(3));
+    // A creature fights near him but he does nothing: it stays out of it (it asked for no foe of its own, so `nearest` is not even asked).
+    assert_eq!(pick(Stance::Defensive, 0.0, Some(3)), None);
+    // He strikes at nothing there is: nothing to go for.
+    assert_eq!(pick(Stance::Defensive, 4.0, None), None);
+    assert_eq!(pick(Stance::Passive, 4.0, Some(3)), None);
+    assert_eq!(pick(Stance::Aggressive, 0.0, None), Some(9));
+}
+
+/// The terrain between two places: a hill across z = 8, which a walker's check (`blocked`) lets pass but the line of sight (`hidden`) does not.
+fn hill(a: Vec3, b: Vec3) -> bool {
+    (a.z < 8.0) != (b.z < 8.0)
+}
+
+/// The sight line is the terrain's too: a bolt is not begun at a foe behind a hill, though nothing a walker would be stopped by stands between; the imp goes round till it sees it.
+#[test]
+fn an_imp_does_not_cast_at_a_foe_a_hill_hides() {
+    let player = Vec3::new(20.0, 0.0, 0.0);
+    let foe = Vec3::new(20.0, 0.0, 14.0);
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
+    imp.make_ally(10, 0.0, 3110, true, false);
+    let mut begun_at = Vec::new();
+    for _ in 0..900 {
+        for act in imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, hill, &NavMesh::default()) {
+            if matches!(act, Act::Begin(_) | Act::Spell(_)) {
+                begun_at.push(imp.pos.z);
+            }
+        }
+    }
+    assert!(!begun_at.is_empty(), "it never found its way to a place that sees the foe, at {:?}", imp.pos);
+    assert!(begun_at.iter().all(|&z| z >= 8.0), "cast over the hill, from z {begun_at:?}");
+}
+
+/// The cast looks again as it ends: a foe that went behind a hill while the bolt was in the making is not struck, and the mana comes back.
+#[test]
+fn an_imps_bolt_does_not_go_off_at_a_foe_that_went_behind_a_hill() {
+    let player = Vec3::new(20.0, 0.0, 0.0);
+    let (near, behind) = (Vec3::new(20.0, 0.0, 6.0), Vec3::new(20.0, 0.0, 14.0));
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
+    imp.make_ally(10, 0.0, 3110, true, false);
+    assert!(content::classic_spell(3110).unwrap().cast > 0, "the bolt takes time to make");
+    let full = imp.ally.as_ref().unwrap().mana;
+    let step = |imp: &mut Mob, foe: Vec3| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, hill, &NavMesh::default());
+    // The foe is in sight (on the imp's side of the hill) as the bolt is begun...
+    let mut began = false;
+    for _ in 0..120 {
+        began |= step(&mut imp, near).iter().any(|a| matches!(a, Act::Begin(3110)));
+        if began {
+            break;
+        }
+    }
+    assert!(began && imp.ally.as_ref().unwrap().mana < full, "the bolt was not begun");
+    // ...and goes behind the hill before it ends.
+    let mut acts = Vec::new();
+    for _ in 0..600 {
+        acts.extend(step(&mut imp, behind));
+        if acts.iter().any(|a| matches!(a, Act::Stop)) {
+            break;
+        }
+    }
+    assert!(!acts.iter().any(|a| matches!(a, Act::Spell(_))), "the bolt went off over the hill: {acts:?}");
+    assert!(acts.iter().any(|a| matches!(a, Act::Stop)), "the glow was left: {acts:?}");
+    assert!((imp.ally.as_ref().unwrap().mana - full).abs() < 1e-3, "the mana was not given back");
+}
+
+/// A floor under a creature in the rock over a mine, 8 yards down, with nothing between.
+fn mine_floor(_: f32, _: f32, y: f32) -> Option<f32> {
+    Some(10.0).filter(|floor| *floor <= y + 1.0)
+}
+
+/// A course that leaves a walker in the rock over a mine (a path point on the surface above it) does not leave it hanging there: it stands on the floor under it.
+#[test]
+fn a_walker_that_the_course_left_in_the_air_stands_on_the_floor_under_it() {
+    let mut wolf = Mob::new(kind(), Vec3::new(0.0, 18.0, 0.0), 0.0);
+    wolf.stand(&mine_floor);
+    assert_eq!(wolf.pos.y, 10.0);
+    // On the floor already: it stays.
+    wolf.stand(&mine_floor);
+    assert_eq!(wolf.pos.y, 10.0);
+    // Nothing under it (the ground is not loaded): it stays where it is.
+    wolf.pos.y = 18.0;
+    wolf.stand(&|_, _, _| None);
+    assert_eq!(wolf.pos.y, 18.0);
+    // A swimmer keeps its height; the bed of the lake is not its floor.
+    wolf.swimming = true;
+    wolf.stand(&mine_floor);
+    assert_eq!(wolf.pos.y, 18.0);
+    // (But the floor a stroke down it still takes.)
+    wolf.stand(&|_, _, _| Some(17.5));
+    assert_eq!(wolf.pos.y, 17.5);
+}
+
+/// Two floors over each other (a mine's tunnel and the planks 2.2 yards over it): a creature whose course the mesh drew on the upper one stays on the one it stands on, and does not
+/// jump through what is between; it steps onto a low ledge (up to a yard) and follows a ramp.
+#[test]
+fn a_creature_stays_on_the_floor_it_stands_on_where_two_floors_lie_over_each_other() {
+    let stacked = |_: f32, _: f32, y: f32| [22.6f32, 20.4].into_iter().find(|f| *f <= y + 1.0);
+    let mut wolf = Mob::new(kind(), Vec3::new(0.0, 20.4, 0.0), 0.0);
+    wolf.stand(&stacked);
+    assert_eq!(wolf.pos.y, 20.4);
+    // The course pulls it up towards the planks (it is a yard and a bit over its floor now): it stays.
+    wolf.pos.y = 21.5;
+    wolf.stand(&stacked);
+    assert_eq!(wolf.pos.y, 20.4, "jumped to the floor over it");
+    // On the planks it stays on them.
+    let mut wolf = Mob::new(kind(), Vec3::new(0.0, 22.6, 0.0), 0.0);
+    wolf.pos.y = 21.9;
+    wolf.stand(&stacked);
+    assert_eq!(wolf.pos.y, 22.6);
+    // A ramp that climbs 0.2 yards a step is followed.
+    let mut wolf = Mob::new(kind(), Vec3::new(0.0, 10.0, 0.0), 0.0);
+    for n in 1..=50 {
+        wolf.pos.x = n as f32 * 0.13;
+        wolf.stand(&|x: f32, _, _| Some(10.0 + x * 1.5));
+        assert!((wolf.pos.y - (10.0 + wolf.pos.x * 1.5)).abs() < 1e-4, "left the ramp at {n}: {}", wolf.pos.y);
+    }
+    // (A plank 0.7 yards over the floor it stands on is not stepped onto while that floor is there: it is the floor level with it that it keeps; see the test of the ramp.)
+    // A teleport (home, a summon) forgets the old floor.
+    wolf.pos = Vec3::new(50.0, 40.0, 0.0);
+    wolf.stand(&|_, _, y: f32| Some(40.0).filter(|f| *f <= y + 1.0));
+    assert_eq!(wolf.pos.y, 40.0);
+}
+
+/// A ramp that climbs to within a yard of the terrain over it: the creature on it stays on the ramp and is not ported up onto the terrain; a plank 0.7 yards over its floor it still steps onto.
+#[test]
+fn a_creature_on_a_ramp_under_the_terrain_is_not_ported_up_to_the_terrain() {
+    let under_the_skin = |_: f32, _: f32, y: f32| [20.9f32, 20.0].into_iter().find(|f| *f <= y + 1.0);
+    let mut wolf = Mob::new(kind(), Vec3::new(0.0, 20.0, 0.0), 0.0);
+    wolf.stand(&under_the_skin);
+    assert_eq!(wolf.pos.y, 20.0, "ported up to the terrain");
+    wolf.pos.y = 20.2;
+    wolf.stand(&under_the_skin);
+    assert_eq!(wolf.pos.y, 20.0);
+    // With no floor level with it, the plank (0.7 up) is stepped onto as before.
+    let mut wolf = Mob::new(kind(), Vec3::new(0.0, 17.38, 0.0), 0.0);
+    wolf.stand(&|_, _, y: f32| [18.11f32, 17.38].into_iter().find(|f| *f <= y + 1.0));
+    assert_eq!(wolf.pos.y, 17.38, "a floor level with it is the one it keeps");
+    let mut wolf = Mob::new(kind(), Vec3::new(0.0, 17.38, 0.0), 0.0);
+    wolf.stand(&|_, _, y: f32| [18.11f32].into_iter().find(|f| *f <= y + 1.0));
+    assert_eq!(wolf.pos.y, 18.11);
+}
+
+/// A pet is put on the floor under it every step as the other creatures are (it used to be set to the terrain under a building, or left in the air).
+#[test]
+fn a_pet_is_never_left_hanging_or_put_below_the_floor_it_walks() {
+    let player = Vec3::new(0.0, 10.0, 0.0);
+    let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(1.0, 18.0, 1.0), 0.0);
+    imp.make_ally(10, 0.0, 0, true, false);
+    imp.step_ally(1.0 / 60.0, player, None, false, mine_floor, open, open, &NavMesh::default());
+    assert_eq!(imp.pos.y, 10.0, "left hanging");
+    // Walking about on a floor of a building 3 yards over the terrain, with the terrain 3 yards under the floor: it keeps to the floor.
+    let building = |x: f32, _: f32, y: f32| Some(if x.abs() < 40.0 { 13.0 } else { 10.0 }).filter(|floor: &f32| *floor <= y + 1.0);
+    let player = Vec3::new(20.0, 13.0, 0.0);
+    imp.pos.y = 13.0;
+    for _ in 0..600 {
+        imp.step_ally(1.0 / 60.0, player, None, false, building, open, open, &NavMesh::default());
+        assert!(imp.pos.y >= 13.0 - 1e-3, "sank through the floor to {}", imp.pos.y);
+    }
 }
 
 /// A damage over time is listed with its spell's icon until it ends, the same spell cast again renews it instead of adding another, and it sets the creature on whoever sent it.
@@ -661,6 +988,7 @@ fn a_pet_that_stays_keeps_its_place_and_the_stances_pick_their_foes() {
 fn a_spells_damage_over_time_is_listed_renewed_not_stacked_and_provokes() {
     let far = Vec3::new(100.0, 0.0, 0.0);
     let mut wolf = Mob::new(kind(), Vec3::ZERO, 0.0);
+    wolf.regen = -1.0e9;
     let full = wolf.health;
     let rend = Status::Over { amount: 3.0, period: 1.0, seconds: 5.0 };
     wolf.afflict_from(rend, "Rend", "Ability_Gouge", 0);
@@ -686,13 +1014,13 @@ fn an_imp_casts_its_firebolt_at_its_foe() {
     let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
     imp.make_ally(10, 0.0, 3110, true, false);
     let foe = Vec3::new(20.0, 0.0, 14.0);
-    let acts: Vec<Act> = (0..600).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default())).collect();
+    let acts: Vec<Act> = (0..600).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, open, &NavMesh::default())).collect();
     let bolts = acts.iter().filter(|a| matches!(a, Act::Spell(3110))).count();
     assert!(bolts >= 2, "{bolts} bolts, at {:?}", imp.pos);
     // And it plays its cast animation while the bolt goes off, not a swing.
     let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
     imp.make_ally(10, 0.0, 3110, true, false);
-    let seen: Vec<u16> = (0..600).map(|_| { drop(imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default())); imp.animation(&Default::default()) }).collect();
+    let seen: Vec<u16> = (0..600).map(|_| { drop(imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, open, &NavMesh::default())); imp.animation(&Default::default()) }).collect();
     assert!(seen.contains(&CAST_SPELL) && !seen.contains(&ATTACK_UNARMED), "{:?}", seen.iter().collect::<std::collections::BTreeSet<_>>());
 }
 
@@ -705,7 +1033,7 @@ fn an_imp_does_not_cast_through_a_wall() {
     let wall = |a: Vec3, b: Vec3| (a.z < 8.0) != (b.z < 8.0);
     let mut imp = Mob::new(content::creature_index("c416"), Vec3::new(20.0, 0.0, 2.0), 0.0);
     imp.make_ally(10, 0.0, 3110, true, false);
-    let acts: Vec<Act> = (0..600).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, wall, &NavMesh::default())).collect();
+    let acts: Vec<Act> = (0..600).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, wall, wall, &NavMesh::default())).collect();
     assert!(!acts.iter().any(|a| matches!(a, Act::Begin(_) | Act::Spell(_))), "cast through a wall, at {:?}", imp.pos);
 }
 
@@ -719,7 +1047,7 @@ fn an_imps_firebolt_is_begun_then_goes_off_after_its_cast_time() {
     let seconds = content::classic_spell(3110).unwrap().cast as f32 / 1000.0;
     let mut log = Vec::new();
     for n in 0..600 {
-        for act in imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default()) {
+        for act in imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, open, &NavMesh::default()) {
             log.push((n as f32 / 60.0, matches!(act, Act::Begin(3110)), matches!(act, Act::Spell(3110))));
         }
     }
@@ -731,7 +1059,7 @@ fn an_imps_firebolt_is_begun_then_goes_off_after_its_cast_time() {
     imp.make_ally(10, 0.0, 3110, true, false);
     let mut acts = Vec::new();
     for n in 0..120 {
-        acts.extend(imp.step_ally(1.0 / 60.0, player, (n < 30).then_some(foe), false, flat_ground, open, &NavMesh::default()));
+        acts.extend(imp.step_ally(1.0 / 60.0, player, (n < 30).then_some(foe), false, flat_ground, open, open, &NavMesh::default()));
     }
     assert!(acts.iter().any(|a| matches!(a, Act::Begin(_))) && acts.iter().any(|a| matches!(a, Act::Stop)) && !acts.iter().any(|a| matches!(a, Act::Spell(_))), "{acts:?}");
 }
@@ -753,14 +1081,14 @@ fn an_imps_mana_is_the_originals_and_it_runs_dry_and_comes_back() {
     // Four bolts of 10 leave 8: it cannot cast, so it goes up to its foe and strikes; five seconds after the last bolt (begun at 7.5 s) its mana comes back at the
     // next tick (14 s: spirit 23 / 5 + 17 = 21.6) and it casts a fifth (it goes off at 17 s).
     let mut imp = imp_at(1);
-    let acts: Vec<Act> = (0..60 * 18).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default())).collect();
+    let acts: Vec<Act> = (0..60 * 18).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, open, &NavMesh::default())).collect();
     let bolts = acts.iter().filter(|a| matches!(a, Act::Spell(_))).count();
     assert_eq!(bolts, 5, "four bolts of 10 mana from 48, then none while it waits, then one more");
     assert!(acts.iter().any(|a| matches!(a, Act::Strike(_))), "dry, it fights close");
     // Out of mana from the start: no spell at all.
     let mut imp = imp_at(1);
     imp.ally.as_mut().unwrap().mana = 0.0;
-    let acts: Vec<Act> = (0..60 * 2).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default())).collect();
+    let acts: Vec<Act> = (0..60 * 2).flat_map(|_| imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, open, &NavMesh::default())).collect();
     assert!(!acts.iter().any(|a| matches!(a, Act::Spell(_) | Act::Begin(_))), "{acts:?}");
 }
 
@@ -791,9 +1119,9 @@ fn a_pet_out_of_phase_is_in_phase_again_when_it_attacks() {
     imp.make_ally(10, 0.0, 3110, true, false);
     imp.ally.as_mut().unwrap().phased = true;
     assert!(imp.is_phased());
-    drop((0..30).flat_map(|_| imp.step_ally(1.0 / 60.0, player, None, false, flat_ground, open, &NavMesh::default())).count());
+    drop((0..30).flat_map(|_| imp.step_ally(1.0 / 60.0, player, None, false, flat_ground, open, open, &NavMesh::default())).count());
     assert!(imp.is_phased(), "it stays out of phase while it does not attack");
-    drop(imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, &NavMesh::default()));
+    drop(imp.step_ally(1.0 / 60.0, player, Some(foe), false, flat_ground, open, open, &NavMesh::default()));
     assert!(!imp.is_phased(), "its spell begins");
 }
 
@@ -808,7 +1136,7 @@ fn a_wolf_runs_home_round_a_wall_over_the_mesh_instead_of_through_it() {
     let wall = |a: Vec3, b: Vec3| (a.z + 10.0) * (b.z + 10.0) < 0.0 && a.x.abs().max(b.x.abs()) < 30.0;
     let mut wolf = Mob::new(kind(), home, 0.0);
     wolf.pos = Vec3::ZERO;
-    wolf.state = State::Return(RETURN_WAIT);
+    wolf.state = State::Return(0.0);
     let player = Vec3::new(100.0, 0.0, 0.0);
     let mut last = wolf.pos;
     for _ in 0..(30.0 * 60.0) as usize {
@@ -830,7 +1158,7 @@ fn a_wolf_and_a_pet_chase_round_a_wall_over_the_mesh() {
     for _ in 0..(30.0 * 60.0) as usize {
         let before = (wolf.pos, imp.pos);
         wolf.update_on(1.0 / 60.0, player, flat_ground, wall, &nav);
-        imp.step_ally(1.0 / 60.0, player, None, false, flat_ground, wall, &nav);
+        imp.step_ally(1.0 / 60.0, player, None, false, flat_ground, wall, wall, &nav);
         assert!(!wall(before.0, wolf.pos) && !wall(before.1, imp.pos), "through the wall: {:?} {:?}", wolf.pos, imp.pos);
     }
     assert!((wolf.pos - player).length() < MELEE_RANGE + 1.0, "the wolf stopped at {:?}", wolf.pos);
